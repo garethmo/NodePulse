@@ -1,6 +1,6 @@
 {
   "name": "NodePulse",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "slug": "nodepulse",
   "description": "Monitor Meshtastic mesh network health — nodes, signal metrics, GPS mapping, and encrypted direct messaging.",
   "url": "https://github.com/garethmo/NodePulse",
@@ -27,6 +27,5 @@
   },
   "map": {},
   "ports": {},
-  "environment": {},
-  "image": "ghcr.io/garethmo/nodepulse-addon/{arch}"
+  "environment": {}
 }
