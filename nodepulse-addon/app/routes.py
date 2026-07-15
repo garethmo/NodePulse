@@ -49,7 +49,7 @@ async def handle_status(request: web.Request) -> web.Response:
         status = await conn.get_status()
         return _json_response(status)
     except Exception as exc:
-        logger.error({"error": str(exc)}, "Error fetching status")
+        logger.error("Error fetching status: %s", exc)
         return _error_response("Failed to retrieve status")
 
 
@@ -74,7 +74,7 @@ async def handle_nodes(request: web.Request) -> web.Response:
         visible_nodes = [n for n in nodes if n.get("id") not in ignored]
         return _json_response(visible_nodes)
     except Exception as exc:
-        logger.error({"error": str(exc)}, "Error fetching nodes")
+        logger.error("Error fetching nodes: %s", exc)
         return _error_response("Failed to retrieve nodes")
 
 
@@ -89,7 +89,7 @@ async def handle_channels(request: web.Request) -> web.Response:
         channels = await conn.get_channels()
         return _json_response(channels)
     except Exception as exc:
-        logger.error({"error": str(exc)}, "Error fetching channels")
+        logger.error("Error fetching channels: %s", exc)
         return _error_response("Failed to retrieve channels")
 
 
@@ -133,7 +133,7 @@ async def handle_send(request: web.Request) -> web.Response:
         return _error_response("Message was not accepted by the Meshtastic interface", status=502)
     except Exception as exc:
         logger.error(
-            {"destination": destination, "error": str(exc)}, "Unhandled error in send handler"
+            "Unhandled error in send handler (destination=%s): %s", destination, exc
         )
         return _error_response("Failed to send message")
 
@@ -170,7 +170,7 @@ async def handle_traceroute(request: web.Request) -> web.Response:
         return _json_response({"dispatched": success})
     except Exception as exc:
         logger.error(
-            {"destination": destination, "error": str(exc)}, "Traceroute dispatch failed"
+            "Traceroute dispatch failed (destination=%s): %s", destination, exc
         )
         return _error_response("Failed to dispatch traceroute")
 
@@ -202,6 +202,6 @@ async def handle_request_position(request: web.Request) -> web.Response:
         return _json_response({"dispatched": success})
     except Exception as exc:
         logger.error(
-            {"destination": destination, "error": str(exc)}, "Position request dispatch failed"
+            "Position request dispatch failed (destination=%s): %s", destination, exc
         )
         return _error_response("Failed to dispatch position request")

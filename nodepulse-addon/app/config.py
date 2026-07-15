@@ -21,12 +21,33 @@ _OPTIONS_FILE = "/data/options.json"
 _DEV_OPTIONS_FILE = os.path.join(os.path.dirname(__file__), "..", "dev_options.json")
 
 
+# Connection modes:
+#   "direct" — connect straight to the Meshtastic node over TCP.
+#                The node firmware allows ONLY ONE TCP client, so this mode
+#                cannot be used while another client (e.g. the official
+#                Meshtastic HA integration) is also connected.
+#   "proxy"  — connect to the official Meshtastic HA integration's TCP proxy
+#                (enabled in that integration's options). The integration owns
+#                the single node connection and relays framed packets, allowing
+#                multiple clients (HA + NodePulse) to share the node.
+CONNECTION_TYPE_DIRECT = "direct"
+CONNECTION_TYPE_PROXY = "proxy"
+_CONNECTION_TYPES = (CONNECTION_TYPE_DIRECT, CONNECTION_TYPE_PROXY)
+
+# Default TCP port the official Meshtastic HA integration's proxy listens on.
+DEFAULT_PROXY_PORT = 4403
+
+
 @dataclass
 class Config:
     """Immutable snapshot of the addon configuration options."""
 
+    log_level: str
+    connection_type: str
     meshtastic_host: str
     meshtastic_port: int
+    proxy_host: Optional[str]
+    proxy_port: int
     access_key: Optional[str]
     scan_interval: int
     ignored_nodes: List[str] = field(default_factory=list)
@@ -42,7 +63,7 @@ def load_config() -> Config:
     """
     options_path = _OPTIONS_FILE if os.path.exists(_OPTIONS_FILE) else _DEV_OPTIONS_FILE
 
-    logger.info({"path": options_path}, "Loading addon configuration")
+    logger.info("Loading addon configuration (path=%s)", options_path)
 
     try:
         with open(options_path, "r", encoding="utf-8") as fh:
@@ -55,10 +76,43 @@ def load_config() -> Config:
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"Options file is not valid JSON: {exc}") from exc
 
+    connection_type = (raw.get("connection_type") or CONNECTION_TYPE_DIRECT).lower()
+    if connection_type not in _CONNECTION_TYPES:
+        raise RuntimeError(
+            f"Invalid connection_type {connection_type!r}. "
+            f"Must be one of {_CONNECTION_TYPES}."
+        )
+
     return Config(
+        log_level=raw.get("log_level", "info").upper(),
+        connection_type=connection_type,
         meshtastic_host=raw["meshtastic_host"],
         meshtastic_port=int(raw.get("meshtastic_port", 4403)),
+        proxy_host=raw.get("proxy_host") or None,
+        proxy_port=int(raw.get("proxy_port", DEFAULT_PROXY_PORT)),
         access_key=raw.get("access_key") or None,
         scan_interval=int(raw.get("scan_interval", 30)),
         ignored_nodes=[n for n in raw.get("ignored_nodes", []) if n],
     )
+
+
+def resolve_target(config: "Config") -> tuple[str, int, str]:
+    """
+    Resolve the effective (host, port, mode) the addon should connect to.
+
+    In "direct" mode this is the Meshtastic node itself. In "proxy" mode it is
+    the official Meshtastic HA integration's TCP proxy (defaults to the same
+    host as the node when proxy_host is omitted). The proxy speaks the identical
+    Meshtastic frame protocol, so the connection code is identical for both.
+    """
+    if config.connection_type == CONNECTION_TYPE_PROXY:
+        if not config.proxy_host:
+            raise RuntimeError(
+                "connection_type 'proxy' requires 'proxy_host' to be set to the "
+                "IP/host of Home Assistant running the official Meshtastic "
+                "integration (whose 'TCP Proxy' option must be enabled). It must "
+                "NOT be the Meshtastic node itself — the proxy relays to the node. "
+                "Set proxy_host and retry."
+            )
+        return config.proxy_host, config.proxy_port, CONNECTION_TYPE_PROXY
+    return config.meshtastic_host, config.meshtastic_port, CONNECTION_TYPE_DIRECT

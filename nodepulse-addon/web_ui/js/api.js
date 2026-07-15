@@ -9,7 +9,16 @@
  * (where the path is injected by the proxy) and in local dev.
  */
 
-const BASE_URL = '';  // relative — works under HA Ingress and local dev
+// Resolve a base path WITHOUT a trailing slash. The API path is built as
+// `${BASE_URL}/api${path}`, so a trailing slash here would produce a
+// double slash (e.g. /app/local_nodepulse//api/status). Under HA Ingress
+// the /app/<slug> prefix is stripped, leaving //api/status, which does NOT
+// match the registered /api/status route and 404s. Keeping BASE slash-free
+// yields a clean /app/local_nodepulse/api/status -> /api/status after strip.
+const BASE_URL = (() => {
+  const p = window.location.pathname.replace(/\/+$/, '');
+  return p;
+})();
 
 /**
  * Internal helper: runs a fetch, checks response.ok, and parses JSON.

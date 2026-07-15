@@ -23,7 +23,7 @@ from pathlib import Path
 from aiohttp import web
 import aiohttp_cors
 
-from .config import load_config
+from .config import load_config, resolve_target
 from .connection import MeshtasticConnection
 from .routes import (
     handle_channels,
@@ -50,19 +50,19 @@ async def _on_startup(app: web.Application) -> None:
     """
     Called by aiohttp once before the server starts accepting requests.
 
-    We connect to Meshtastic here (rather than at module import time) because:
-    - The event loop is running, so asyncio.to_thread() works.
-    - Any startup failure is surfaced via aiohttp's lifecycle rather than
-      crashing the process before it even binds to a port.
+    IMPORTANT: This handler must NOT block on the Meshtastic connection. In
+    aiohttp, on_startup handlers run *before* the server binds its listening
+    socket, so `await conn.connect()` would delay the web server (and HA
+    ingress / health checks) until the TCP connect succeeds or times out. A
+    slow or unreachable Meshtastic host would then make the addon look dead.
+
+    Connection (and reconnection) is handled entirely by the background
+    `monitor_connection` task, which connects in a worker thread without
+    blocking the event loop or the server's startup.
     """
     conn: MeshtasticConnection = app["connection"]
 
-    logger.info({}, "NodePulse addon starting up")
-    try:
-        await conn.connect()
-    except Exception as exc:
-        # Log and continue — the monitor task will keep retrying.
-        logger.error({"error": str(exc)}, "Initial Meshtastic connection failed — will retry")
+    logger.info("NodePulse addon starting up")
 
     # Launch the background health monitor. We store the Task reference on
     # the app so we can cancel it cleanly on shutdown.
@@ -76,7 +76,7 @@ async def _on_shutdown(app: web.Application) -> None:
     Cancel the background monitor first so it doesn't attempt a reconnect
     while we are in the middle of closing the interface.
     """
-    logger.info({}, "NodePulse addon shutting down")
+    logger.info("NodePulse addon shutting down")
 
     monitor_task: asyncio.Task = app.get("monitor_task")
     if monitor_task and not monitor_task.done():
@@ -88,7 +88,7 @@ async def _on_shutdown(app: web.Application) -> None:
 
     conn: MeshtasticConnection = app["connection"]
     await conn.disconnect()
-    logger.info({}, "NodePulse addon shutdown complete")
+    logger.info("NodePulse addon shutdown complete")
 
 
 def build_app(config) -> web.Application:
@@ -103,9 +103,15 @@ def build_app(config) -> web.Application:
     # Attach shared state to the app so all route handlers can access it
     # without global variables. aiohttp's Application dict is the idiomatic
     # way to share dependencies in aiohttp.
+    target_host, target_port, mode = resolve_target(config)
+    logger.info(
+        "NodePulse connection mode=%s, target=%s:%s",
+        mode, target_host, target_port,
+    )
     app["connection"] = MeshtasticConnection(
-        host=config.meshtastic_host,
-        port=config.meshtastic_port,
+        host=target_host,
+        port=target_port,
+        mode=mode,
     )
     app["ignored_nodes"] = set(config.ignored_nodes)
     app["config"] = config
@@ -123,13 +129,16 @@ def build_app(config) -> web.Application:
     app.router.add_post("/api/requestPosition", handle_request_position)
 
     # --- Static Web UI ---
-    # Serve the bundled HTML/CSS/JS dashboard under /ui/.
-    # HA Ingress will proxy the root to this path, so we also redirect / → /ui/.
+    # Serve the dashboard from the root path. Under HA Ingress the addon is
+    # reached at https://<ha>/api/hassio_ingress/<token>/, so redirecting to an
+    # absolute /ui/index.html would escape the ingress prefix and 404. Serving
+    # at "/" with the HTML's relative asset paths keeps everything inside the
+    # ingress path.
     if _STATIC_DIR.is_dir():
-        app.router.add_static("/ui/", path=str(_STATIC_DIR), name="ui")
-        app.router.add_get("/", _redirect_to_ui)
+        app.router.add_get("/", _serve_index)
+        app.router.add_static("/", path=str(_STATIC_DIR), name="ui")
     else:
-        logger.warning({"path": str(_STATIC_DIR)}, "Web UI directory not found — UI disabled")
+        logger.warning("Web UI directory not found — UI disabled (path=%s)", _STATIC_DIR)
 
     # --- CORS ---
     # Allow the HA frontend (running on a different port/origin during dev)
@@ -151,14 +160,19 @@ def build_app(config) -> web.Application:
     return app
 
 
-async def _redirect_to_ui(request: web.Request) -> web.Response:
-    """Redirect bare root requests to the Web UI index page."""
-    raise web.HTTPFound("/ui/index.html")
+async def _serve_index(request: web.Request) -> web.Response:
+    """Serve the Web UI index page at the root path."""
+    return web.FileResponse(str(_STATIC_DIR / "index.html"))
 
 
 def main() -> None:
     """CLI entry point — loads config and runs the server."""
     config = load_config()
+    
+    # Update log level based on config
+    numeric_level = getattr(logging, config.log_level, logging.INFO)
+    logging.getLogger().setLevel(numeric_level)
+    
     app = build_app(config)
 
     # HA Supervisor expects the addon to listen on port 8099 (matching ingress_port

@@ -30,6 +30,30 @@ logger = logging.getLogger(__name__)
 _RECONNECT_BASE_DELAY = 5
 _RECONNECT_MAX_DELAY = 60
 
+# Substrings that strongly suggest the node already has a TCP client and is
+# rejecting the second connection, rather than a generic network failure.
+_SLOT_CONFLICT_HINTS = (
+    "refused",
+    "reset",
+    "denied",
+    "in use",
+    "already",
+    "timed out",
+    "timeout",
+    "unreachable",
+    "not connect",
+    "too many",
+)
+
+
+def _looks_like_slot_conflict(exc: Exception) -> bool:
+    """Heuristically detect a single-TCP-client slot conflict from an error."""
+    message = str(exc).lower()
+    if not message:
+        # Some libraries raise with no message but a specific type name.
+        message = type(exc).__name__.lower()
+    return any(hint in message for hint in _SLOT_CONFLICT_HINTS)
+
 
 class MeshtasticConnection:
     """
@@ -40,9 +64,10 @@ class MeshtasticConnection:
     pool worker via asyncio.to_thread() to keep the event loop unblocked.
     """
 
-    def __init__(self, host: str, port: int) -> None:
+    def __init__(self, host: str, port: int, mode: str = "direct") -> None:
         self._host = host
         self._port = port
+        self._mode = mode
 
         # The underlying meshtastic TCP interface — None when disconnected.
         self._interface: Optional[meshtastic.tcp_interface.TCPInterface] = None
@@ -121,14 +146,31 @@ class MeshtasticConnection:
         race conditions from multiple callers trying to reconnect simultaneously.
         """
         delay = _RECONNECT_BASE_DELAY
+        first_attempt = True
         while True:
-            await asyncio.sleep(delay)
+            # Skip the initial backoff so we connect as soon as the addon
+            # starts; only sleep between *subsequent* reconnect attempts.
+            if not first_attempt:
+                await asyncio.sleep(delay)
+            first_attempt = False
 
             if not self._is_interface_healthy():
-                logger.warning(
-                    {"host": self._host, "port": self._port},
-                    "Connection health check failed — attempting reconnect",
-                )
+                if self._mode == "proxy":
+                    logger.warning(
+                        "Connection to Meshtastic TCP proxy at %s:%s lost — "
+                        "attempting reconnect. Check that the official Meshtastic HA "
+                        "integration is running with its 'TCP Proxy' option enabled and "
+                        "that proxy_host/proxy_port are correct.",
+                        self._host, self._port,
+                    )
+                else:
+                    logger.warning(
+                        "Connection health check failed — attempting reconnect "
+                        "(host=%s, port=%s). If this persists, the node may already "
+                        "serve another TCP client (Meshtastic firmware allows only one). "
+                        "Disconnect the other client or reboot the node.",
+                        self._host, self._port,
+                    )
                 self._connected = False
 
                 # Exponential backoff with a ceiling to bound wait time.
@@ -138,8 +180,8 @@ class MeshtasticConnection:
                 except Exception as exc:
                     delay = min(delay * 2, _RECONNECT_MAX_DELAY)
                     logger.error(
-                        {"host": self._host, "error": str(exc), "next_retry_s": delay},
-                        "Reconnect failed — will retry",
+                        "Reconnect failed — will retry in %ss (host=%s): %s",
+                        delay, self._host, exc,
                     )
 
     # ------------------------------------------------------------------
@@ -157,16 +199,57 @@ class MeshtasticConnection:
             self._close_sync()  # clean up any existing connection first
 
             logger.info(
-                {"host": self._host, "port": self._port}, "Connecting to Meshtastic node"
+                "Connecting to Meshtastic node (host=%s, port=%s)", self._host, self._port
             )
             # The meshtastic library raises on connection failure, which propagates
             # up to the caller (connect() or monitor_connection()) for handling.
-            self._interface = meshtastic.tcp_interface.TCPInterface(
-                hostname=self._host, portNumber=self._port, debugOut=None
-            )
+            try:
+                self._interface = meshtastic.tcp_interface.TCPInterface(
+                    hostname=self._host, portNumber=self._port, debugOut=None
+                )
+            except Exception as exc:
+                self._interface = None
+                self._connected = False
+                if self._mode == "proxy":
+                    # In proxy mode we talk to the official Meshtastic HA
+                    # integration's TCP proxy, not the node directly. A rejected
+                    # connection means that proxy isn't reachable — most often
+                    # because the "TCP Proxy" option is disabled in the official
+                    # integration, or proxy_host/proxy_port point at the wrong place.
+                    logger.error(
+                        "Connection to Meshtastic TCP proxy at %s:%s rejected. "
+                        "Ensure the official Meshtastic HA integration is installed "
+                        "and its 'TCP Proxy' option is enabled, and that proxy_host/"
+                        "proxy_port are correct. Underlying error: %s",
+                        self._host, self._port, exc,
+                    )
+                elif _looks_like_slot_conflict(exc):
+                    # Meshtastic firmware only allows ONE TCP client per node.
+                    # A refused/reset/denied connection almost always means
+                    # another client (e.g. the official Meshtastic HA integration)
+                    # already holds the single slot. The slot is only freed once
+                    # the firmware detects the drop — power-cycle the node or
+                    # disconnect the other client to recover.
+                    logger.error(
+                        "Connection to %s:%s rejected — the node already has a "
+                        "TCP client connected. Meshtastic firmware permits ONLY ONE "
+                        "TCP connection per node, so NodePulse (direct TCP) cannot "
+                        "share it with the official Meshtastic HA integration. To run "
+                        "both: set the official integration to connect via Serial or "
+                        "Bluetooth (freeing the TCP slot for NodePulse), or disable it. "
+                        "If you just disconnected the other client, reboot/power-cycle "
+                        "the node so the firmware releases the slot. Underlying error: %s",
+                        self._host, self._port, exc,
+                    )
+                else:
+                    logger.error(
+                        "Failed to connect to Meshtastic node at %s:%s: %s",
+                        self._host, self._port, exc,
+                    )
+                raise
             self._connected = True
             logger.info(
-                {"host": self._host, "port": self._port}, "Connected to Meshtastic node"
+                "Connected to Meshtastic node (host=%s, port=%s)", self._host, self._port
             )
 
     def _close_sync(self) -> None:
@@ -175,7 +258,7 @@ class MeshtasticConnection:
             try:
                 self._interface.close()
             except Exception as exc:
-                logger.debug({"error": str(exc)}, "Exception during interface close (ignored)")
+                logger.debug("Exception during interface close (ignored): %s", exc)
             finally:
                 self._interface = None
                 self._connected = False
@@ -184,17 +267,22 @@ class MeshtasticConnection:
         """
         Heuristic health check on the interface.
 
-        The meshtastic TCP interface exposes a `_socket` attribute.
-        If it is None, the socket was closed unexpectedly and we need to
-        reconnect. This is preferable to a full ping-style check because it
-        avoids extra network traffic on healthy connections.
+        The meshtastic TCP interface stores the live socket on the PUBLIC
+        `socket` attribute (NOT `_socket`). If it is None, the socket was
+        closed unexpectedly and we need to reconnect. This is preferable to a
+        full ping-style check because it avoids extra network traffic on
+        healthy connections.
         """
         with self._lock:
             if self._interface is None:
                 return False
             # Check the underlying socket — if it's gone the connection is dead.
-            socket = getattr(self._interface, "_socket", None)
-            return socket is not None
+            # NOTE: the attribute is `socket` (verified against meshtastic
+            # 2.7.x). A stale `_socket` lookup always returned None, which
+            # falsely reported a healthy connection as dead and caused an
+            # endless reconnect loop.
+            sock = getattr(self._interface, "socket", None)
+            return sock is not None
 
     def _get_status_sync(self) -> Dict[str, Any]:
         with self._lock:
@@ -272,7 +360,7 @@ class MeshtasticConnection:
     ) -> bool:
         with self._lock:
             if not self._connected or self._interface is None:
-                logger.error({}, "Cannot send message — not connected")
+                logger.error("Cannot send message — not connected")
                 return False
             try:
                 # sendText handles both broadcast (destinationId=None or BROADCAST)

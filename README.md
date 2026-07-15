@@ -143,31 +143,82 @@ erDiagram
 
 ## Installation
 
-### 1. Install the Addon
+### 1. Install the Addon (Local Installation)
 
-1. In Home Assistant, go to **Settings → Add-ons → Add-on Store**.
-2. Add this repository URL as a custom repository.
-3. Install **NodePulse**.
-4. Configure the addon options (see below) and start it.
+To run this as a local addon in your Home Assistant instance:
+
+1. Connect to your Home Assistant's `addons` folder (via Samba, SSH, or the VSCode addon).
+2. Copy the entire `nodepulse-addon/` directory from this project into your `addons/` folder.
+3. In Home Assistant, go to **Settings → Add-ons → Add-on Store**.
+4. Click the three vertical dots (⋮) in the top right and click **Check for updates**.
+5. Scroll to the "Local add-ons" section at the top of the store, and click **NodePulse**.
+6. Click **Install**.
+7. Configure the addon options and start it.
 
 ### 2. Install the Custom Integration
 
-1. Copy the `custom_components/nodepulse/` folder into your HA config's `custom_components/` directory.
-2. Restart Home Assistant.
-3. Go to **Settings → Integrations → Add Integration** and search for **NodePulse**.
-4. Enter the addon URL (default: `http://localhost:8099`) and follow the setup wizard.
+1. Connect to your Home Assistant's `config` folder.
+2. Copy the `custom_components/nodepulse/` folder into your HA `config/custom_components/` directory.
+3. Restart Home Assistant.
+4. Go to **Settings → Integrations → Add Integration** and search for **NodePulse**.
+5. Enter the addon URL (default: `http://localhost:8099`) and follow the setup wizard.
 
 ---
 
 ## Addon Configuration
 
+NodePulse reaches your Meshtastic node over TCP. Because Meshtastic
+**firmware allows only ONE TCP client per node**, you must choose how
+NodePulse shares (or owns) that single connection.
+
+### Connection modes
+
+| Mode | `connection_type` | Connects to | Use when |
+|---|---|---|---|
+| **Direct** (default) | `direct` | the Meshtastic node itself | NodePulse is the only TCP client on the node |
+| **Proxy** | `proxy` | the official Meshtastic HA integration's TCP proxy | you also run the official Meshtastic integration and want both to share the node |
+
+> ⚠️ **One-TCP-client limit:** the Meshtastic node firmware permits a
+> single TCP connection. The official Meshtastic integration (TCP) and
+> NodePulse (TCP) **cannot both connect directly to the same node**.
+> Either run NodePulse in `direct` mode with the official integration
+> disabled, or run NodePulse in `proxy` mode (below).
+
+### Proxy mode (coexist with the official integration)
+
+The official Meshtastic integration can expose a **TCP Proxy** that owns the
+node's single connection and relays framed packets to multiple clients. To use it:
+
+1. In the official Meshtastic integration, enable the **TCP Proxy** option
+   (default port `4403`).
+2. Set NodePulse's options:
+   - `connection_type`: `proxy`
+   - `proxy_host`: **`homeassistant`** — the Docker DNS name of the
+     Home Assistant Core container. Do **not** use the node's LAN IP; the
+     proxy runs *inside* Core, not on the node, so it is not reachable
+     via the node's address.
+   - `proxy_port`: `4403` (must match the integration's proxy port).
+
+> 📝 Proxy mode depends on the official integration's proxy implementation.
+> If the proxy is flaky, fall back to `direct` mode with the official
+> integration disabled.
+
+### Options reference
+
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `meshtastic_host` | string | — | IP address or hostname of your Meshtastic node |
-| `meshtastic_port` | int | `4403` | TCP port of the Meshtastic HTTP API |
+| `connection_type` | `direct` \| `proxy` | `direct` | How NodePulse reaches the node (see above) |
+| `meshtastic_host` | string | — | **Direct mode:** IP/hostname of your Meshtastic node |
+| `meshtastic_port` | int | `4403` | **Direct mode:** TCP port of the node's Meshtastic interface |
+| `proxy_host` | string | _(empty)_ | **Proxy mode:** host running the official integration (`homeassistant`) |
+| `proxy_port` | int | `4403` | **Proxy mode:** TCP proxy port (must match the integration) |
 | `access_key` | string | _(empty)_ | Optional access key if your node requires authentication |
 | `scan_interval` | int | `30` | How often (seconds) the integration polls the addon (10–300) |
 | `ignored_nodes` | list | `[]` | List of node hex IDs to exclude from all API responses |
+
+> 💡 After changing `connection_type` (or any add-on option), **uninstall and
+> re-install** the add-on so Home Assistant re-reads `config.json` and
+> surfaces the new fields — a plain restart does not refresh the schema.
 
 ---
 
