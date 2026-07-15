@@ -1,0 +1,252 @@
+"""
+NodePulse — Sensor Platform.
+
+Registers sensors for:
+  - Overall node count (one sensor per integration entry).
+  - Per-node metrics: SNR, RSSI, hops away, last heard, battery level.
+    One set of sensors is created per discovered node.
+
+Node discovery is dynamic: on each coordinator update we check for new nodes
+and register entities for any that don't yet have one. Nodes that disappear
+from the API are handled by the coordinator marking them unavailable.
+
+We use a simple "seen node IDs" set to avoid re-registering entities for
+nodes we've already set up in a previous poll cycle.
+"""
+import logging
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Set
+
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorStateClass,
+)
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import (
+    SIGNAL_STRENGTH_DECIBELS,
+    SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+    PERCENTAGE,
+)
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
+
+from .const import DOMAIN
+from .coordinator import NodePulseCoordinator
+
+logger = logging.getLogger(__name__)
+
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """
+    Initial entity setup and dynamic discovery on subsequent coordinator updates.
+
+    We register a coordinator listener here rather than creating all entities
+    upfront. This means new nodes that appear after the integration starts
+    (e.g., a node comes back online) are automatically picked up.
+    """
+    coordinator: NodePulseCoordinator = hass.data[DOMAIN][entry.entry_id]
+
+    # Track which node IDs already have entities so we don't duplicate them.
+    registered_node_ids: Set[str] = set()
+
+    # Always create the aggregate node count sensor immediately.
+    async_add_entities([NodeCountSensor(coordinator, entry)])
+
+    @callback
+    def _discover_new_nodes() -> None:
+        """Called after every coordinator update to find and register new nodes."""
+        nodes: List[Dict] = coordinator.data.get("nodes", [])
+        new_entities = []
+
+        for node in nodes:
+            node_id = node.get("id")
+            if not node_id or node_id in registered_node_ids:
+                continue  # already registered or bad data
+
+            registered_node_ids.add(node_id)
+            new_entities.extend([
+                NodeSnrSensor(coordinator, entry, node_id),
+                NodeRssiSensor(coordinator, entry, node_id),
+                NodeHopsSensor(coordinator, entry, node_id),
+                NodeLastHeardSensor(coordinator, entry, node_id),
+                NodeBatterySensor(coordinator, entry, node_id),
+            ])
+            logger.info({"node_id": node_id}, "Registering new node sensors")
+
+        if new_entities:
+            async_add_entities(new_entities)
+
+    # Run discovery for the already-loaded initial data.
+    _discover_new_nodes()
+
+    # Subscribe to future updates — HA will call this after every poll cycle.
+    entry.async_on_unload(coordinator.async_add_listener(_discover_new_nodes))
+
+
+# ---------------------------------------------------------------------------
+# Aggregate sensor
+# ---------------------------------------------------------------------------
+
+class NodeCountSensor(CoordinatorEntity, SensorEntity):
+    """Total number of nodes visible to the connected Meshtastic node."""
+
+    _attr_name = "Node Count"
+    _attr_icon = "mdi:radio-tower"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_has_entity_name = True
+
+    def __init__(self, coordinator: NodePulseCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_node_count"
+        self._attr_device_info = _device_info(entry)
+
+    @property
+    def native_value(self) -> int:
+        return len(self.coordinator.data.get("nodes", []))
+
+
+# ---------------------------------------------------------------------------
+# Per-node sensor base class
+# ---------------------------------------------------------------------------
+
+class _NodeSensorBase(CoordinatorEntity, SensorEntity):
+    """
+    Abstract base for sensors that track a metric on a specific node.
+
+    Subclasses only need to define _metric_key and the standard HA sensor
+    attributes (_attr_name, _attr_native_unit_of_measurement, etc.).
+    """
+
+    _metric_key: str  # key in the node dict from the API
+
+    def __init__(
+        self,
+        coordinator: NodePulseCoordinator,
+        entry: ConfigEntry,
+        node_id: str,
+    ) -> None:
+        super().__init__(coordinator)
+        self._node_id = node_id
+        # Per-node device groups all metrics under one HA device per node.
+        self._attr_device_info = _node_device_info(entry, node_id)
+
+    def _get_node(self) -> Optional[Dict[str, Any]]:
+        """Find this node's dict in the coordinator data."""
+        for node in self.coordinator.data.get("nodes", []):
+            if node.get("id") == self._node_id:
+                return node
+        return None
+
+    @property
+    def native_value(self) -> Any:
+        node = self._get_node()
+        if node is None:
+            return None
+        return node.get(self._metric_key)
+
+    @property
+    def available(self) -> bool:
+        """Mark entity unavailable if the node is no longer in the node list."""
+        return super().available and self._get_node() is not None
+
+
+# ---------------------------------------------------------------------------
+# Concrete per-node sensors
+# ---------------------------------------------------------------------------
+
+class NodeSnrSensor(_NodeSensorBase):
+    _metric_key = "snr"
+    _attr_device_class = SensorDeviceClass.SIGNAL_STRENGTH
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = SIGNAL_STRENGTH_DECIBELS
+
+    def __init__(self, coordinator, entry, node_id):
+        super().__init__(coordinator, entry, node_id)
+        self._attr_unique_id = f"{entry.entry_id}_{node_id}_snr"
+        self._attr_name = "SNR"
+
+
+class NodeRssiSensor(_NodeSensorBase):
+    _metric_key = "rssi"
+    _attr_device_class = SensorDeviceClass.SIGNAL_STRENGTH
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = SIGNAL_STRENGTH_DECIBELS_MILLIWATT
+
+    def __init__(self, coordinator, entry, node_id):
+        super().__init__(coordinator, entry, node_id)
+        self._attr_unique_id = f"{entry.entry_id}_{node_id}_rssi"
+        self._attr_name = "RSSI"
+
+
+class NodeHopsSensor(_NodeSensorBase):
+    _metric_key = "hops_away"
+    _attr_icon = "mdi:transit-connection-variant"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator, entry, node_id):
+        super().__init__(coordinator, entry, node_id)
+        self._attr_unique_id = f"{entry.entry_id}_{node_id}_hops"
+        self._attr_name = "Hops Away"
+
+
+class NodeLastHeardSensor(_NodeSensorBase):
+    """Reports the last-heard timestamp as a HA datetime sensor."""
+    _metric_key = "last_heard"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_icon = "mdi:clock-outline"
+
+    def __init__(self, coordinator, entry, node_id):
+        super().__init__(coordinator, entry, node_id)
+        self._attr_unique_id = f"{entry.entry_id}_{node_id}_last_heard"
+        self._attr_name = "Last Heard"
+
+    @property
+    def native_value(self):
+        """Convert Unix epoch seconds to an aware datetime for the HA sensor."""
+        node = self._get_node()
+        epoch = node.get("last_heard") if node else None
+        if epoch is None:
+            return None
+        return datetime.fromtimestamp(epoch, tz=timezone.utc)
+
+
+class NodeBatterySensor(_NodeSensorBase):
+    _metric_key = "battery_level"
+    _attr_device_class = SensorDeviceClass.BATTERY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = PERCENTAGE
+
+    def __init__(self, coordinator, entry, node_id):
+        super().__init__(coordinator, entry, node_id)
+        self._attr_unique_id = f"{entry.entry_id}_{node_id}_battery"
+        self._attr_name = "Battery"
+
+
+# ---------------------------------------------------------------------------
+# Device info helpers
+# ---------------------------------------------------------------------------
+
+def _device_info(entry: ConfigEntry) -> Dict:
+    """Device info dict for the NodePulse integration-level device."""
+    return {
+        "identifiers": {(DOMAIN, entry.entry_id)},
+        "name": "NodePulse",
+        "manufacturer": "NodePulse",
+        "model": "Meshtastic Monitor",
+    }
+
+
+def _node_device_info(entry: ConfigEntry, node_id: str) -> Dict:
+    """Device info dict for a specific Meshtastic node device group."""
+    return {
+        "identifiers": {(DOMAIN, node_id)},
+        "name": f"Mesh Node {node_id}",
+        "manufacturer": "Meshtastic",
+        "via_device": (DOMAIN, entry.entry_id),
+    }

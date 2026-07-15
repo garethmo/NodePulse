@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NodePulse — Meshtastic Network Monitor</title>
+  <meta name="description" content="Real-time Meshtastic mesh network monitoring dashboard. Track nodes, signal quality (SNR/RSSI), GPS positions, and send encrypted messages." />
+
+  <!-- Design system -->
+  <link rel="stylesheet" href="css/main.css" />
+
+  <!-- Leaflet.js — loaded from CDN; no build step required -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>
+
+  <!-- Chart.js — loaded from CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js" defer></script>
+</head>
+<body>
+  <div id="app">
+
+    <!-- ================================================================
+         LEFT SIDEBAR
+         ================================================================ -->
+    <aside id="sidebar">
+      <!-- Logo -->
+      <div id="logo">
+        <!-- Radio tower SVG icon (inline for theming) -->
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M12 2L4 8l8 4 8-4-8-6z" fill="#00d4aa" opacity="0.9"/>
+          <path d="M4 12l8 4 8-4" stroke="#00d4aa" stroke-width="1.5" stroke-linecap="round"/>
+          <path d="M4 16l8 4 8-4" stroke="#4fc3f7" stroke-width="1.5" stroke-linecap="round" opacity="0.6"/>
+          <line x1="12" y1="10" x2="12" y2="22" stroke="#00d4aa" stroke-width="1.5"/>
+        </svg>
+        <div id="logo-text">
+          <span id="logo-name">NodePulse</span>
+          <span id="logo-subtitle">Mesh Monitor</span>
+        </div>
+      </div>
+
+      <!-- Navigation -->
+      <span class="nav-section-label">Views</span>
+
+      <div class="nav-item active" data-view="dashboard" role="button" tabindex="0">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" opacity="0.8">
+          <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>
+          <rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
+        </svg>
+        Dashboard
+      </div>
+
+      <div class="nav-item" data-view="nodes" role="button" tabindex="0">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <circle cx="12" cy="12" r="3"/><circle cx="4" cy="6" r="2"/><circle cx="20" cy="6" r="2"/>
+          <circle cx="4" cy="18" r="2"/><circle cx="20" cy="18" r="2"/>
+          <line x1="6" y1="7" x2="10" y2="11"/><line x1="14" y1="11" x2="18" y2="7"/>
+          <line x1="6" y1="17" x2="10" y2="13"/><line x1="14" y1="13" x2="18" y2="17"/>
+        </svg>
+        Nodes
+      </div>
+
+      <div class="nav-item" data-view="map" role="button" tabindex="0">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/>
+          <line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/>
+        </svg>
+        Map
+      </div>
+
+      <div class="nav-item" data-view="settings" role="button" tabindex="0">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+        Settings
+      </div>
+
+      <!-- Node count badge -->
+      <div id="sidebar-footer">
+        <div id="node-count-badge">
+          <span class="badge-label">Visible nodes</span>
+          <span class="badge-value" id="badge-value">—</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ================================================================
+         TOP HEADER
+         ================================================================ -->
+    <header id="header">
+      <div id="header-tabs">
+        <button class="tab-btn active" data-view="dashboard">Dashboard</button>
+        <button class="tab-btn" data-view="nodes">Nodes</button>
+        <button class="tab-btn" data-view="map">Map</button>
+        <button class="tab-btn" data-view="settings">Settings</button>
+      </div>
+      <div id="header-status">
+        <div class="status-dot" id="status-dot"></div>
+        <span id="status-label">Connecting…</span>
+      </div>
+    </header>
+
+    <!-- ================================================================
+         MAIN CONTENT
+         ================================================================ -->
+    <main id="main">
+
+      <!-- ---- DASHBOARD VIEW ----------------------------------------- -->
+      <div id="view-dashboard" class="view active">
+
+        <!-- Column 1: Node list -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">Mesh Nodes</span>
+          </div>
+          <div class="card-body">
+            <ul id="node-list">
+              <li class="list-placeholder">
+                <div class="spinner"></div>
+                Connecting to node…
+              </li>
+            </ul>
+          </div>
+        </div>
+
+        <!-- Column 2: Mini Map -->
+        <div class="card" id="map-card">
+          <div class="card-header">
+            <span class="card-title">Node Map</span>
+          </div>
+          <div id="map-container">
+            <div id="map"></div>
+          </div>
+        </div>
+
+        <!-- Column 3: Messaging -->
+        <div class="card" id="messaging-card">
+          <div class="card-header">
+            <span class="card-title">Messages</span>
+          </div>
+          <div id="message-list"></div>
+          <div id="message-compose">
+            <select id="destination-select" title="Message destination">
+              <option value="">Broadcast</option>
+            </select>
+            <textarea
+              id="message-input"
+              placeholder="Type a message… (Enter to send)"
+              rows="1"
+              aria-label="Message text"
+            ></textarea>
+            <button id="send-btn" aria-label="Send message">Send</button>
+          </div>
+        </div>
+
+        <!-- Charts row (spans all 3 columns) -->
+        <div id="charts-row">
+          <div class="card chart-card">
+            <div class="card-header">
+              <span class="card-title">SNR History</span>
+            </div>
+            <div class="chart-wrapper">
+              <canvas id="chart-snr"></canvas>
+            </div>
+          </div>
+          <div class="card chart-card">
+            <div class="card-header">
+              <span class="card-title">RSSI History</span>
+            </div>
+            <div class="chart-wrapper">
+              <canvas id="chart-rssi"></canvas>
+            </div>
+          </div>
+          <div class="card chart-card">
+            <div class="card-header">
+              <span class="card-title">Node Count</span>
+            </div>
+            <div class="chart-wrapper">
+              <canvas id="chart-count"></canvas>
+            </div>
+          </div>
+        </div>
+      </div><!-- /view-dashboard -->
+
+      <!-- ---- NODES VIEW --------------------------------------------- -->
+      <div id="view-nodes" class="view">
+        <div class="card-header" style="border:none;padding-left:0">
+          <h1 style="font-size:20px;font-weight:700">All Nodes</h1>
+        </div>
+        <div id="nodes-grid"></div>
+      </div>
+
+      <!-- ---- MAP VIEW ----------------------------------------------- -->
+      <div id="view-map" class="view">
+        <div id="full-map"></div>
+      </div>
+
+      <!-- ---- SETTINGS VIEW ------------------------------------------ -->
+      <div id="view-settings" class="view">
+        <h1 style="font-size:20px;font-weight:700;margin-bottom:var(--space-lg)">Settings</h1>
+
+        <div class="settings-group">
+          <div class="settings-group-title">Connection</div>
+          <div class="settings-row">
+            <span class="settings-row-label">Meshtastic Host</span>
+            <span class="settings-row-value" id="settings-host">—</span>
+          </div>
+          <div class="settings-row">
+            <span class="settings-row-label">Status</span>
+            <span class="settings-row-value" id="settings-conn">—</span>
+          </div>
+          <div class="settings-row">
+            <span class="settings-row-label">Node Count</span>
+            <span class="settings-row-value" id="settings-count">—</span>
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <div class="settings-group-title">About</div>
+          <div class="settings-row">
+            <span class="settings-row-label">NodePulse Version</span>
+            <span class="settings-row-value">0.1.0</span>
+          </div>
+          <div class="settings-row">
+            <span class="settings-row-label">Poll Interval</span>
+            <span class="settings-row-value">15 s</span>
+          </div>
+        </div>
+      </div>
+
+    </main><!-- /main -->
+  </div><!-- /app -->
+
+  <!-- Toast container — appended here, positioned fixed via CSS -->
+  <div id="toast-container" aria-live="polite"></div>
+
+  <!-- Main application module — defer ensures CDN scripts (Leaflet, Chart.js) load first -->
+  <script type="module" src="js/app.js" defer></script>
+</body>
+</html>

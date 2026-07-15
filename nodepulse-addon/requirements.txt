@@ -1,0 +1,4 @@
+aiohttp>=3.9.0
+aiohttp-cors>=0.7.0
+meshtastic>=2.5.0
+cryptography>=42.0.0

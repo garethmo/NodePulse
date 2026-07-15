@@ -1,0 +1,1 @@
+"""NodePulse addon application package."""

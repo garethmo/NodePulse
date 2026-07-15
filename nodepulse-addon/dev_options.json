@@ -1,0 +1,7 @@
+{
+  "meshtastic_host": "192.168.1.100",
+  "meshtastic_port": 4403,
+  "access_key": "",
+  "scan_interval": 30,
+  "ignored_nodes": []
+}

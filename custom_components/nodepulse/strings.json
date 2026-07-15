@@ -1,0 +1,32 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to NodePulse",
+        "description": "Enter the URL of your NodePulse addon. If running in Home Assistant, this is typically http://localhost:8099.",
+        "data": {
+          "host": "Addon URL",
+          "access_key": "Access Key (optional)",
+          "scan_interval": "Scan Interval (seconds)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not connect to the NodePulse addon. Make sure the addon is running and the URL is correct."
+    },
+    "abort": {
+      "already_configured": "This NodePulse addon is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "NodePulse Options",
+        "data": {
+          "scan_interval": "Scan Interval (seconds)",
+          "ignored_nodes": "Ignored Node IDs (comma-separated)"
+        }
+      }
+    }
+  }
+}

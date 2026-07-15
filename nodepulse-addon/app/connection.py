@@ -1,0 +1,317 @@
+"""
+NodePulse Addon — Meshtastic Connection Manager.
+
+This module owns the single, long-lived connection to the Meshtastic node.
+It abstracts away:
+  - The meshtastic Python library's TCP interface.
+  - Auto-reconnection: if the link stalls or drops, we retry with backoff
+    so the rest of the application never has to worry about transient failures.
+  - Thread-safety: the meshtastic library is synchronous, but we wrap its
+    calls so they can be safely invoked from the async aiohttp event loop via
+    asyncio.to_thread().
+
+Design decision: We maintain ONE MeshInterface instance for the lifetime of
+the addon. Tearing down and recreating it on every poll would be expensive and
+risks causing state loss in the upstream meshtastic library.
+"""
+import asyncio
+import logging
+import threading
+import time
+from typing import Any, Dict, List, Optional
+
+import meshtastic
+import meshtastic.tcp_interface
+
+logger = logging.getLogger(__name__)
+
+# How long (seconds) to wait between reconnection attempts.
+# Using a capped exponential backoff to avoid hammering an offline node.
+_RECONNECT_BASE_DELAY = 5
+_RECONNECT_MAX_DELAY = 60
+
+
+class MeshtasticConnection:
+    """
+    Manages a persistent TCP connection to one Meshtastic node.
+
+    All public methods are safe to call from an asyncio event loop.
+    Internally they dispatch synchronous meshtastic library calls to a thread
+    pool worker via asyncio.to_thread() to keep the event loop unblocked.
+    """
+
+    def __init__(self, host: str, port: int) -> None:
+        self._host = host
+        self._port = port
+
+        # The underlying meshtastic TCP interface — None when disconnected.
+        self._interface: Optional[meshtastic.tcp_interface.TCPInterface] = None
+
+        # Protects _interface from concurrent access across threads.
+        self._lock = threading.Lock()
+
+        # Used by the health monitor background task to signal reconnect attempts.
+        self._connected = False
+
+    # ------------------------------------------------------------------
+    # Public async API
+    # ------------------------------------------------------------------
+
+    async def connect(self) -> None:
+        """Open the initial connection, retrying until success at startup."""
+        await asyncio.to_thread(self._connect_sync)
+
+    async def disconnect(self) -> None:
+        """Cleanly close the interface on addon shutdown."""
+        await asyncio.to_thread(self._close_sync)
+
+    @property
+    def is_connected(self) -> bool:
+        return self._connected
+
+    async def get_status(self) -> Dict[str, Any]:
+        """
+        Return a dict describing the current connection and node identity.
+
+        This is a lightweight call — it reads from the already-cached node DB
+        in the meshtastic interface object rather than making a fresh network
+        request. Suitable for frequent polling.
+        """
+        return await asyncio.to_thread(self._get_status_sync)
+
+    async def get_nodes(self) -> List[Dict[str, Any]]:
+        """Return the full list of nodes the local node is aware of."""
+        return await asyncio.to_thread(self._get_nodes_sync)
+
+    async def get_channels(self) -> List[Dict[str, Any]]:
+        """Return the channel configuration from the connected node."""
+        return await asyncio.to_thread(self._get_channels_sync)
+
+    async def send_message(
+        self, text: str, destination: Optional[str] = None, channel: int = 0
+    ) -> bool:
+        """
+        Send a text message over the mesh.
+
+        Args:
+            text: The plaintext message content.
+            destination: Node ID hex string for a DM, or None for broadcast.
+            channel: Channel index to send on (0 = primary channel).
+
+        Returns:
+            True if the send was accepted by the library, False otherwise.
+        """
+        return await asyncio.to_thread(self._send_message_sync, text, destination, channel)
+
+    async def request_traceroute(self, destination: str) -> bool:
+        """Request a traceroute packet towards a specific destination node ID."""
+        return await asyncio.to_thread(self._request_traceroute_sync, destination)
+
+    async def request_position(self, destination: str) -> bool:
+        """Request a fresh GPS position from a specific destination node."""
+        return await asyncio.to_thread(self._request_position_sync, destination)
+
+    async def monitor_connection(self) -> None:
+        """
+        Background coroutine that periodically checks the connection health
+        and triggers reconnection if the interface has gone stale.
+
+        This is designed to be run as a persistent asyncio Task from main.py.
+        It is the ONLY place where reconnection is initiated, which avoids
+        race conditions from multiple callers trying to reconnect simultaneously.
+        """
+        delay = _RECONNECT_BASE_DELAY
+        while True:
+            await asyncio.sleep(delay)
+
+            if not self._is_interface_healthy():
+                logger.warning(
+                    {"host": self._host, "port": self._port},
+                    "Connection health check failed — attempting reconnect",
+                )
+                self._connected = False
+
+                # Exponential backoff with a ceiling to bound wait time.
+                try:
+                    await asyncio.to_thread(self._connect_sync)
+                    delay = _RECONNECT_BASE_DELAY  # reset on success
+                except Exception as exc:
+                    delay = min(delay * 2, _RECONNECT_MAX_DELAY)
+                    logger.error(
+                        {"host": self._host, "error": str(exc), "next_retry_s": delay},
+                        "Reconnect failed — will retry",
+                    )
+
+    # ------------------------------------------------------------------
+    # Private synchronous helpers (run inside asyncio.to_thread)
+    # ------------------------------------------------------------------
+
+    def _connect_sync(self) -> None:
+        """
+        Synchronous connection attempt. Runs inside a thread pool worker.
+
+        We close any stale interface before creating a new one to avoid
+        resource leaks (file descriptors, threads) from orphaned TCP sockets.
+        """
+        with self._lock:
+            self._close_sync()  # clean up any existing connection first
+
+            logger.info(
+                {"host": self._host, "port": self._port}, "Connecting to Meshtastic node"
+            )
+            # The meshtastic library raises on connection failure, which propagates
+            # up to the caller (connect() or monitor_connection()) for handling.
+            self._interface = meshtastic.tcp_interface.TCPInterface(
+                hostname=self._host, portNumber=self._port, debugOut=None
+            )
+            self._connected = True
+            logger.info(
+                {"host": self._host, "port": self._port}, "Connected to Meshtastic node"
+            )
+
+    def _close_sync(self) -> None:
+        """Close the current interface, suppressing errors (already closed, etc.)."""
+        if self._interface is not None:
+            try:
+                self._interface.close()
+            except Exception as exc:
+                logger.debug({"error": str(exc)}, "Exception during interface close (ignored)")
+            finally:
+                self._interface = None
+                self._connected = False
+
+    def _is_interface_healthy(self) -> bool:
+        """
+        Heuristic health check on the interface.
+
+        The meshtastic TCP interface exposes a `_socket` attribute.
+        If it is None, the socket was closed unexpectedly and we need to
+        reconnect. This is preferable to a full ping-style check because it
+        avoids extra network traffic on healthy connections.
+        """
+        with self._lock:
+            if self._interface is None:
+                return False
+            # Check the underlying socket — if it's gone the connection is dead.
+            socket = getattr(self._interface, "_socket", None)
+            return socket is not None
+
+    def _get_status_sync(self) -> Dict[str, Any]:
+        with self._lock:
+            if not self._connected or self._interface is None:
+                return {"connected": False, "my_info": None}
+
+            my_info = getattr(self._interface, "myInfo", None)
+            return {
+                "connected": True,
+                "my_info": {
+                    "my_node_num": getattr(my_info, "my_node_num", None),
+                } if my_info else None,
+                "node_count": len(self._interface.nodes or {}),
+            }
+
+    def _get_nodes_sync(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            if not self._connected or self._interface is None:
+                return []
+
+            nodes_raw = self._interface.nodes or {}
+            result = []
+
+            for node_id, node_data in nodes_raw.items():
+                # Extract the nested sub-objects safely — the meshtastic library
+                # returns protobuf-derived dicts whose keys may be absent.
+                user = node_data.get("user", {})
+                position = node_data.get("position", {})
+                device_metrics = node_data.get("deviceMetrics", {})
+
+                result.append({
+                    "id": node_id,
+                    "long_name": user.get("longName", ""),
+                    "short_name": user.get("shortName", ""),
+                    "hw_model": user.get("hwModel", ""),
+                    "last_heard": node_data.get("lastHeard"),
+                    "snr": node_data.get("snr"),
+                    "rssi": node_data.get("rssi"),
+                    "hops_away": node_data.get("hopsAway"),
+                    "is_licensed": user.get("isLicensed", False),
+                    "latitude": position.get("latitude"),
+                    "longitude": position.get("longitude"),
+                    "altitude": position.get("altitude"),
+                    "battery_level": device_metrics.get("batteryLevel"),
+                    "voltage": device_metrics.get("voltage"),
+                    "channel_utilization": device_metrics.get("channelUtilization"),
+                    "air_util_tx": device_metrics.get("airUtilTx"),
+                })
+
+            return result
+
+    def _get_channels_sync(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            if not self._connected or self._interface is None:
+                return []
+
+            channels_raw = getattr(self._interface, "localConfig", None)
+            if channels_raw is None:
+                return []
+
+            # The meshtastic library stores channel config under interface.channels
+            channels = getattr(self._interface, "channels", {}) or {}
+            result = []
+            for idx, channel in channels.items():
+                settings = getattr(channel, "settings", None)
+                result.append({
+                    "index": idx,
+                    "name": getattr(settings, "name", "") if settings else "",
+                    "role": str(getattr(channel, "role", "")),
+                })
+            return result
+
+    def _send_message_sync(
+        self, text: str, destination: Optional[str], channel: int
+    ) -> bool:
+        with self._lock:
+            if not self._connected or self._interface is None:
+                logger.error({}, "Cannot send message — not connected")
+                return False
+            try:
+                # sendText handles both broadcast (destinationId=None or BROADCAST)
+                # and unicast DMs. The meshtastic library manages PKI encryption
+                # automatically for DMs when a shared key is configured on the channel.
+                self._interface.sendText(
+                    text,
+                    destinationId=destination or meshtastic.BROADCAST_ADDR,
+                    channelIndex=channel,
+                )
+                return True
+            except Exception as exc:
+                logger.error(
+                    {"destination": destination, "error": str(exc)}, "Failed to send message"
+                )
+                return False
+
+    def _request_traceroute_sync(self, destination: str) -> bool:
+        with self._lock:
+            if not self._connected or self._interface is None:
+                return False
+            try:
+                self._interface.sendTraceRoute(destination)
+                return True
+            except Exception as exc:
+                logger.error(
+                    {"destination": destination, "error": str(exc)}, "Traceroute request failed"
+                )
+                return False
+
+    def _request_position_sync(self, destination: str) -> bool:
+        with self._lock:
+            if not self._connected or self._interface is None:
+                return False
+            try:
+                self._interface.sendPosition(destinationId=destination)
+                return True
+            except Exception as exc:
+                logger.error(
+                    {"destination": destination, "error": str(exc)}, "Position request failed"
+                )
+                return False
