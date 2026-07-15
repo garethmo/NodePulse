@@ -49,16 +49,22 @@ _OPTIONS_SCHEMA = vol.Schema({
 
 async def _validate_connection(session: aiohttp.ClientSession, host: str) -> bool:
     """
-    Attempt to call the /api/status endpoint to verify the addon is reachable.
-    Returns True on a successful JSON response, False otherwise.
+    Attempt to call the /api/status endpoint to verify the addon is reachable
+    AND actually connected to a node. Returns True only on HTTP 200 with a
+    JSON body where ``connected`` is truthy — an error body (even with a 200)
+    must not be treated as a valid connection.
     """
     url = f"{host.rstrip('/')}/api/status"
     try:
         async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-            if resp.content_type == "application/json":
-                return True
+            if resp.status != 200:
+                return False
+            if resp.content_type != "application/json":
+                return False
+            data = await resp.json()
+            return bool(data.get("connected"))
     except Exception as exc:
-        logger.debug({"url": url, "error": str(exc)}, "Addon connection validation failed")
+        logger.debug("Addon connection validation failed (url=%s): %s", url, exc)
     return False
 
 

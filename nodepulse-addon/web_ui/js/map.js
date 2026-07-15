@@ -41,6 +41,27 @@ const SELF_ICON = L.divIcon({
 });
 
 /**
+ * Great-circle distance between two lat/lon points in kilometres (haversine).
+ */
+function haversineKm(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+/** Human-friendly distance string from a kilometres value. */
+function formatDistance(km) {
+  if (km == null || Number.isNaN(km)) return '—';
+  if (km < 1) return `${Math.round(km * 1000)} m`;
+  return `${km.toFixed(2)} km`;
+}
+
+/**
  * Create and return a Leaflet map bound to a DOM element ID.
  * Defaults to a world view (zoom 3) until nodes with coordinates load.
  */
@@ -73,6 +94,18 @@ export class MapManager {
     this._map = null;
     // Map<nodeId, L.Marker>
     this._markers = new Map();
+    // Node ID of the locally-connected node (used as the hub for link lines).
+    this._selfId = null;
+    // Map<nodeId, L.Polyline> — link lines from the self node to each node.
+    this._links = new Map();
+  }
+
+  /**
+   * Set which node is the local/self node. Link lines are drawn from this
+   * node to every other GPS-fixed node, with a distance label.
+   */
+  setSelfNode(id) {
+    this._selfId = id;
   }
 
   /**
@@ -115,19 +148,32 @@ export class MapManager {
       seenIds.add(id);
       const latLng = [latitude, longitude];
 
+      const isSelf = id === this._selfId;
+      const icon = isSelf ? SELF_ICON : NODE_ICON;
+
       if (this._markers.has(id)) {
         // Update existing marker position without recreating it.
-        this._markers.get(id).setLatLng(latLng);
+        const marker = this._markers.get(id);
+        marker.setLatLng(latLng);
       } else {
-        // Create a new marker with a popup showing node details.
-        const marker = L.marker(latLng, { icon: NODE_ICON })
+        // Create a new marker with a popup and a permanent name label.
+        const marker = L.marker(latLng, { icon })
           .bindPopup(this._buildPopupHtml(node))
+          .bindTooltip(escapeHtml(node.long_name || node.id), {
+            permanent: true,
+            direction: 'right',
+            offset: [10, 0],
+            className: 'node-label',
+          })
           .addTo(this._map);
         this._markers.set(id, marker);
       }
 
-      // Always refresh popup content in case metrics changed.
-      this._markers.get(id).setPopupContent(this._buildPopupHtml(node));
+      // Always refresh popup content and the name label in case metrics changed.
+      const existing = this._markers.get(id);
+      existing.setPopupContent(this._buildPopupHtml(node));
+      existing.setTooltipContent(escapeHtml(node.long_name || node.id));
+      if (isSelf) existing.setIcon(SELF_ICON);
     }
 
     // Remove markers for nodes no longer in the list.
@@ -136,6 +182,45 @@ export class MapManager {
         marker.remove();
         this._markers.delete(id);
       }
+    }
+
+    // Redraw the link lines from the self node to every other GPS-fixed node.
+    this._updateLinks();
+  }
+
+  /**
+   * Draw a line from the self node to each node that has a GPS fix, labelled
+   * with the great-circle distance. Existing link lines are replaced so they
+   * stay correct as positions update on every poll.
+   */
+  _updateLinks() {
+    if (!this._map) return;
+
+    // Clear previous link lines.
+    for (const line of this._links.values()) line.remove();
+    this._links.clear();
+
+    if (!this._selfId) return;
+    const selfMarker = this._markers.get(this._selfId);
+    if (!selfMarker) return;
+    const selfLatLng = selfMarker.getLatLng();
+
+    for (const [id, marker] of this._markers) {
+      if (id === this._selfId) continue;
+      const latLng = marker.getLatLng();
+      const km = haversineKm(
+        selfLatLng.lat, selfLatLng.lng, latLng.lat, latLng.lng
+      );
+      const line = L.polyline([selfLatLng, latLng], {
+        color: '#00d4aa',
+        weight: 1.5,
+        opacity: 0.6,
+        dashArray: '4 4',
+      }).bindTooltip(`↔ ${formatDistance(km)}`, {
+        sticky: true,
+        className: 'link-label',
+      }).addTo(this._map);
+      this._links.set(id, line);
     }
   }
 
@@ -155,16 +240,44 @@ export class MapManager {
     const rssiText = node.rssi != null ? `${node.rssi} dBm`          : 'N/A';
     const hops     = node.hops_away != null ? node.hops_away : '?';
     const battery  = node.battery_level != null ? `${node.battery_level}%` : 'N/A';
+    const alt      = node.altitude != null ? `${Math.round(node.altitude)} m` : 'N/A';
+    const volt     = node.voltage  != null ? `${node.voltage.toFixed(2)} V` : 'N/A';
+    const chanUtil = node.channel_utilization != null ? `${node.channel_utilization.toFixed(1)} %` : 'N/A';
+    const airUtil  = node.air_util_tx != null ? `${node.air_util_tx.toFixed(1)} %` : 'N/A';
+    const temp     = node.temperature != null ? `${node.temperature.toFixed(1)} °C` : 'N/A';
+    const hum      = node.relative_humidity != null ? `${node.relative_humidity.toFixed(0)} %` : 'N/A';
+    const pres     = node.barometric_pressure != null ? `${node.barometric_pressure.toFixed(0)} hPa` : 'N/A';
+
+    // Distance from the self node, if both have GPS fixes.
+    let dist = 'N/A';
+    if (this._selfId && node.id !== this._selfId) {
+      const self = this._markers.get(this._selfId);
+      const ll = self && self.getLatLng();
+      if (ll && node.latitude != null && node.longitude != null) {
+        dist = formatDistance(haversineKm(ll.lat, ll.lng, node.latitude, node.longitude));
+      }
+    }
+
+    const row = (label, value) =>
+      `<tr><td style="color:#8892a4;padding:2px 0">${label}</td><td style="text-align:right">${value}</td></tr>`;
 
     return `
-      <div style="font-family:Inter,sans-serif;min-width:160px">
+      <div style="font-family:Inter,sans-serif;min-width:170px">
         <div style="font-weight:700;font-size:14px;margin-bottom:6px">${escapeHtml(node.long_name || node.id)}</div>
         <div style="font-size:11px;color:#8892a4;margin-bottom:8px">${escapeHtml(node.id)}</div>
         <table style="width:100%;font-size:12px;border-collapse:collapse">
-          <tr><td style="color:#8892a4;padding:2px 0">SNR</td>  <td style="color:#00d4aa;text-align:right">${snrText}</td></tr>
-          <tr><td style="color:#8892a4;padding:2px 0">RSSI</td> <td style="color:#4fc3f7;text-align:right">${rssiText}</td></tr>
-          <tr><td style="color:#8892a4;padding:2px 0">Hops</td> <td style="text-align:right">${hops}</td></tr>
-          <tr><td style="color:#8892a4;padding:2px 0">Battery</td><td style="text-align:right">${battery}</td></tr>
+          ${row('SNR', snrText)}
+          ${row('RSSI', rssiText)}
+          ${row('Hops', hops)}
+          ${row('Battery', battery)}
+          ${row('Distance', dist)}
+          ${row('Altitude', alt)}
+          ${row('Voltage', volt)}
+          ${row('Chan Util', chanUtil)}
+          ${row('Air Util', airUtil)}
+          ${row('Temp', temp)}
+          ${row('Humidity', hum)}
+          ${row('Pressure', pres)}
         </table>
       </div>`;
   }

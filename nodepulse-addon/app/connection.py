@@ -15,6 +15,7 @@ the addon. Tearing down and recreating it on every poll would be expensive and
 risks causing state loss in the upstream meshtastic library.
 """
 import asyncio
+import collections
 import logging
 import threading
 import time
@@ -22,6 +23,7 @@ from typing import Any, Dict, List, Optional
 
 import meshtastic
 import meshtastic.tcp_interface
+from pubsub import pub
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +31,12 @@ logger = logging.getLogger(__name__)
 # Using a capped exponential backoff to avoid hammering an offline node.
 _RECONNECT_BASE_DELAY = 5
 _RECONNECT_MAX_DELAY = 60
+
+# Max time (seconds) to wait for a single TCP connect attempt before giving
+# up. The meshtastic TCPInterface constructor has no built-in connect timeout,
+# so a node that accepts the SYN but never completes the handshake (or a black
+# hole) would otherwise block forever and leave the addon stuck "Connecting".
+_CONNECT_TIMEOUT = 15
 
 # Substrings that strongly suggest the node already has a TCP client and is
 # rejecting the second connection, rather than a generic network failure.
@@ -78,13 +86,21 @@ class MeshtasticConnection:
         # Used by the health monitor background task to signal reconnect attempts.
         self._connected = False
 
+        # Bounded ring buffer of recently received text messages, so the Web UI
+        # and API can present a live message feed (a MeshSense-style inbox).
+        # Populated by the pubsub "meshtastic.receive" listener below.
+        self._msg_lock = threading.Lock()
+        self._messages: "collections.deque" = collections.deque(maxlen=200)
+
     # ------------------------------------------------------------------
     # Public async API
     # ------------------------------------------------------------------
 
     async def connect(self) -> None:
         """Open the initial connection, retrying until success at startup."""
-        await asyncio.to_thread(self._connect_sync)
+        await asyncio.wait_for(
+            asyncio.to_thread(self._connect_sync), timeout=_CONNECT_TIMEOUT
+        )
 
     async def disconnect(self) -> None:
         """Cleanly close the interface on addon shutdown."""
@@ -136,6 +152,10 @@ class MeshtasticConnection:
         """Request a fresh GPS position from a specific destination node."""
         return await asyncio.to_thread(self._request_position_sync, destination)
 
+    async def get_messages(self) -> List[Dict[str, Any]]:
+        """Return the most recent received text messages (oldest first)."""
+        return await asyncio.to_thread(self._get_messages_sync)
+
     async def monitor_connection(self) -> None:
         """
         Background coroutine that periodically checks the connection health
@@ -175,8 +195,16 @@ class MeshtasticConnection:
 
                 # Exponential backoff with a ceiling to bound wait time.
                 try:
-                    await asyncio.to_thread(self._connect_sync)
+                    await asyncio.wait_for(
+                        asyncio.to_thread(self._connect_sync), timeout=_CONNECT_TIMEOUT
+                    )
                     delay = _RECONNECT_BASE_DELAY  # reset on success
+                except asyncio.TimeoutError:
+                    delay = min(delay * 2, _RECONNECT_MAX_DELAY)
+                    logger.error(
+                        "Connect to %s:%s timed out after %ss — will retry in %ss",
+                        self._host, self._port, _CONNECT_TIMEOUT, delay,
+                    )
                 except Exception as exc:
                     delay = min(delay * 2, _RECONNECT_MAX_DELAY)
                     logger.error(
@@ -207,6 +235,15 @@ class MeshtasticConnection:
                 self._interface = meshtastic.tcp_interface.TCPInterface(
                     hostname=self._host, portNumber=self._port, debugOut=None
                 )
+
+                # Subscribe to inbound packets so the Web UI / API can show a
+                # live message feed. The meshtastic library delivers packets on
+                # its own background thread via pubsub, so we store them
+                # thread-safely.
+                try:
+                    pub.subscribe(self._on_mesh_receive, "meshtastic.receive")
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.warning("Could not subscribe to meshtastic receive events: %s", exc)
             except Exception as exc:
                 self._interface = None
                 self._connected = False
@@ -254,6 +291,10 @@ class MeshtasticConnection:
 
     def _close_sync(self) -> None:
         """Close the current interface, suppressing errors (already closed, etc.)."""
+        try:
+            pub.unsubscribe(self._on_mesh_receive, "meshtastic.receive")
+        except Exception:
+            pass
         if self._interface is not None:
             try:
                 self._interface.close()
@@ -262,6 +303,48 @@ class MeshtasticConnection:
             finally:
                 self._interface = None
                 self._connected = False
+
+    def _on_mesh_receive(self, packet: Dict[str, Any], interface=None) -> None:
+        """
+        Pubsub listener for inbound Meshtastic packets.
+
+        Only text messages are captured into the ring buffer; position,
+        telemetry, and other packet types are ignored. Runs on the meshtastic
+        library's background thread, so access to ``_messages`` is locked.
+        """
+        try:
+            decoded = packet.get("decoded", {}) or {}
+            text = decoded.get("text")
+            if not text:
+                return
+
+            from_num = packet.get("from")
+            from_id = ("!" + format(from_num, "08x")) if from_num is not None else None
+
+            name = None
+            if from_num is not None and self._interface is not None:
+                node = self._interface.nodes.get(from_num)
+                if node:
+                    name = (node.get("user") or {}).get("longName")
+
+            entry = {
+                "id": f"{from_id or 'unknown'}-{packet.get('channel', 0)}-{int(time.time() * 1000)}",
+                "from_id": from_id,
+                "from_name": name or from_id or "Unknown",
+                "text": text,
+                "channel": packet.get("channel", 0),
+                "rx_snr": packet.get("rxSnr"),
+                "rx_rssi": packet.get("rxRssi"),
+                "timestamp": int(time.time()),
+            }
+            with self._msg_lock:
+                self._messages.append(entry)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Error handling received packet (ignored): %s", exc)
+
+    def _get_messages_sync(self) -> List[Dict[str, Any]]:
+        with self._msg_lock:
+            return list(self._messages)
 
     def _is_interface_healthy(self) -> bool:
         """
@@ -312,6 +395,7 @@ class MeshtasticConnection:
                 user = node_data.get("user", {})
                 position = node_data.get("position", {})
                 device_metrics = node_data.get("deviceMetrics", {})
+                environment = node_data.get("environmentMetrics", {}) or {}
 
                 result.append({
                     "id": node_id,
@@ -330,6 +414,9 @@ class MeshtasticConnection:
                     "voltage": device_metrics.get("voltage"),
                     "channel_utilization": device_metrics.get("channelUtilization"),
                     "air_util_tx": device_metrics.get("airUtilTx"),
+                    "temperature": environment.get("temperature"),
+                    "relative_humidity": environment.get("relative_humidity"),
+                    "barometric_pressure": environment.get("barometric_pressure"),
                 })
 
             return result

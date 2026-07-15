@@ -79,6 +79,27 @@ async def handle_nodes(request: web.Request) -> web.Response:
 
 
 # ---------------------------------------------------------------------------
+# Route: GET /api/messages
+# ---------------------------------------------------------------------------
+
+async def handle_messages(request: web.Request) -> web.Response:
+    """
+    Return the most recent received text messages (oldest first).
+
+    This powers the Web UI message feed, mirroring MeshSense's "Message Window"
+    — inbound packets captured via the meshtastic pubsub listener in
+    connection.py, not just locally-sent ones.
+    """
+    conn: MeshtasticConnection = request.app["connection"]
+    try:
+        messages = await conn.get_messages()
+        return _json_response(messages)
+    except Exception as exc:
+        logger.error("Error fetching messages: %s", exc)
+        return _error_response("Failed to retrieve messages")
+
+
+# ---------------------------------------------------------------------------
 # Route: GET /api/channels
 # ---------------------------------------------------------------------------
 
@@ -124,7 +145,16 @@ async def handle_send(request: web.Request) -> web.Response:
         return _error_response("'text' field is required and must not be empty", status=400)
 
     destination = body.get("destination")  # None → broadcast
-    channel = int(body.get("channel", 0))
+
+    # Coerce channel to an int defensively — request bodies may contain a
+    # string or an out-of-range / invalid value that would otherwise raise
+    # and produce an unhandled 500.
+    try:
+        channel = int(body.get("channel", 0))
+    except (TypeError, ValueError):
+        return _error_response("'channel' must be an integer", status=400)
+    if channel < 0 or channel > 7:
+        return _error_response("'channel' must be between 0 and 7", status=400)
 
     try:
         success = await conn.send_message(text, destination=destination, channel=channel)

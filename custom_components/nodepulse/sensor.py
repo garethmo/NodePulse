@@ -27,6 +27,8 @@ from homeassistant.const import (
     SIGNAL_STRENGTH_DECIBELS,
     SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
     PERCENTAGE,
+    TEMP_CELSIUS,
+    UnitOfPressure,
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -76,6 +78,9 @@ async def async_setup_entry(
                 NodeHopsSensor(coordinator, entry, node_id),
                 NodeLastHeardSensor(coordinator, entry, node_id),
                 NodeBatterySensor(coordinator, entry, node_id),
+                NodeTemperatureSensor(coordinator, entry, node_id),
+                NodeHumiditySensor(coordinator, entry, node_id),
+                NodePressureSensor(coordinator, entry, node_id),
             ])
             logger.info({"node_id": node_id}, "Registering new node sensors")
 
@@ -226,6 +231,45 @@ class NodeBatterySensor(_NodeSensorBase):
         super().__init__(coordinator, entry, node_id)
         self._attr_unique_id = f"{entry.entry_id}_{node_id}_battery"
         self._attr_name = "Battery"
+
+
+class NodeTemperatureSensor(_NodeSensorBase):
+    """Environmental temperature (°C) reported by the node's telemetry, if any."""
+    _metric_key = "temperature"
+    _attr_device_class = SensorDeviceClass.TEMPERATURE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = TEMP_CELSIUS
+
+    def __init__(self, coordinator, entry, node_id):
+        super().__init__(coordinator, entry, node_id)
+        self._attr_unique_id = f"{entry.entry_id}_{node_id}_temperature"
+        self._attr_name = "Temperature"
+
+
+class NodeHumiditySensor(_NodeSensorBase):
+    """Environmental relative humidity (%) from the node's telemetry, if any."""
+    _metric_key = "relative_humidity"
+    _attr_device_class = SensorDeviceClass.HUMIDITY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = PERCENTAGE
+
+    def __init__(self, coordinator, entry, node_id):
+        super().__init__(coordinator, entry, node_id)
+        self._attr_unique_id = f"{entry.entry_id}_{node_id}_humidity"
+        self._attr_name = "Humidity"
+
+
+class NodePressureSensor(_NodeSensorBase):
+    """Barometric pressure (hPa) from the node's telemetry, if any."""
+    _metric_key = "barometric_pressure"
+    _attr_device_class = SensorDeviceClass.PRESSURE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfPressure.HPA
+
+    def __init__(self, coordinator, entry, node_id):
+        super().__init__(coordinator, entry, node_id)
+        self._attr_unique_id = f"{entry.entry_id}_{node_id}_pressure"
+        self._attr_name = "Pressure"
 
 
 # ---------------------------------------------------------------------------

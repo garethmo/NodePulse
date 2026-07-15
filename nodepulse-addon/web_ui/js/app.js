@@ -13,7 +13,7 @@
  * is easy to trace top-to-bottom.
  */
 
-import { fetchStatus, fetchNodes, fetchChannels, sendMessage, requestTraceRoute, requestPosition } from './api.js';
+import { fetchStatus, fetchNodes, fetchChannels, fetchMessages, sendMessage, requestTraceRoute, requestPosition } from './api.js';
 import { MapManager } from './map.js';
 import { ChartManager } from './charts.js';
 
@@ -30,6 +30,8 @@ const state = {
   status:         null,   // last successful status from the API
   selectedNodeId: null,   // ID of node highlighted in the list + chart source
   currentView:    'dashboard',
+  seenMessageIds: new Set(),  // dedupe inbound messages across polls
+  selfId:         null,   // node ID of the locally-connected node
 };
 
 // ============================================================================
@@ -88,6 +90,23 @@ function rssiToValueClass(rssi) {
   return 'poor';
 }
 
+// Great-circle distance (km) between two lat/lon points (haversine).
+function haversineKm(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function formatDistance(km) {
+  if (km == null || Number.isNaN(km)) return 'N/A';
+  if (km < 1) return `${Math.round(km * 1000)} m`;
+  return `${km.toFixed(2)} km`;
+}
+
 // ============================================================================
 // Rendering: Status Bar
 // ============================================================================
@@ -128,9 +147,12 @@ function renderNodeList(nodes) {
     if (node.id === state.selectedNodeId) li.classList.add('selected');
     li.dataset.nodeId = node.id;
 
-    const battery = node.battery_level != null ? `🔋 ${node.battery_level}%` : '';
+     const battery = node.battery_level != null ? `🔋 ${node.battery_level}%` : '';
     const snrText  = node.snr  != null ? `${node.snr.toFixed(1)} dB` : '—';
     const rssiText = node.rssi != null ? `${node.rssi} dBm` : '';
+    const hasGps   = node.latitude != null && node.longitude != null;
+    const noGpsMark = hasGps ? '' : `<span class="node-list-unknown" title="No GPS fix">?</span>`;
+
 
     li.innerHTML = `
       <div class="signal-bars">
@@ -139,8 +161,8 @@ function renderNodeList(nodes) {
         <div class="signal-bar"></div>
         <div class="signal-bar"></div>
       </div>
-      <div class="node-info">
-        <div class="node-name">${escapeHtml(node.long_name || node.id)}</div>
+          <div class="node-info">
+        <div class="node-name">${noGpsMark} ${escapeHtml(node.long_name || node.id)}</div>
         <div class="node-meta">${escapeHtml(node.short_name || '')} · ${escapeHtml(node.hw_model || '')}</div>
       </div>
       <div class="node-stats">
@@ -169,6 +191,13 @@ function renderNodesGrid(nodes) {
     return;
   }
 
+  // Resolve the self node's coordinates once so we can compute per-node
+  // distance (MeshSense-style "distance from your node").
+  const selfNode = state.nodes.find(n => n.id === state.selfId);
+  const selfLat  = selfNode?.latitude;
+  const selfLon  = selfNode?.longitude;
+  const selfHasGps = selfLat != null && selfLon != null;
+
   for (const node of nodes) {
     const card = document.createElement('div');
     card.className = 'node-card';
@@ -179,11 +208,21 @@ function renderNodesGrid(nodes) {
     const batText   = node.battery_level != null ? `${node.battery_level}%`  : 'N/A';
     const heardText = formatRelativeTime(node.last_heard);
     const hasGps    = node.latitude != null && node.longitude != null;
+    const noGpsMark = hasGps ? '' : `<span class="node-card-unknown" title="No GPS fix">?</span>`;
+
+    let distText = 'N/A';
+    if (hasGps && selfHasGps && node.id !== state.selfId) {
+      distText = formatDistance(haversineKm(selfLat, selfLon, node.latitude, node.longitude));
+    }
+
+    const tempText = node.temperature       != null ? `${node.temperature.toFixed(1)} °C` : 'N/A';
+    const humText  = node.relative_humidity != null ? `${node.relative_humidity.toFixed(0)} %` : 'N/A';
+    const presText = node.barometric_pressure != null ? `${node.barometric_pressure.toFixed(0)} hPa` : 'N/A';
 
     card.innerHTML = `
       <div class="node-card-header">
         <div>
-          <div class="node-card-name">${escapeHtml(node.long_name || node.id)}</div>
+          <div class="node-card-name">${noGpsMark} ${escapeHtml(node.long_name || node.id)}</div>
           <div class="node-card-id">${escapeHtml(node.id)}</div>
         </div>
         <span class="node-card-hw">${escapeHtml(node.hw_model || 'Unknown')}</span>
@@ -206,12 +245,24 @@ function renderNodesGrid(nodes) {
           <div class="metric-value neutral">${batText}</div>
         </div>
         <div class="metric-item">
-          <div class="metric-label">Last Heard</div>
-          <div class="metric-value neutral" style="font-size:12px">${heardText}</div>
+          <div class="metric-label">Distance</div>
+          <div class="metric-value neutral" style="font-size:12px">${distText}</div>
         </div>
         <div class="metric-item">
           <div class="metric-label">GPS</div>
           <div class="metric-value ${hasGps ? 'good' : 'neutral'}" style="font-size:12px">${hasGps ? '✓ Fix' : 'No fix'}</div>
+        </div>
+        <div class="metric-item">
+          <div class="metric-label">Temp</div>
+          <div class="metric-value neutral" style="font-size:12px">${tempText}</div>
+        </div>
+        <div class="metric-item">
+          <div class="metric-label">Humidity</div>
+          <div class="metric-value neutral" style="font-size:12px">${humText}</div>
+        </div>
+        <div class="metric-item">
+          <div class="metric-label">Pressure</div>
+          <div class="metric-value neutral" style="font-size:12px">${presText}</div>
         </div>
       </div>
       <div class="node-card-actions">
@@ -223,8 +274,9 @@ function renderNodesGrid(nodes) {
     grid.appendChild(card);
   }
 
-  // Event delegation on the grid — one listener handles all action buttons.
-  grid.addEventListener('click', handleNodeCardAction);
+  // NOTE: the grid click handler is attached ONCE in init() (event delegation),
+  // not here — renderNodesGrid() runs every poll cycle and re-adding the
+  // listener each time would leak handlers.
 }
 
 // ============================================================================
@@ -371,9 +423,10 @@ async function renderSettings() {
 // ============================================================================
 async function pollData() {
   // Fetch status and nodes in parallel — independent requests.
-  const [statusResult, nodesResult] = await Promise.allSettled([
+  const [statusResult, nodesResult, messagesResult] = await Promise.allSettled([
     fetchStatus(),
     fetchNodes(),
+    fetchMessages(),
   ]);
 
   if (statusResult.status === 'fulfilled') {
@@ -386,6 +439,16 @@ async function pollData() {
   if (nodesResult.status === 'fulfilled') {
     state.nodes = nodesResult.value;
 
+    // Determine the self/local node ID from the status so the map can draw
+    // distance-labelled links from it, and highlight it as the hub.
+    const selfNum = state.status?.my_info?.my_node_num;
+    const selfId = selfNum != null
+      ? '!' + (selfNum >>> 0).toString(16).padStart(8, '0')
+      : null;
+    dashMap.setSelfNode(selfId);
+    fullMap.setSelfNode(selfId);
+    state.selfId = selfId;
+
     renderNodeList(state.nodes);
     renderNodesGrid(state.nodes);
     dashMap.updateNodes(state.nodes);
@@ -396,6 +459,26 @@ async function pollData() {
     charts.addPoint(chartNode?.snr ?? null, chartNode?.rssi ?? null, state.nodes.length);
   } else {
     console.warn('Nodes fetch failed:', nodesResult.reason);
+  }
+
+  if (messagesResult.status === 'fulfilled') {
+    renderIncomingMessages(messagesResult.value);
+  } else {
+    console.warn('Messages fetch failed:', messagesResult.reason);
+  }
+}
+
+/**
+ * Render any newly-arrived inbound text messages into the message feed.
+ * We track seen message IDs so a message is only appended once even though
+ * the API returns the whole recent buffer on every poll.
+ */
+function renderIncomingMessages(messages) {
+  if (!Array.isArray(messages)) return;
+  for (const msg of messages) {
+    if (!msg.id || state.seenMessageIds.has(msg.id)) continue;
+    state.seenMessageIds.add(msg.id);
+    appendMessage(msg.text, msg.from_name || msg.from_id || 'Unknown', 'incoming');
   }
 }
 
@@ -420,6 +503,10 @@ async function init() {
       handleSend();
     }
   });
+
+  // Event delegation on the nodes grid — attached once here so it is NOT
+  // re-added on every 15s poll inside renderNodesGrid().
+  document.getElementById('nodes-grid').addEventListener('click', handleNodeCardAction);
 
   // Set the initial active view.
   switchView('dashboard');

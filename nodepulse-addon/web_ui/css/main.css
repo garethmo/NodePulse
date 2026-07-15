@@ -679,6 +679,69 @@ body::before {
 .toast.error   { border-left: 3px solid var(--text-danger); }
 .toast.info    { border-left: 3px solid var(--color-blue); }
 
+/* --- Map Labels ----------------------------------------------------------- */
+/* Permanent node-name labels and link distance labels on the Leaflet maps. */
+.node-label {
+  background: rgba(13, 17, 28, 0.82);
+  border: 1px solid var(--border-subtle, #2a3346);
+  color: var(--text-primary, #e6ebf2);
+  font-family: Inter, system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  white-space: nowrap;
+}
+.node-label::before { display: none; } /* hide default Leaflet arrow */
+
+/* "?" marker for nodes that have no GPS fix (MeshSense-style unknown location) */
+.node-card-unknown {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-right: 4px;
+  border-radius: 50%;
+  background: rgba(255, 196, 0, 0.18);
+  border: 1px solid var(--color-warn, #ffc400);
+  color: var(--color-warn, #ffc400);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.node-list-unknown {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-right: 4px;
+  border-radius: 50%;
+  background: rgba(255, 196, 0, 0.18);
+  border: 1px solid var(--color-warn, #ffc400);
+  color: var(--color-warn, #ffc400);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.link-label {
+  background: rgba(0, 212, 170, 0.15);
+  border: 1px solid rgba(0, 212, 170, 0.5);
+  color: var(--color-teal, #00d4aa);
+  font-family: Inter, system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 4px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  white-space: nowrap;
+}
+.link-label::before { display: none; }
+
 /* --- Scrollbar Theming ---------------------------------------------------- */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }

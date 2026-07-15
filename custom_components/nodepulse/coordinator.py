@@ -67,8 +67,8 @@ class NodePulseCoordinator(DataUpdateCoordinator):
             raise UpdateFailed(f"Unexpected error fetching NodePulse data: {exc}") from exc
 
         logger.debug(
-            {"host": self._host, "node_count": len(nodes)},
-            "NodePulse data refreshed",
+            "NodePulse data refreshed (host=%s, node_count=%s)",
+            self._host, len(nodes),
         )
         return {"status": status, "nodes": nodes}
 

@@ -63,6 +63,11 @@ export async function fetchChannels() {
   return _apiFetch('/channels');
 }
 
+/** Fetch the most recent received text messages (oldest first). */
+export async function fetchMessages() {
+  return _apiFetch('/messages');
+}
+
 /**
  * Send a message over the mesh.
  * @param {string} text - Plaintext message content.
