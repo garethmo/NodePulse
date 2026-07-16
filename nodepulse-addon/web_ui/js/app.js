@@ -537,9 +537,15 @@ function syncChannelSelect() {
 function storeMessage(msg) {
   const key = msg.conversation || (msg.is_dm ? `dm:${msg.from_id}` : `ch:${msg.channel ?? 0}`);
   if (!state.messagesByConv[key]) state.messagesByConv[key] = [];
+  const thread = state.messagesByConv[key];
   // Dedupe by id to avoid double-adding on poll repeats.
-  if (state.messagesByConv[key].some(m => m.id === msg.id)) return;
-  state.messagesByConv[key].push(msg);
+  if (thread.some(m => m.id === msg.id)) return;
+  // Meshtastic broadcasts our own sent packets back to us, so a DM we just
+  // sent also arrives as an "outgoing" server echo. Drop it if we already
+  // have an optimistic bubble with the same text in this thread — otherwise
+  // the user sees every sent message twice.
+  if (msg.outgoing && thread.some(m => m.outgoing && m.text === msg.text)) return;
+  thread.push(msg);
 
   const conv = _ensureConversation(key);
   // Mark unread only if it arrived in a non-active conversation and isn't ours.

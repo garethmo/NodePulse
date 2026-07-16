@@ -43,6 +43,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # the platforms consult when discovering entities.
     hass.http.register_view(NodePulseTrackView)
     hass.http.register_view(NodePulseTrackedNodesView)
+    logger.info(
+        "Registered NodePulse HTTP relay views at /api/nodepulse/track and "
+        "/api/nodepulse/tracked-nodes"
+    )
 
     # Register a listener so option changes (e.g. scan_interval) trigger a reload.
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))

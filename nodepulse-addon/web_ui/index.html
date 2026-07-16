@@ -141,20 +141,24 @@
           <div id="conversation-tabs" role="tablist" aria-label="Conversations"></div>
           <div id="message-list"></div>
           <div id="message-compose">
-            <div id="compose-recipient" title="Recipient">
-              <span class="recipient-icon">➤</span>
-              <span id="recipient-label">Primary</span>
+            <div id="compose-top">
+              <div id="compose-recipient" title="Recipient">
+                <span class="recipient-icon">➤</span>
+                <span id="recipient-label">Primary</span>
+              </div>
+              <select id="channel-select" aria-label="Channel" title="Channel to send on">
+                <option value="0">Primary</option>
+              </select>
             </div>
-            <select id="channel-select" aria-label="Channel" title="Channel to send on">
-              <option value="0">Primary</option>
-            </select>
-            <textarea
-              id="message-input"
-              placeholder="Type a message… (Enter to send, Shift+Enter for newline)"
-              rows="1"
-              aria-label="Message text"
-            ></textarea>
-            <button id="send-btn" aria-label="Send message">Send</button>
+            <div id="compose-bottom">
+              <textarea
+                id="message-input"
+                placeholder="Type a message… (Enter to send, Shift+Enter for newline)"
+                rows="1"
+                aria-label="Message text"
+              ></textarea>
+              <button id="send-btn" aria-label="Send message">Send</button>
+            </div>
           </div>
         </div>
 
@@ -231,7 +235,7 @@
           <div class="settings-group-title">About</div>
           <div class="settings-row">
             <span class="settings-row-label">NodePulse Version</span>
-            <span class="settings-row-value">0.2.6</span>
+            <span class="settings-row-value">0.2.7</span>
           </div>
           <div class="settings-row">
             <span class="settings-row-label">Poll Interval</span>

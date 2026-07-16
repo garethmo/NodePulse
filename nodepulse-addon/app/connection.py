@@ -576,15 +576,16 @@ class MeshtasticConnection:
                 "timestamp": int(time.time()),
             }
 
+            # Store under the node this route belongs to. Prefer the node the
+            # user asked about if we have a pending request; otherwise the
+            # reply's origin. A re-request simply overwrites the previous result.
+            target_id = self._pending_traceroute_dest or from_id
+
             logger.info(
                 "Captured traceroute for %s (target=%s): route=%s route_back=%s",
                 from_id, target_id, route, route_back,
             )
 
-            # Store under the node this route belongs to. Prefer the node the
-            # user asked about if we have a pending request; otherwise the
-            # reply's origin. A re-request simply overwrites the previous result.
-            target_id = self._pending_traceroute_dest or from_id
             with self._nodes_lock:
                 node = next(
                     (n for n in self._nodes if n.get("id") == target_id), None
@@ -695,12 +696,29 @@ class MeshtasticConnection:
             nodes_raw = self._interface.nodes or {}
             result = []
 
+            # Normalize a node identity (int or "!hex" string) to the canonical
+            # "!xxxxxxxx" form used everywhere in the Web UI and our caches. The
+            # meshtastic library has historically keyed interface.nodes by either
+            # an integer node number or a "!hex" string depending on version, so
+            # we normalise up front to keep traceroute/position merges working.
+            def _norm_id(raw: Any) -> Optional[str]:
+                if raw is None:
+                    return None
+                if isinstance(raw, str):
+                    s = raw.strip()
+                    return s if s.startswith("!") else ("!" + s)
+                try:
+                    return "!" + format(int(raw), "08x")
+                except Exception:
+                    return None
+
             # Merge the interface's latest node data into our persistent cache.
             # This keeps late-arriving traceroute/position updates visible on the
             # next poll even though the library updates interface.nodes async.
             with self._nodes_lock:
                 cached = {n.get("id"): n for n in self._nodes if n.get("id")}
                 for node_id, node_data in nodes_raw.items():
+                    node_id = _norm_id(node_id)
                     if not node_id:
                         continue
                     # Extract the nested sub-objects safely — the meshtastic
@@ -737,18 +755,21 @@ class MeshtasticConnection:
                     # cache. We must preserve any previously-captured value
                     # rather than overwrite it with the (always-None) raw entry.
                     if node_id in cached:
-                        cached[node_id].update(entry)
-                        # Likewise, captured POSITION_APP fixes (from a
-                        # "Req. Position" request) live only in our cache — the
-                        # library never writes them into interface.nodes. Don't
-                        # let the raw (None) position clobber a real fix.
                         prev = cached[node_id]
-                        if prev.get("latitude") is not None:
-                            cached[node_id]["latitude"] = prev["latitude"]
-                        if prev.get("longitude") is not None:
-                            cached[node_id]["longitude"] = prev["longitude"]
-                        if prev.get("altitude") is not None:
-                            cached[node_id]["altitude"] = prev["altitude"]
+                        # Preserve any captured POSITION_APP fix (from a
+                        # "Req. Position" request) before the raw library update
+                        # potentially overwrites it with None — the library
+                        # never writes these replies into interface.nodes.
+                        prev_lat = prev.get("latitude")
+                        prev_lng = prev.get("longitude")
+                        prev_alt = prev.get("altitude")
+                        cached[node_id].update(entry)
+                        if prev_lat is not None:
+                            cached[node_id]["latitude"] = prev_lat
+                        if prev_lng is not None:
+                            cached[node_id]["longitude"] = prev_lng
+                        if prev_alt is not None:
+                            cached[node_id]["altitude"] = prev_alt
                         result.append(cached[node_id])
                     else:
                         entry["traceroute"] = None
@@ -771,20 +792,42 @@ class MeshtasticConnection:
             if not self._connected or self._interface is None:
                 return []
 
-            channels_raw = getattr(self._interface, "localConfig", None)
-            if channels_raw is None:
-                return []
-
-            # The meshtastic library stores channel config under interface.channels
-            channels = getattr(self._interface, "channels", {}) or {}
             result = []
-            for idx, channel in channels.items():
-                settings = getattr(channel, "settings", None)
-                result.append({
-                    "index": idx,
-                    "name": getattr(settings, "name", "") if settings else "",
-                    "role": str(getattr(channel, "role", "")),
-                })
+
+            # Prefer the canonical, full channel list from the node's local
+            # config (channel_settings is a repeated field indexed 0..N and
+            # always includes every provisioned channel, even ones the library
+            # might not surface via interface.channels). Fall back to
+            # interface.channels if localConfig isn't available.
+            local_config = getattr(self._interface, "localConfig", None)
+            channel_settings = getattr(local_config, "channel_settings", None)
+
+            if channel_settings:
+                for idx, settings in enumerate(channel_settings):
+                    name = getattr(settings, "name", "") or ""
+                    role = str(getattr(settings, "role", ""))
+                    psk = getattr(settings, "psk", b"") or b""
+                    # Channel 0 (Primary) is always present. Other slots are only
+                    # meaningful if they carry a name or a real (non-zero) PSK —
+                    # an empty PSK marks an unconfigured/disabled placeholder.
+                    is_primary = idx == 0
+                    configured = bool(name) or len(psk) > 1
+                    if not is_primary and not configured:
+                        continue
+                    result.append({
+                        "index": idx,
+                        "name": name,
+                        "role": role,
+                    })
+            else:
+                channels = getattr(self._interface, "channels", {}) or {}
+                for idx, channel in channels.items():
+                    settings = getattr(channel, "settings", None)
+                    result.append({
+                        "index": idx,
+                        "name": getattr(settings, "name", "") if settings else "",
+                        "role": str(getattr(channel, "role", "")),
+                    })
             return result
 
     def _send_message_sync(

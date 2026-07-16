@@ -502,10 +502,24 @@ body::before {
 
 #message-compose {
   display: flex;
+  flex-direction: column;
   gap: var(--space-sm);
   padding: var(--space-sm) var(--space-md);
   border-top: 1px solid var(--border-subtle);
   flex-shrink: 0;
+}
+
+#compose-top {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+#compose-bottom {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-sm);
 }
 
 #message-input {
@@ -572,10 +586,9 @@ body::before {
   font-size: 13px;
   padding: 0 var(--space-sm);
   height: 40px;
-  align-self: flex-end;
   cursor: pointer;
-  flex-shrink: 0;
-  max-width: 160px;
+  flex: 1 1 auto;
+  min-width: 120px;
 }
 #channel-select:focus { border-color: var(--border-active); outline: none; }
 
@@ -635,7 +648,7 @@ body::before {
   background: var(--bg-input);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
-  max-width: 120px;
+  max-width: 160px;
   overflow: hidden;
   flex-shrink: 0;
 }

@@ -63,6 +63,16 @@ class NodePulseCoordinator(DataUpdateCoordinator):
             config_entry.options.get(CONF_TRACKED_NODES, [])
         )
 
+        # Bookkeeping for dynamic per-node entity discovery. Kept on the
+        # coordinator (per config entry) rather than module-level so a reload
+        # (e.g. triggered by the "Track in HA" toggle) resets cleanly and
+        # entities are re-created instead of being skipped forever. One pair
+        # per platform because each platform tracks its own created entities.
+        self.registered_sensor_ids: Set[str] = set()
+        self.registered_sensor_entities: List[Any] = []
+        self.registered_tracker_ids: Set[str] = set()
+        self.registered_tracker_entities: List[Any] = []
+
         super().__init__(
             hass,
             logger,
@@ -94,7 +104,7 @@ class NodePulseCoordinator(DataUpdateCoordinator):
         """Write the current tracked set back into the config entry options."""
         new_options = dict(self._config_entry.options)
         new_options[CONF_TRACKED_NODES] = list(self.tracked_nodes)
-        hass.config_entries.async_update_entry(
+        await hass.config_entries.async_update_entry(
             self._config_entry, options=new_options
         )
 

@@ -54,10 +54,15 @@ async def async_setup_entry(
     """
     coordinator: NodePulseCoordinator = hass.data[DOMAIN][entry.entry_id]
 
+    # Reset discovery bookkeeping on each setup (also runs after a reload), so
+    # entities are re-created rather than skipped by a stale module-level set.
+    coordinator.registered_sensor_ids = set()
+    coordinator.registered_sensor_entities = []
+
     # Track which node IDs already have entities so we don't duplicate them.
-    registered_node_ids: Set[str] = set()
+    registered_node_ids = coordinator.registered_sensor_ids
     # Keep references so we can remove entities when a node is untracked.
-    registered_entities: List[CoordinatorEntity] = []
+    registered_entities = coordinator.registered_sensor_entities
 
     # Always create the aggregate node count sensor immediately.
     async_add_entities([NodeCountSensor(coordinator, entry)])

@@ -42,8 +42,12 @@ async def async_setup_entry(
     do not clutter the HA map with unknown-location pins.
     """
     coordinator: NodePulseCoordinator = hass.data[DOMAIN][entry.entry_id]
-    registered_node_ids: Set[str] = set()
-    registered_entities: List[CoordinatorEntity] = []
+    # Reset discovery bookkeeping on each setup so a reload re-creates trackers
+    # instead of skipping them due to a stale set.
+    coordinator.registered_tracker_ids = set()
+    coordinator.registered_tracker_entities = []
+    registered_node_ids = coordinator.registered_tracker_ids
+    registered_entities = coordinator.registered_tracker_entities
 
     @callback
     def _discover_new_trackers() -> None:
