@@ -169,7 +169,9 @@ class MeshtasticConnection:
 
     async def request_traceroute(self, destination: str) -> bool:
         """Request a traceroute towards a specific destination node."""
+        logger.info("Requesting traceroute to %s", destination)
         ok = await asyncio.to_thread(self._request_traceroute_sync, destination)
+        logger.info("Traceroute dispatch to %s returned: %s", destination, ok)
         # Pull the response (per-hop SNR / route) into our cache so the API
         # reflects it on the next poll.
         await asyncio.to_thread(self._refresh_node_from_interface, destination)
@@ -354,6 +356,16 @@ class MeshtasticConnection:
                 self._capture_traceroute(packet)
                 return
 
+            # --- Position replies ---------------------------------------
+            # A position request (sendPosition wantResponse=True) makes the
+            # destination node reply with its own POSITION_APP packet. The
+            # meshtastic library only sets an internal ack flag and does NOT
+            # write the fix into interface.nodes, so we must capture it here
+            # and merge it into our own node cache ourselves.
+            if portnum == "POSITION_APP":
+                self._capture_position(packet)
+                return
+
             # --- Text messages ------------------------------------------
             text = decoded.get("text")
             if not text:
@@ -483,6 +495,11 @@ class MeshtasticConnection:
                 "timestamp": int(time.time()),
             }
 
+            logger.info(
+                "Captured traceroute for %s (target=%s): route=%s route_back=%s",
+                from_id, target_id, route, route_back,
+            )
+
             # Store under the node this route belongs to. Prefer the node the
             # user asked about if we have a pending request; otherwise the
             # reply's origin.
@@ -496,6 +513,57 @@ class MeshtasticConnection:
                 self._pending_traceroute_dest = None
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("Error capturing traceroute (ignored): %s", exc)
+
+    def _capture_position(self, packet: Dict[str, Any]) -> None:
+        """
+        Capture a POSITION_APP reply and merge the GPS fix into our node cache.
+
+        When we call ``sendPosition(destinationId=X, wantResponse=True)`` the
+        firmware makes node X reply with its own position. The meshtastic
+        library does NOT store that reply in ``interface.nodes`` (it only sets
+        an internal acknowledgment flag), so without this capture the "Req.
+        Position" button would appear to do nothing. We parse the protobuf
+        directly (latitude_i / longitude_i are integer microdegrees) and update
+        the destination node's cached coordinates so the map + UI reflect it.
+        """
+        try:
+            from meshtastic.protobuf.mesh_pb2 import Position
+            decoded = packet.get("decoded", {}) or {}
+            payload = decoded.get("payload")
+            if not payload:
+                return
+            pos = Position()
+            pos.ParseFromString(payload)
+
+            from_num = packet.get("from")
+            from_id = ("!" + format(from_num, "08x")) if from_num is not None else None
+            if not from_id:
+                return
+
+            # Integer microdegrees -> decimal degrees. 0 means "not set".
+            lat = pos.latitude_i * 1e-7 if pos.latitude_i else None
+            lng = pos.longitude_i * 1e-7 if pos.longitude_i else None
+            alt = pos.altitude if pos.altitude else None
+
+            logger.info(
+                "Captured position for %s: lat=%s lng=%s alt=%s",
+                from_id, lat, lng, alt,
+            )
+
+            with self._nodes_lock:
+                node = next(
+                    (n for n in self._nodes if n.get("id") == from_id), None
+                )
+                if node is not None:
+                    if lat is not None:
+                        node["latitude"] = lat
+                    if lng is not None:
+                        node["longitude"] = lng
+                    if alt is not None:
+                        node["altitude"] = alt
+                    node["last_heard"] = int(time.time())
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Error capturing position (ignored): %s", exc)
 
     def _get_messages_sync(self) -> List[Dict[str, Any]]:
         with self._msg_lock:
@@ -577,14 +645,27 @@ class MeshtasticConnection:
                         "temperature": environment.get("temperature"),
                         "relative_humidity": environment.get("relative_humidity"),
                         "barometric_pressure": environment.get("barometric_pressure"),
-                        "traceroute": node_data.get("traceroute"),
                     }
-                    # Preserve any fields we already track but the raw entry
-                    # lacks (defensive — keeps our cached view stable).
+                    # traceroute is NOT present in the library's raw node dict —
+                    # it is only populated by _capture_traceroute into our own
+                    # cache. We must preserve any previously-captured value
+                    # rather than overwrite it with the (always-None) raw entry.
                     if node_id in cached:
                         cached[node_id].update(entry)
+                        # Likewise, captured POSITION_APP fixes (from a
+                        # "Req. Position" request) live only in our cache — the
+                        # library never writes them into interface.nodes. Don't
+                        # let the raw (None) position clobber a real fix.
+                        prev = cached[node_id]
+                        if prev.get("latitude") is not None:
+                            cached[node_id]["latitude"] = prev["latitude"]
+                        if prev.get("longitude") is not None:
+                            cached[node_id]["longitude"] = prev["longitude"]
+                        if prev.get("altitude") is not None:
+                            cached[node_id]["altitude"] = prev["altitude"]
                         result.append(cached[node_id])
                     else:
+                        entry["traceroute"] = None
                         cached[node_id] = entry
                         result.append(entry)
                 self._nodes = list(cached.values())

@@ -66,30 +66,56 @@ class NodePulseTrackView(HomeAssistantView):
         try:
             body = await request.json()
         except Exception:
+            logger.warning("Track request received invalid JSON body")
             return web.json_response({"error": "Invalid JSON body"}, status=400)
 
         try:
             body = _TRACK_SCHEMA(body)
         except vol.Invalid as exc:
+            logger.warning("Track request failed schema validation: %s", exc)
             return web.json_response({"error": str(exc)}, status=400)
 
         node_id = body["node_id"].strip()
         enabled = body["enabled"]
 
+        logger.info(
+            "Track request: node_id=%s enabled=%s", node_id, enabled
+        )
+
         coordinator = _coordinator_for(hass)
         if coordinator is None:
+            logger.error("Track request rejected: NodePulse integration not loaded")
             return web.json_response(
                 {"error": "NodePulse integration not loaded"}, status=503
             )
 
-        # Update the tracked set on the coordinator and persist it to the
-        # config entry options so it survives restarts.
-        changed = coordinator.set_tracked_node(node_id, enabled)
-        if changed:
-            await coordinator.persist_tracked_nodes(hass)
+        try:
+            # Update the tracked set on the coordinator and persist it to the
+            # config entry options so it survives restarts.
+            changed = coordinator.set_tracked_node(node_id, enabled)
+            logger.debug(
+                "set_tracked_node(%s, %s) -> changed=%s; tracked_nodes=%s",
+                node_id, enabled, changed, sorted(coordinator.tracked_nodes),
+            )
+            if changed:
+                await coordinator.persist_tracked_nodes(hass)
+                logger.debug("Persisted tracked nodes to config entry options")
 
-        # Trigger rediscovery so entities are created/removed immediately.
-        await coordinator.async_request_refresh()
+            # Trigger rediscovery so entities are created/removed immediately.
+            refresh = await coordinator.async_request_refresh()
+            logger.debug("async_request_refresh returned: %s", refresh)
+        except Exception as exc:  # defensive: never return a non-JSON error
+            logger.exception(
+                "Track request failed while updating coordinator for %s: %s",
+                node_id, exc,
+            )
+            return web.json_response(
+                {"error": f"Integration error: {exc}"}, status=500
+            )
+
+        logger.info(
+            "Track request succeeded: node_id=%s enabled=%s", node_id, enabled
+        )
         return web.json_response({"node_id": node_id, "enabled": enabled})
 
 
@@ -104,4 +130,5 @@ class NodePulseTrackedNodesView(HomeAssistantView):
         hass: HomeAssistant = request.app["hass"]
         coordinator = _coordinator_for(hass)
         node_ids = list(coordinator.tracked_nodes) if coordinator else []
+        logger.debug("Tracked-nodes request -> %s", node_ids)
         return web.json_response({"node_ids": node_ids})

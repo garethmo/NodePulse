@@ -54,6 +54,10 @@ async def _relay_to_integration(request: web.Request, method: str, path: str, js
         candidates.append(configured)
     candidates.extend(_HA_CANDIDATES)
 
+    last_status = None
+    last_body = None
+    last_url = None
+
     async with aiohttp.ClientSession() as session:
         for base in candidates:
             url = f"{base}{path}"
@@ -62,24 +66,47 @@ async def _relay_to_integration(request: web.Request, method: str, path: str, js
                 if method.upper() == "POST":
                     kwargs["headers"] = {"Content-Type": "application/json"}
                     kwargs["json"] = json_body
+                logger.debug("Relaying %s %s body=%s", method, url, json_body)
                 async with session.request(method, url, **kwargs) as resp:
+                    last_status = resp.status
+                    last_url = url
+                    raw = await resp.text()
+                    last_body = raw
+                    logger.debug(
+                        "Relay response from %s: status=%s headers=%s body=%s",
+                        url, resp.status, dict(resp.headers), raw[:500],
+                    )
                     if resp.status in (200, 201):
-                        return await resp.json()
+                        try:
+                            return json.loads(raw)
+                        except Exception as exc:
+                            logger.error(
+                                "Integration at %s returned OK but invalid JSON: %s",
+                                base, exc,
+                            )
+                            raise RuntimeError(
+                                f"Integration at {base} returned an unparseable response"
+                            )
                     # A real response (even an error) means we found HA core;
                     # surface its error rather than trying other candidates.
                     try:
-                        err = await resp.json()
+                        err = json.loads(raw) if raw else {}
                         detail = err.get("error", "")
                     except Exception:
-                        detail = ""
+                        # Response wasn't JSON (e.g. HA login page / HTML stack trace).
+                        detail = raw[:200] if raw else ""
                     raise RuntimeError(
-                        f"Integration at {base} rejected request: {detail}".strip()
+                        f"Integration at {base} rejected request (HTTP {resp.status}): {detail}".strip()
                     )
             except RuntimeError:
                 raise  # propagate the integration's own error message
             except Exception as exc:
                 logger.debug("Relay candidate %s failed: %s", base, exc)
                 continue
+    logger.error(
+        "Could not reach NodePulse integration. last_url=%s last_status=%s last_body=%s",
+        last_url, last_status, (last_body or "")[:500],
+    )
     raise RuntimeError(
         f"Could not reach the NodePulse integration. Tried: {', '.join(candidates)}. "
         "Ensure the NodePulse integration is installed in HA and reachable from the addon."
@@ -361,6 +388,7 @@ async def handle_track_node(request: web.Request) -> web.Response:
         )
         return _json_response({"node_id": node_id, "enabled": enabled})
     except RuntimeError as exc:
+        logger.error("Track-node relay rejected by integration (node=%s): %s", node_id, exc)
         return _error_response(str(exc), status=502)
     except Exception as exc:
         logger.error(

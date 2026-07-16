@@ -87,37 +87,39 @@ function createMap(elementId) {
     maxZoom: 19,
   }).addTo(map);
 
-  // --- Map overlay toggle controls (top-right) ---------------------------
-  // Each button toggles one overlay category and dispatches a custom event
-  // that the owning MapManager listens for. The "L"/"T"/"N" keys mirror them.
-  const makeToggle = (eventName, title, glyph, initialOn) => {
-    const Ctrl = L.Control.extend({
-      options: { position: 'topright' },
-      onAdd() {
-        const btn = L.DomUtil.create('button', 'leaflet-control-maptoggle');
-        btn.type = 'button';
-        btn.title = title;
-        btn.textContent = glyph;
-        if (initialOn) btn.classList.add('active');
-        L.DomEvent.disableClickPropagation(btn);
-        L.DomEvent.on(btn, 'click', () => {
-          const evt = new CustomEvent(eventName);
-          map.getContainer().dispatchEvent(evt);
-        });
-        return btn;
-      },
-    });
-    map.addControl(new Ctrl());
-  };
+   // --- Map overlay toggle controls (top-right) ---------------------------
+   // Each button toggles one overlay category and dispatches a custom event
+   // that the owning MapManager listens for. The "S"/"P"/"T"/"N" keys mirror them.
+   const makeToggle = (eventName, title, glyph, initialOn) => {
+     const Ctrl = L.Control.extend({
+       options: { position: 'topright' },
+       onAdd() {
+         const btn = L.DomUtil.create('button', 'leaflet-control-maptoggle');
+         btn.type = 'button';
+         btn.title = title;
+         btn.textContent = glyph;
+         if (initialOn) btn.classList.add('active');
+         L.DomEvent.disableClickPropagation(btn);
+         L.DomEvent.on(btn, 'click', () => {
+           const evt = new CustomEvent(eventName);
+           map.getContainer().dispatchEvent(evt);
+         });
+         return btn;
+       },
+     });
+     map.addControl(new Ctrl());
+   };
 
-  // Links (self<->node + peer proximity): teal/amber  — key "L"
-  makeToggle('nodepulse:togglelinks',   'Toggle link lines (L)',        '⤳', true);
-  // Traceroute paths: blue                            — key "T"
-  makeToggle('nodepulse:toggletraces',  'Toggle traceroute paths (T)', '⤴', true);
-  // Node name labels                                 — key "N"
-  makeToggle('nodepulse:togglenames',   'Toggle node names (N)',       '🏷', true);
+   // Self -> node connectors (teal)                  — key "S"
+   makeToggle('nodepulse:toggleselflinks', 'Toggle self→node links (S)',      '⟐', true);
+   // Node <-> node proximity links (amber)            — key "P"
+   makeToggle('nodepulse:togglepeerlinks', 'Toggle peer proximity links (P)', '⤬', true);
+   // Traceroute paths (blue)                          — key "T"
+   makeToggle('nodepulse:toggletraces',    'Toggle traceroute paths (T)',     '⤴', true);
+   // Node name labels                                 — key "N"
+   makeToggle('nodepulse:togglenames',     'Toggle node names (N)',           '🏷', true);
 
-  return map;
+   return map;
 }
 
 /**
@@ -135,33 +137,50 @@ export class MapManager {
     this._markers = new Map();
     // Node ID of the locally-connected node (used as the hub for link lines).
     this._selfId = null;
-    // Map<nodeId, L.Polyline> — link lines from the self node to each node.
-    this._links = new Map();
+    // Separate overlay line categories, each independently toggleable.
+    // Map<nodeId, L.Polyline> — connectors from the self node to each node (teal).
+    this._selfLinks = new Map();
+    // Map<"a|b", L.Polyline> — node<->node proximity links (amber).
+    this._peerLinks = new Map();
     // Map<nodeId, L.Polyline> — multi-hop traceroute route paths discovered
-    // between nodes (shows which intermediate nodes can talk to each other).
+    // between nodes (blue).
     this._routeLinks = new Map();
     // Separate visibility flags for each overlay category so they can be
     // toggled independently from the map controls.
-    this._linksVisible = true;    // self<->node + peer proximity lines
-    this._tracesVisible = true;  // discovered traceroute paths
-    this._namesVisible = true;    // permanent node-name labels
+    this._selfLinksVisible = true;  // self -> node connectors
+    this._peerLinksVisible = true;  // node <-> node proximity links
+    this._tracesVisible = true;     // discovered traceroute paths
+    this._namesVisible = true;      // permanent node-name labels
   }
 
   /**
-   * Toggle the link lines (self<->node connectors + peer proximity links).
-   * Returns the new visibility. Triggered by the map control and "L" key.
+   * Toggle the self→node connector lines (teal). Returns the new visibility.
+   * Triggered by the map control and "S" key.
    */
-  toggleLinks() {
-    this._linksVisible = !this._linksVisible;
-    for (const line of this._links.values()) {
-      if (this._linksVisible) line.addTo(this._map);
+  toggleSelfLinks() {
+    this._selfLinksVisible = !this._selfLinksVisible;
+    for (const line of this._selfLinks.values()) {
+      if (this._selfLinksVisible) line.addTo(this._map);
       else this._map.removeLayer(line);
     }
-    return this._linksVisible;
+    return this._selfLinksVisible;
   }
 
   /**
-   * Toggle the discovered traceroute path lines. Returns the new visibility.
+   * Toggle the node↔node peer proximity links (amber). Returns the new visibility.
+   * Triggered by the map control and "P" key.
+   */
+  togglePeerLinks() {
+    this._peerLinksVisible = !this._peerLinksVisible;
+    for (const line of this._peerLinks.values()) {
+      if (this._peerLinksVisible) line.addTo(this._map);
+      else this._map.removeLayer(line);
+    }
+    return this._peerLinksVisible;
+  }
+
+  /**
+   * Toggle the discovered traceroute path lines (blue). Returns the new visibility.
    * Triggered by the map control and "T" key.
    */
   toggleTraces() {
@@ -302,9 +321,11 @@ export class MapManager {
   _updateLinks() {
     if (!this._map) return;
 
-    // Clear previous link lines of both kinds.
-    for (const line of this._links.values()) line.remove();
-    this._links.clear();
+    // Clear previous link lines of all kinds.
+    for (const line of this._selfLinks.values()) line.remove();
+    this._selfLinks.clear();
+    for (const line of this._peerLinks.values()) line.remove();
+    this._peerLinks.clear();
     for (const line of this._routeLinks.values()) line.remove();
     this._routeLinks.clear();
 
@@ -341,8 +362,8 @@ export class MapManager {
           sticky: true,
           className: 'link-label',
         });
-        if (this._linksVisible) line.addTo(this._map);
-        this._links.set(id, line);
+        if (this._selfLinksVisible) line.addTo(this._map);
+        this._selfLinks.set(id, line);
       }
     }
 
@@ -373,8 +394,8 @@ export class MapManager {
           sticky: true,
           className: 'link-label',
         });
-        if (this._linksVisible) line.addTo(this._map);
-        this._links.set(`${a.id}|${b.id}`, line);
+        if (this._peerLinksVisible) line.addTo(this._map);
+        this._peerLinks.set(`${a.id}|${b.id}`, line);
       }
     }
 

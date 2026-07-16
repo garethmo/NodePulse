@@ -806,9 +806,10 @@ async function init() {
       if (e.key === key || e.key === key.toUpperCase()) handler();
     });
   };
-  wireToggle('nodepulse:togglelinks',  'l', (m) => m.toggleLinks(), 'Link lines');
-  wireToggle('nodepulse:toggletraces', 't', (m) => m.toggleTraces(), 'Traceroute paths');
-  wireToggle('nodepulse:togglenames',  'n', (m) => m.toggleNames(), 'Node names');
+  wireToggle('nodepulse:toggleselflinks', 's', (m) => m.toggleSelfLinks(), 'Self→node links');
+  wireToggle('nodepulse:togglepeerlinks', 'p', (m) => m.togglePeerLinks(), 'Peer proximity links');
+  wireToggle('nodepulse:toggletraces',    't', (m) => m.toggleTraces(), 'Traceroute paths');
+  wireToggle('nodepulse:togglenames',     'n', (m) => m.toggleNames(), 'Node names');
 
   // Set the initial active view.
   switchView('dashboard');
