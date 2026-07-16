@@ -26,6 +26,65 @@ logger = logging.getLogger(__name__)
 # ha_base_url option. We read it from app["config"] at request time rather than
 # hardcoding it here.
 
+# Candidate base URLs to try when relaying to the integration. The addon runs
+# in its own Docker container, so "localhost" there is the addon itself, not
+# HA core. The supervisor network exposes HA core as "homeassistant". We try
+# the configured value first, then a sensible fallback chain so the relay
+# works without the user having to set ha_base_url correctly.
+_HA_CANDIDATES = (
+    "http://homeassistant:8123",
+    "http://supervisor:8123",
+    "http://hassio:8123",
+    "http://localhost:8123",
+    "http://127.0.0.1:8123",
+)
+
+
+async def _relay_to_integration(request: web.Request, method: str, path: str, json_body=None) -> dict:
+    """
+    Relay an HTTP request to the NodePulse integration's local API, trying each
+    candidate HA base URL until one responds.
+
+    Returns the parsed JSON dict on success. Raises RuntimeError with a helpful
+    message if no candidate could be reached / all rejected the request.
+    """
+    configured = request.app["config"].ha_base_url.rstrip("/")
+    candidates = []
+    if configured not in _HA_CANDIDATES:
+        candidates.append(configured)
+    candidates.extend(_HA_CANDIDATES)
+
+    async with aiohttp.ClientSession() as session:
+        for base in candidates:
+            url = f"{base}{path}"
+            try:
+                kwargs = {"timeout": aiohttp.ClientTimeout(total=10)}
+                if method.upper() == "POST":
+                    kwargs["headers"] = {"Content-Type": "application/json"}
+                    kwargs["json"] = json_body
+                async with session.request(method, url, **kwargs) as resp:
+                    if resp.status in (200, 201):
+                        return await resp.json()
+                    # A real response (even an error) means we found HA core;
+                    # surface its error rather than trying other candidates.
+                    try:
+                        err = await resp.json()
+                        detail = err.get("error", "")
+                    except Exception:
+                        detail = ""
+                    raise RuntimeError(
+                        f"Integration at {base} rejected request: {detail}".strip()
+                    )
+            except RuntimeError:
+                raise  # propagate the integration's own error message
+            except Exception as exc:
+                logger.debug("Relay candidate %s failed: %s", base, exc)
+                continue
+    raise RuntimeError(
+        f"Could not reach the NodePulse integration. Tried: {', '.join(candidates)}. "
+        "Ensure the NodePulse integration is installed in HA and reachable from the addon."
+    )
+
 
 def _json_response(data: Any, status: int = 200) -> web.Response:
     """Helper that serialises to JSON with consistent content-type."""
@@ -258,19 +317,11 @@ async def handle_tracked_nodes(request: web.Request) -> web.Response:
     UI has a single source of truth.
     """
     try:
-        base = request.app["config"].ha_base_url.rstrip("/")
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{base}/api/nodepulse/tracked-nodes",
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
-                if resp.status != 200:
-                    return _error_response(
-                        "Integration did not return tracked nodes", status=502
-                    )
-                data = await resp.json()
-                node_ids = data.get("node_ids", [])
-                return _json_response({"node_ids": node_ids})
+        data = await _relay_to_integration(request, "GET", "/api/nodepulse/tracked-nodes")
+        node_ids = data.get("node_ids", [])
+        return _json_response({"node_ids": node_ids})
+    except RuntimeError as exc:
+        return _error_response(str(exc), status=502)
     except Exception as exc:
         logger.error("Failed to fetch tracked nodes from integration: %s", exc)
         return _error_response("Failed to reach NodePulse integration")
@@ -304,33 +355,16 @@ async def handle_track_node(request: web.Request) -> web.Response:
     enabled = bool(body.get("enabled", False))
 
     try:
-        base = request.app["config"].ha_base_url.rstrip("/")
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{base}/api/nodepulse/track",
-                headers={"Content-Type": "application/json"},
-                json={"node_id": node_id, "enabled": enabled},
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
-                if resp.status not in (200, 201):
-                    detail = ""
-                    try:
-                        err = await resp.json()
-                        detail = err.get("error", "")
-                    except Exception:
-                        pass
-                    return _error_response(
-                        f"Integration rejected track request: {detail}".strip(),
-                        status=502,
-                    )
-                return _json_response({"node_id": node_id, "enabled": enabled})
+        data = await _relay_to_integration(
+            request, "POST", "/api/nodepulse/track",
+            json_body={"node_id": node_id, "enabled": enabled},
+        )
+        return _json_response({"node_id": node_id, "enabled": enabled})
+    except RuntimeError as exc:
+        return _error_response(str(exc), status=502)
     except Exception as exc:
         logger.error(
-            "Failed to relay track-node request to integration (node=%s, base=%s): %s",
-            node_id, base, exc,
+            "Failed to relay track-node request to integration (node=%s): %s",
+            node_id, exc,
         )
-        return _error_response(
-            f"Could not reach NodePulse integration at {base}. "
-            "Ensure the NodePulse integration is installed and ha_base_url "
-            "points at Home Assistant core."
-        )
+        return _error_response("Failed to reach NodePulse integration")

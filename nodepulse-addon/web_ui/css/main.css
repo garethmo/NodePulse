@@ -515,16 +515,37 @@ body::before {
   border-radius: var(--radius-sm);
   color: var(--text-primary);
   font-family: inherit;
-  font-size: 13px;
-  padding: var(--space-sm) var(--space-md);
+  font-size: 14px;
+  line-height: 1.5;
+  padding: 10px var(--space-md);
   outline: none;
   transition: border-color var(--transition-fast);
   resize: none;
-  min-height: 36px;
+  min-height: 56px;
+  max-height: 200px;
+  overflow-y: auto;
+  box-sizing: border-box;
 }
 
 #message-input:focus { border-color: var(--border-active); }
 #message-input::placeholder { color: var(--text-muted); }
+
+/* --- Message delivery status indicator ------------------------------------ */
+.message-meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 2px;
+}
+.msg-status { font-size: 10px; line-height: 1; }
+.msg-status.sending { color: var(--text-muted); }
+.msg-status.sent    { color: var(--color-teal); }
+.msg-status.failed  { color: var(--text-danger); font-weight: 600; }
+.message-bubble.outgoing.failed {
+  border-color: var(--text-danger);
+  background: rgba(255, 82, 82, 0.12);
+}
 
 #send-btn {
   background: linear-gradient(135deg, var(--color-teal), var(--color-blue));

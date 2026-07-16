@@ -4,7 +4,7 @@
 
 NodePulse is a Home Assistant addon and custom integration that gives you deep visibility into your Meshtastic mesh network — node health, signal metrics, GPS positions on the HA map, and encrypted direct messaging — all from inside Home Assistant.
 
-> ⚠️ **Clean Room Implementation**: NodePulse is built entirely from scratch. It does not use any code from MeshSense or any other prior project. MeshSense was used only as a conceptual feature reference.
+> NodePulse is an independent, from-scratch implementation for monitoring Meshtastic networks inside Home Assistant.
 
 ---
 

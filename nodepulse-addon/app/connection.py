@@ -16,7 +16,9 @@ risks causing state loss in the upstream meshtastic library.
 """
 import asyncio
 import collections
+import json
 import logging
+import os
 import threading
 import time
 from typing import Any, Dict, List, Optional
@@ -25,6 +27,12 @@ import meshtastic
 import meshtastic.tcp_interface
 from pubsub import pub
 
+# Persistent storage directory. Under HA Supervisor this is /data, which
+# survives addon restarts (unlike the container's ephemeral filesystem). We
+# persist the recent message buffer there so the Web UI's message history is
+# not lost when the addon is restarted.
+_DATA_DIR = os.environ.get("NODEPULSE_DATA_DIR", "/data")
+_MESSAGES_FILE = os.path.join(_DATA_DIR, "messages.json")
 logger = logging.getLogger(__name__)
 
 # How long (seconds) to wait between reconnection attempts.
@@ -91,6 +99,9 @@ class MeshtasticConnection:
         # Populated by the pubsub "meshtastic.receive" listener below.
         self._msg_lock = threading.Lock()
         self._messages: "collections.deque" = collections.deque(maxlen=200)
+
+        # Restore any previously-persisted messages so history survives restarts.
+        self._load_messages()
 
         # Mutable cache of the last node list we read from the interface. The
         # meshtastic library updates interface.nodes asynchronously (e.g. when a
@@ -400,8 +411,35 @@ class MeshtasticConnection:
             }
             with self._msg_lock:
                 self._messages.append(entry)
+                self._save_messages()
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("Error handling received packet (ignored): %s", exc)
+
+    def _load_messages(self) -> None:
+        """Restore the message buffer from disk so history survives restarts.
+
+        Best-effort: any read/parse failure is ignored and we start empty.
+        """
+        try:
+            if not os.path.exists(_MESSAGES_FILE):
+                return
+            with open(_MESSAGES_FILE, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            if isinstance(data, list):
+                # Keep only the most recent `maxlen` entries.
+                self._messages = collections.deque(data[-self._messages.maxlen:], maxlen=self._messages.maxlen)
+                logger.info("Restored %s messages from %s", len(self._messages), _MESSAGES_FILE)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Could not load persisted messages (ignored): %s", exc)
+
+    def _save_messages(self) -> None:
+        """Persist the current message buffer to disk (best-effort)."""
+        try:
+            os.makedirs(_DATA_DIR, exist_ok=True)
+            with open(_MESSAGES_FILE, "w", encoding="utf-8") as fh:
+                json.dump(list(self._messages), fh)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Could not persist messages (ignored): %s", exc)
 
     def _capture_traceroute(self, packet: Dict[str, Any]) -> None:
         """
@@ -603,14 +641,18 @@ class MeshtasticConnection:
                 return False
             try:
                 # hopLimit is a REQUIRED positional argument in meshtastic 2.7.x —
-                # passing None raises TypeError. A value of 0 lets the firmware
-                # apply its default max-hop behaviour; we use a small sane default.
+                # passing None raises TypeError. A hopLimit of 0 would prevent the
+                # packet from relaying past directly-connected nodes, so most
+                # traceroutes would silently fail. We use a sane high value (10)
+                # which lets the firmware traverse the mesh; a 0 here is NOT the
+                # "default", it actually disables relaying.
                 # The call blocks until the RouteDiscovery reply arrives (the
                 # library waits internally for the acknowledgment flag). The
                 # actual per-hop route SNR is NOT stored by the library, so we
                 # capture it ourselves in _on_mesh_receive (TRACEROUTE_APP) and
                 # merge it into our node cache below.
-                self._interface.sendTraceRoute(destination, 0)
+                self._pending_traceroute_dest = destination
+                self._interface.sendTraceRoute(destination, 10)
                 # Pull whatever route data we've captured so far into the cache.
                 self._refresh_node_from_interface(destination)
                 return True

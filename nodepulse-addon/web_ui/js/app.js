@@ -521,16 +521,52 @@ function renderMessageList() {
     bubble.className = `message-bubble ${type}`;
     const time = new Date((msg.timestamp || Date.now() / 1000) * 1000)
       .toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+
+    // Delivery status indicator for outgoing messages.
+    let statusHtml = '';
+    if (msg.outgoing) {
+      if (msg.status === 'sending') {
+        statusHtml = `<span class="msg-status sending" title="Sending…">🕓</span>`;
+      } else if (msg.status === 'sent') {
+        statusHtml = `<span class="msg-status sent" title="Delivered to node">✓</span>`;
+      } else if (msg.status === 'failed') {
+        statusHtml = `<span class="msg-status failed" title="Send failed — click to retry">⚠ Failed</span>`;
+        bubble.classList.add('failed');
+      }
+    }
+
     const sender = msg.outgoing
       ? 'Me'
       : (msg.from_name || nodeName(msg.from_id) || 'Unknown');
     bubble.innerHTML = `
       ${msg.outgoing ? '' : `<div class="message-sender">${escapeHtml(sender)}</div>`}
       <div class="message-text">${escapeHtml(msg.text)}</div>
-      <div class="message-time">${time}</div>`;
+      <div class="message-meta">
+        <span class="message-time">${time}</span>${statusHtml}
+      </div>`;
+
+    // Click a failed message to retry sending it.
+    if (msg.outgoing && msg.status === 'failed') {
+      bubble.style.cursor = 'pointer';
+      bubble.addEventListener('click', () => retryMessage(msg));
+    }
     list.appendChild(bubble);
   }
   list.scrollTop = list.scrollHeight;
+}
+
+// Retry a previously-failed outgoing message.
+async function retryMessage(msg) {
+  msg.status = 'sending';
+  if (state.activeConversation === msg.conversation) renderMessageList();
+  try {
+    await sendMessage(msg.text, msg.destination ?? null, msg.channel ?? 0);
+    msg.status = 'sent';
+  } catch (err) {
+    msg.status = 'failed';
+    showToast(`Send failed: ${err.message}`, 'error');
+  }
+  if (state.activeConversation === msg.conversation) renderMessageList();
 }
 
 // Switch the active conversation to a node's DM thread (used when the user
@@ -559,12 +595,15 @@ async function handleSend() {
 
   // Optimistically render the outgoing message in the active thread.
   const optimistic = {
-    id: `local-${Date.now()}`,
+    id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
     text,
     outgoing: true,
     conversation: state.activeConversation,
     timestamp: Date.now() / 1000,
     from_name: 'Me',
+    status: 'sending', // sending -> sent | failed
+    destination,
+    channel,
   };
   storeMessage(optimistic);
   renderMessageList();
@@ -573,8 +612,14 @@ async function handleSend() {
 
   try {
     await sendMessage(text, destination, channel);
+    optimistic.status = 'sent';
   } catch (err) {
+    optimistic.status = 'failed';
     showToast(`Send failed: ${err.message}`, 'error');
+  }
+  // Re-render so the status indicator (tick / cross) updates.
+  if (state.activeConversation === optimistic.conversation) {
+    renderMessageList();
   }
 }
 
