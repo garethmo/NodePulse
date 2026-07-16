@@ -33,6 +33,7 @@ from pubsub import pub
 # not lost when the addon is restarted.
 _DATA_DIR = os.environ.get("NODEPULSE_DATA_DIR", "/data")
 _MESSAGES_FILE = os.path.join(_DATA_DIR, "messages.json")
+_TRACEROUTES_FILE = os.path.join(_DATA_DIR, "traceroutes.json")
 logger = logging.getLogger(__name__)
 
 # How long (seconds) to wait between reconnection attempts.
@@ -102,6 +103,12 @@ class MeshtasticConnection:
 
         # Restore any previously-persisted messages so history survives restarts.
         self._load_messages()
+
+        # Persisted traceroute results, keyed by node ID. Restored on startup so
+        # discovered routes survive restarts; refreshed whenever a new traceroute
+        # for that node completes.
+        self._traceroutes: Dict[str, Dict[str, Any]] = {}
+        self._load_traceroutes()
 
         # Mutable cache of the last node list we read from the interface. The
         # meshtastic library updates interface.nodes asynchronously (e.g. when a
@@ -453,6 +460,31 @@ class MeshtasticConnection:
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("Could not persist messages (ignored): %s", exc)
 
+    def _load_traceroutes(self) -> None:
+        """Restore persisted traceroute results keyed by node ID (best-effort)."""
+        try:
+            if not os.path.exists(_TRACEROUTES_FILE):
+                return
+            with open(_TRACEROUTES_FILE, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            if isinstance(data, dict):
+                self._traceroutes = {str(k): v for k, v in data.items()}
+                logger.info(
+                    "Restored %s traceroute results from %s",
+                    len(self._traceroutes), _TRACEROUTES_FILE,
+                )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Could not load persisted traceroutes (ignored): %s", exc)
+
+    def _save_traceroutes(self) -> None:
+        """Persist the current traceroute results to disk (best-effort)."""
+        try:
+            os.makedirs(_DATA_DIR, exist_ok=True)
+            with open(_TRACEROUTES_FILE, "w", encoding="utf-8") as fh:
+                json.dump(self._traceroutes, fh)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Could not persist traceroutes (ignored): %s", exc)
+
     def _capture_traceroute(self, packet: Dict[str, Any]) -> None:
         """
         Parse a TRACEROUTE_APP reply and store the discovered route on the
@@ -502,7 +534,7 @@ class MeshtasticConnection:
 
             # Store under the node this route belongs to. Prefer the node the
             # user asked about if we have a pending request; otherwise the
-            # reply's origin.
+            # reply's origin. A re-request simply overwrites the previous result.
             target_id = self._pending_traceroute_dest or from_id
             with self._nodes_lock:
                 node = next(
@@ -510,7 +542,10 @@ class MeshtasticConnection:
                 )
                 if node is not None:
                     node["traceroute"] = record
+                # Persist so the result survives addon restarts.
+                self._traceroutes[target_id] = record
                 self._pending_traceroute_dest = None
+            self._save_traceroutes()
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("Error capturing traceroute (ignored): %s", exc)
 
@@ -668,6 +703,14 @@ class MeshtasticConnection:
                         entry["traceroute"] = None
                         cached[node_id] = entry
                         result.append(entry)
+
+                # Merge persisted traceroute results back onto their nodes so a
+                # previously-discovered route is shown even before (or without)
+                # a fresh traceroute request this session.
+                for tid, rec in self._traceroutes.items():
+                    if tid in cached and rec:
+                        cached[tid]["traceroute"] = rec
+
                 self._nodes = list(cached.values())
 
             return result
@@ -780,6 +823,21 @@ class MeshtasticConnection:
                 (n for n in self._nodes if n.get("id") == node_id), None
             )
             if existing is not None:
+                # Preserve our own captured traceroute/position data, which the
+                # library's raw node dict does not carry (it only sets an
+                # internal ack flag). A blind update would clobber it.
+                captured_traceroute = existing.get("traceroute")
+                captured_lat = existing.get("latitude")
+                captured_lng = existing.get("longitude")
+                captured_alt = existing.get("altitude")
                 existing.update(lib_node)
+                if captured_traceroute is not None:
+                    existing["traceroute"] = captured_traceroute
+                if captured_lat is not None:
+                    existing["latitude"] = captured_lat
+                if captured_lng is not None:
+                    existing["longitude"] = captured_lng
+                if captured_alt is not None:
+                    existing["altitude"] = captured_alt
             else:
                 self._nodes.append(dict(lib_node))
