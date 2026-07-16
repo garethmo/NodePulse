@@ -311,7 +311,6 @@ class NodePressureSensor(_NodeSensorBase):
 class NodeLatitudeSensor(_NodeSensorBase):
     """GPS latitude (°) reported by the node's last position fix, if any."""
     _metric_key = "latitude"
-    _attr_device_class = SensorDeviceClass.GPS
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "°"
 
@@ -324,7 +323,6 @@ class NodeLatitudeSensor(_NodeSensorBase):
 class NodeLongitudeSensor(_NodeSensorBase):
     """GPS longitude (°) reported by the node's last position fix, if any."""
     _metric_key = "longitude"
-    _attr_device_class = SensorDeviceClass.GPS
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "°"
 
