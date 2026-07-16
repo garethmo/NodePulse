@@ -128,8 +128,8 @@ class NodePulseCoordinator(DataUpdateCoordinator):
         """
         Fetch a fresh snapshot from the addon.
 
-        Both /api/status and /api/nodes are fetched in this single method.
-        If either fails we raise UpdateFailed so HA marks all entities
+        /api/status, /api/nodes, and /api/messages are fetched in this single method.
+        If any fails we raise UpdateFailed so HA marks all entities
         as unavailable — this is preferable to silently returning stale data.
         """
         try:
@@ -142,7 +142,7 @@ class NodePulseCoordinator(DataUpdateCoordinator):
             else:
                 candidates = self._host_candidates
 
-            status, nodes, working = await _fetch_all(
+            status, nodes, messages, working = await _fetch_all(
                 self._session, candidates, self._access_key
             )
             if working and working != self._working_host:
@@ -154,20 +154,20 @@ class NodePulseCoordinator(DataUpdateCoordinator):
             raise UpdateFailed(f"Unexpected error fetching NodePulse data: {exc}") from exc
 
         logger.debug(
-            "NodePulse data refreshed (host=%s, node_count=%s)",
-            self._host, len(nodes),
+            "NodePulse data refreshed (host=%s, node_count=%s, message_count=%s)",
+            self._host, len(nodes), len(messages) if messages else 0,
         )
-        return {"status": status, "nodes": nodes}
+        return {"status": status, "nodes": nodes, "messages": messages}
 
 
 async def _fetch_all(
     session: aiohttp.ClientSession, candidates: list, access_key: str | None = None
-) -> tuple[Dict, List[Dict], str | None]:
+) -> tuple[Dict, List[Dict], List[Dict], str | None]:
     """
-    Fetch /api/status and /api/nodes, returning the working host alongside the data.
+    Fetch /api/status, /api/nodes, and /api/messages, returning the working host alongside the data.
 
-    Tries each candidate in order until one responds. Returns a 3-tuple of
-    (status, nodes, working_host) so the coordinator can pin the responsive host
+    Tries each candidate in order until one responds. Returns a 4-tuple of
+    (status, nodes, messages, working_host) so the coordinator can pin the responsive host
     and avoid repeated DNS timeouts on every subsequent poll.
     """
     import asyncio
@@ -177,12 +177,13 @@ async def _fetch_all(
     working_host: str | None = None
     for host in candidates:
         try:
-            status, nodes = await asyncio.gather(
+            status, nodes, messages = await asyncio.gather(
                 _get_json(session, f"{host}/api/status", access_key),
                 _get_json(session, f"{host}/api/nodes", access_key),
+                _get_json(session, f"{host}/api/messages", access_key),
             )
             working_host = host
-            return status, nodes, working_host
+            return status, nodes, messages, working_host
         except Exception as exc:
             logger.debug("Addon host unreachable (host=%s): %s", host, exc)
             continue

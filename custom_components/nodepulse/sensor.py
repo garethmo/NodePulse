@@ -108,6 +108,7 @@ async def async_setup_entry(
                 NodeTemperatureSensor(coordinator, entry, node_id),
                 NodeHumiditySensor(coordinator, entry, node_id),
                 NodePressureSensor(coordinator, entry, node_id),
+                NodeMessageSensor(coordinator, entry, node_id),
             ]
             registered_entities.extend(sensor_set)
             new_entities.extend(sensor_set)
@@ -300,6 +301,31 @@ class NodePressureSensor(_NodeSensorBase):
         super().__init__(coordinator, entry, node_id)
         self._attr_unique_id = f"{entry.entry_id}_{node_id}_pressure"
         self._attr_name = "Pressure"
+
+
+class NodeMessageSensor(_NodeSensorBase):
+    """Last received text message from this node, for automation triggers."""
+    _metric_key = "last_message"
+    _attr_icon = "mdi:message-text"
+    _attr_has_entity_name = True
+
+    def __init__(self, coordinator, entry, node_id):
+        super().__init__(coordinator, entry, node_id)
+        self._attr_unique_id = f"{entry.entry_id}_{node_id}_message"
+        self._attr_name = "Last Message"
+
+    @property
+    def native_value(self) -> str:
+        """Return the most recent message text from this node."""
+        messages = (self.coordinator.data or {}).get("messages", [])
+        if not messages:
+            return None
+        # Filter messages from this node and return the most recent
+        node_messages = [m for m in messages if m.get("from_id") == self._node_id]
+        if not node_messages:
+            return None
+        # Messages are returned oldest first, so get the last one
+        return node_messages[-1].get("text") if node_messages else None
 
 
 # ---------------------------------------------------------------------------

@@ -2,6 +2,15 @@
 
 All notable changes to NodePulse are documented here.
 
+## [0.2.11] - 2026-07-16
+### Added
+- **Message sensor entities** for each tracked node, showing the last received text message for automation triggers.
+- Device tracker entities now reliably create when tracking nodes with GPS coordinates.
+
+### Fixed
+- **Device tracker race condition** - Fixed a race condition where device trackers weren't created when toggling "Track in HA" because GPS data wasn't available yet. Now uses `async_config_entry_first_refresh()` to ensure data is loaded before discovery.
+- **Message data fetching** - Updated coordinator to fetch messages from the addon API alongside status and nodes data.
+
 ## [0.2.10] - 2026-07-16
 ### Changed
 - Added repository metadata files (`repository.json` and `hacs.json`) to allow direct installation from the GitHub repository via the Home Assistant Add-on Store and HACS.
