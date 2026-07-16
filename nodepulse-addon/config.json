@@ -1,8 +1,8 @@
 {
   "name": "NodePulse",
-  "version": "0.2.9",
+  "version": "0.2.10",
   "slug": "nodepulse",
-  "description": "Monitor Meshtastic mesh network health — nodes, signal metrics, GPS mapping, and encrypted direct messaging.",
+  "description": "Comprehensive dashboard and integration for monitoring Meshtastic networks directly within Home Assistant",
   "url": "https://github.com/garethmo/NodePulse",
   "arch": ["aarch64", "amd64", "armhf", "armv7", "i386"],
   "startup": "application",
