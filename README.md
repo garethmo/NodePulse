@@ -11,6 +11,12 @@ NodePulse is a Home Assistant addon and custom integration that gives you deep v
 
 ---
 
+## Screenshots
+
+<div align="center">
+  <img src="images/dashboard.png" width="90%" alt="NodePulse Web Dashboard">
+</div>
+
 ---
 
 ## Features
