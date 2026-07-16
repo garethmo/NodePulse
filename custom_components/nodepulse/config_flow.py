@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 # Validation schema for the initial setup step.
 _STEP_USER_SCHEMA = vol.Schema({
-    vol.Required(CONF_HOST, description={"suggested_value": "http://localhost:8099"}): str,
+    vol.Required(CONF_HOST, description={"suggested_value": "http://a0d7b954-nodepulse:8099"}): str,
     vol.Optional(CONF_ACCESS_KEY, default=""): str,
     vol.Optional(CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL): vol.All(int, vol.Range(min=10, max=300)),
 })
@@ -49,23 +49,59 @@ _OPTIONS_SCHEMA = vol.Schema({
 
 async def _validate_connection(session: aiohttp.ClientSession, host: str) -> bool:
     """
-    Attempt to call the /api/status endpoint to verify the addon is reachable
-    AND actually connected to a node. Returns True only on HTTP 200 with a
-    JSON body where ``connected`` is truthy — an error body (even with a 200)
-    must not be treated as a valid connection.
+    Attempt to call the /api/status endpoint to verify the addon is reachable.
+
+    Returns True as long as the addon responds with HTTP 200 JSON — we do NOT
+    require ``connected: true`` here because the Meshtastic node may be
+    temporarily offline or still initialising when the user first sets up the
+    integration.  Requiring a live node connection would make the setup fail
+    whenever the node reboots, forcing the user to remove and re-add the
+    integration unnecessarily.
+
+    The user-supplied host is tried first, then a chain of well-known
+    supervisor DNS names for the addon container, so the integration connects
+    even if the user left the default or typed the wrong hostname.
     """
-    url = f"{host.rstrip('/')}/api/status"
-    try:
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-            if resp.status != 200:
-                return False
-            if resp.content_type != "application/json":
-                return False
-            data = await resp.json()
-            return bool(data.get("connected"))
-    except Exception as exc:
-        logger.debug("Addon connection validation failed (url=%s): %s", url, exc)
+    candidates = _host_candidates(host)
+    for candidate in candidates:
+        url = f"{candidate}/api/status"
+        try:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                if resp.status != 200:
+                    continue
+                if resp.content_type != "application/json":
+                    continue
+                # The addon responded with valid JSON — it is running.
+                # We intentionally do NOT check data["connected"] here; the
+                # Meshtastic node may be offline without the addon being broken.
+                await resp.json()
+                return True
+        except Exception as exc:
+            logger.debug("Addon connection validation failed (url=%s): %s", url, exc)
     return False
+
+
+def _host_candidates(host: str) -> list:
+    """
+    Build an ordered list of host URLs to try when reaching the addon.
+
+    Starts with the user-supplied value, then falls back through the standard
+    supervisor addon container DNS names. The addon slug is ``nodepulse`` and
+    supervisor prefixes addon container names with ``a0d7b954-``.
+    """
+    candidates = []
+    if host:
+        candidates.append(host.rstrip("/"))
+    slug = "nodepulse"
+    for base in (
+        f"http://a0d7b954-{slug}",
+        f"http://a0d7b954-{slug}:8099",
+        f"http://{slug}",
+        f"http://{slug}:8099",
+    ):
+        if base not in candidates:
+            candidates.append(base)
+    return candidates
 
 
 class NodePulseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -101,7 +137,7 @@ class NodePulseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
 
             errors["base"] = "cannot_connect"
-            logger.warning({"host": host}, "Could not validate connection to NodePulse addon")
+            logger.warning("Could not validate connection to NodePulse addon (host=%s)", host)
 
         return self.async_show_form(
             step_id="user",

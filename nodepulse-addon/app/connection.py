@@ -81,10 +81,11 @@ class MeshtasticConnection:
     pool worker via asyncio.to_thread() to keep the event loop unblocked.
     """
 
-    def __init__(self, host: str, port: int, mode: str = "direct") -> None:
+    def __init__(self, host: str, port: int, mode: str = "direct", access_key: Optional[str] = None) -> None:
         self._host = host
         self._port = port
         self._mode = mode
+        self._access_key = (access_key or "").strip() or None
 
         # The underlying meshtastic TCP interface — None when disconnected.
         self._interface: Optional[meshtastic.tcp_interface.TCPInterface] = None
@@ -142,6 +143,21 @@ class MeshtasticConnection:
     @property
     def is_connected(self) -> bool:
         return self._connected
+
+    def set_access_key(self, access_key: Optional[str]) -> None:
+        """
+        Update the access key used to authenticate admin operations with the
+        node. Called when the integration relays a key via the API header so a
+        user can configure it in one place. Applied immediately to the live
+        interface (when supported) and stored for future reconnects.
+        """
+        key = (access_key or "").strip() or None
+        self._access_key = key
+        if key is not None and self._interface is not None:
+            try:
+                self._interface.access_key = key
+            except AttributeError:
+                logger.debug("meshtastic library does not support access_key — ignoring")
 
     async def get_status(self) -> Dict[str, Any]:
         """
@@ -208,16 +224,23 @@ class MeshtasticConnection:
         race conditions from multiple callers trying to reconnect simultaneously.
         """
         delay = _RECONNECT_BASE_DELAY
-        first_attempt = True
+        is_first_attempt = True
         while True:
             # Skip the initial backoff so we connect as soon as the addon
             # starts; only sleep between *subsequent* reconnect attempts.
-            if not first_attempt:
+            if not is_first_attempt:
                 await asyncio.sleep(delay)
-            first_attempt = False
 
             if not self._is_interface_healthy():
-                if self._mode == "proxy":
+                # On the very first iteration there is no prior connection, so
+                # use INFO rather than WARNING to avoid alarming log noise at
+                # every normal startup.
+                if is_first_attempt:
+                    logger.info(
+                        "Initiating first connection to Meshtastic node (host=%s, port=%s)",
+                        self._host, self._port,
+                    )
+                elif self._mode == "proxy":
                     logger.warning(
                         "Connection to Meshtastic TCP proxy at %s:%s lost — "
                         "attempting reconnect. Check that the official Meshtastic HA "
@@ -254,6 +277,8 @@ class MeshtasticConnection:
                         delay, self._host, exc,
                     )
 
+            is_first_attempt = False
+
     # ------------------------------------------------------------------
     # Private synchronous helpers (run inside asyncio.to_thread)
     # ------------------------------------------------------------------
@@ -274,9 +299,34 @@ class MeshtasticConnection:
             # The meshtastic library raises on connection failure, which propagates
             # up to the caller (connect() or monitor_connection()) for handling.
             try:
-                self._interface = meshtastic.tcp_interface.TCPInterface(
-                    hostname=self._host, portNumber=self._port, debugOut=None
-                )
+                # The access_key is used to authenticate admin operations with
+                # the node. Newer meshtastic library versions accept it directly
+                # as a constructor kwarg; older versions do not, so we set it as
+                # an attribute after the interface is created. A node that does
+                # not require a key simply ignores it.
+                kwargs = {"hostname": self._host, "portNumber": self._port, "debugOut": None}
+                try:
+                    kwargs["access_key"] = self._access_key
+                    self._interface = meshtastic.tcp_interface.TCPInterface(**kwargs)
+                except TypeError:
+                    # Older library without an access_key kwarg — construct
+                    # normally, then attach the key if the attribute is supported.
+                    kwargs.pop("access_key", None)
+                    self._interface = meshtastic.tcp_interface.TCPInterface(**kwargs)
+                    if self._access_key is not None:
+                        try:
+                            self._interface.access_key = self._access_key
+                        except AttributeError:
+                            logger.debug(
+                                "meshtastic library does not support access_key — ignoring"
+                            )
+                # Ensure the attribute is set on versions that accept it only
+                # post-construction.
+                if self._access_key is not None and getattr(self._interface, "access_key", None) is None:
+                    try:
+                        self._interface.access_key = self._access_key
+                    except AttributeError:
+                        pass
 
                 # Subscribe to inbound packets so the Web UI / API can show a
                 # live message feed. The meshtastic library delivers packets on
@@ -526,7 +576,11 @@ class MeshtasticConnection:
         blocked, and serialised via _persist_lock.
         """
         try:
-            snapshot = dict(self._traceroutes)
+            # Snapshot under _nodes_lock so we never read a partially-updated
+            # dict. _capture_traceroute writes self._traceroutes under the same
+            # lock, so skipping it here would be a data-race.
+            with self._nodes_lock:
+                snapshot = dict(self._traceroutes)
             t = threading.Thread(
                 target=self._write_json, args=(snapshot, _TRACEROUTES_FILE), daemon=True
             )
@@ -849,7 +903,7 @@ class MeshtasticConnection:
                 return True
             except Exception as exc:
                 logger.error(
-                    {"destination": destination, "error": str(exc)}, "Failed to send message"
+                    "Failed to send message (destination=%s): %s", destination, exc
                 )
                 return False
 
@@ -876,7 +930,7 @@ class MeshtasticConnection:
                 return True
             except Exception as exc:
                 logger.error(
-                    {"destination": destination, "error": str(exc)}, "Traceroute request failed"
+                    "Traceroute request failed (destination=%s): %s", destination, exc
                 )
                 return False
 
@@ -893,7 +947,7 @@ class MeshtasticConnection:
                 return True
             except Exception as exc:
                 logger.error(
-                    {"destination": destination, "error": str(exc)}, "Position request failed"
+                    "Position request failed (destination=%s): %s", destination, exc
                 )
                 return False
 

@@ -16,8 +16,6 @@ Shutdown sequence (on SIGTERM from HA Supervisor):
 """
 import asyncio
 import logging
-import os
-import signal
 from pathlib import Path
 
 from aiohttp import web
@@ -115,6 +113,7 @@ def build_app(config) -> web.Application:
         host=target_host,
         port=target_port,
         mode=mode,
+        access_key=config.access_key,
     )
     app["ignored_nodes"] = set(config.ignored_nodes)
     app["config"] = config

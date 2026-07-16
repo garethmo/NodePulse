@@ -90,7 +90,7 @@ def load_config() -> Config:
         )
 
     return Config(
-        log_level=raw.get("log_level", "info").upper(),
+        log_level=(raw.get("log_level") or "info").upper(),
         connection_type=connection_type,
         meshtastic_host=raw["meshtastic_host"],
         meshtastic_port=int(raw.get("meshtastic_port", 4403)),
@@ -99,7 +99,7 @@ def load_config() -> Config:
         access_key=raw.get("access_key") or None,
         scan_interval=int(raw.get("scan_interval", 30)),
         ignored_nodes=[n for n in raw.get("ignored_nodes", []) if n],
-        ha_base_url=raw.get("ha_base_url", "http://homeassistant:8123").rstrip("/"),
+        ha_base_url=(raw.get("ha_base_url") or "http://homeassistant:8123").rstrip("/"),
     )
 
 

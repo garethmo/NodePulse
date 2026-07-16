@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Connect to NodePulse",
-        "description": "Enter the URL of your NodePulse addon. If running in Home Assistant, this is typically http://localhost:8099.",
+        "description": "Enter the URL of your NodePulse addon. When running as a Home Assistant addon, leave blank or use http://a0d7b954-nodepulse:8099 — the integration will auto-discover the correct address.",
         "data": {
           "host": "Addon URL",
           "access_key": "Access Key (optional)",

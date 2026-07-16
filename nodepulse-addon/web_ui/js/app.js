@@ -542,9 +542,16 @@ function storeMessage(msg) {
   if (thread.some(m => m.id === msg.id)) return;
   // Meshtastic broadcasts our own sent packets back to us, so a DM we just
   // sent also arrives as an "outgoing" server echo. Drop it if we already
-  // have an optimistic bubble with the same text in this thread — otherwise
-  // the user sees every sent message twice.
-  if (msg.outgoing && thread.some(m => m.outgoing && m.text === msg.text)) return;
+  // have an optimistic bubble with the same text sent within the last 3 seconds
+  // — this suppresses the firmware echo without silently dropping legitimately
+  // repeated messages (e.g. a user sending "OK" twice).
+  const THREE_SECONDS = 3;
+  const now = Date.now() / 1000;
+  if (msg.outgoing && thread.some(m =>
+    m.outgoing &&
+    m.text === msg.text &&
+    Math.abs((m.timestamp || 0) - (msg.timestamp || now)) < THREE_SECONDS
+  )) return;
   thread.push(msg);
 
   const conv = _ensureConversation(key);

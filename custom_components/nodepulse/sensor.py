@@ -113,7 +113,7 @@ async def async_setup_entry(
             ]
             registered_entities.extend(sensor_set)
             new_entities.extend(sensor_set)
-            logger.info({"node_id": node_id}, "Registering new node sensors")
+            logger.info("Registering new node sensors (node_id=%s)", node_id)
 
         if new_entities:
             async_add_entities(new_entities)

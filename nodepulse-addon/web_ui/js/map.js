@@ -501,7 +501,9 @@ export class MapManager {
 
 /** Escape HTML special chars to prevent XSS in popup content. */
 function escapeHtml(str) {
-  return String(str)
+  // Coerce null/undefined to '' so we never render the literal string "null"
+  // in popup tables when a node property is missing.
+  return String(str ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')

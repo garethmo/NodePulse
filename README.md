@@ -161,7 +161,11 @@ To run this as a local addon in your Home Assistant instance:
 2. Copy the `custom_components/nodepulse/` folder into your HA `config/custom_components/` directory.
 3. Restart Home Assistant.
 4. Go to **Settings → Integrations → Add Integration** and search for **NodePulse**.
-5. Enter the addon URL (default: `http://localhost:8099`) and follow the setup wizard.
+5. Enter the addon URL. The default `http://a0d7b954-nodepulse:8099` is the
+   addon's supervisor DNS name, which HA core can reach from inside the
+   supervisor network. Do **not** use `http://localhost:8099` here — from the
+   integration's point of view `localhost` is Home Assistant itself, not the
+   addon container. Follow the setup wizard.
 
 ---
 
@@ -212,13 +216,47 @@ node's single connection and relays framed packets to multiple clients. To use i
 | `meshtastic_port` | int | `4403` | **Direct mode:** TCP port of the node's Meshtastic interface |
 | `proxy_host` | string | _(empty)_ | **Proxy mode:** host running the official integration (`homeassistant`) |
 | `proxy_port` | int | `4403` | **Proxy mode:** TCP proxy port (must match the integration) |
-| `access_key` | string | _(empty)_ | Optional access key if your node requires authentication |
+| `access_key` | string | _(empty)_ | Optional access key if your node requires authentication. Can be set in **either** the addon options or the integration setup — both are relayed to the addon's node connection. Requires a meshtastic library version that supports access keys; ignored otherwise. |
 | `scan_interval` | int | `30` | How often (seconds) the integration polls the addon (10–300) |
 | `ignored_nodes` | list | `[]` | List of node hex IDs to exclude from all API responses |
 
 > 💡 After changing `connection_type` (or any add-on option), **uninstall and
 > re-install** the add-on so Home Assistant re-reads `config.json` and
 > surfaces the new fields — a plain restart does not refresh the schema.
+
+---
+
+## Troubleshooting
+
+### "Track in HA" toggle fails (502) / addon logs `404: Not Found` on `/api/nodepulse/*`
+
+The addon relays the track request to Home Assistant core, which only answers
+if the **NodePulse custom integration is loaded**. A `404` here means HA has no
+`/api/nodepulse/track` (or `/api/nodepulse/tracked-nodes`) route yet.
+
+1. Confirm `custom_components/nodepulse/` is inside your HA `config/custom_components/` directory.
+2. Restart Home Assistant, then add the **NodePulse** integration via **Settings → Integrations → Add Integration**.
+3. Verify in the HA logs that the relay views registered:
+   `Registered NodePulse HTTP relay views at /api/nodepulse/track and /api/nodepulse/tracked-nodes`
+4. Once the integration is loaded, the addon's `GET /api/tracked-nodes` and `POST /api/track-node` 502s resolve automatically.
+
+> 💡 The addon and the integration are **separate pieces**. Installing the addon
+> alone is not enough — the integration must also be installed and set up in HA,
+> since only it can register entities and serve the `/api/nodepulse/*` endpoints.
+
+### Integration shows "cannot_connect" (setup fails)
+
+The integration runs **inside Home Assistant core** and must reach the addon
+over the supervisor network. `localhost:8099` from the integration means HA
+itself, not the addon container.
+
+1. Use the addon's supervisor DNS name as the integration host:
+   `http://a0d7b954-nodepulse:8099` (the addon must expose port `8099/tcp`,
+   which it does by default in `config.json`).
+2. Do **not** use `http://localhost:8099` or the ingress `https://<ha>/api/hassio_ingress/...` URL — the integration is a Python client, not a browser, and cannot use the ingress proxy.
+3. Confirm the addon shows `connected: true` in its own log (Settings →
+   Add-ons → NodePulse → Log) before adding the integration. The integration's
+   connectivity test only passes when the addon is already linked to a node.
 
 ---
 

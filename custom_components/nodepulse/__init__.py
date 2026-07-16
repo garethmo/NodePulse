@@ -51,7 +51,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Register a listener so option changes (e.g. scan_interval) trigger a reload.
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
 
-    logger.info({"entry_id": entry.entry_id}, "NodePulse integration set up")
+    logger.info("NodePulse integration set up (entry_id=%s)", entry.entry_id)
     return True
 
 

@@ -113,6 +113,19 @@ async def _relay_to_integration(request: web.Request, method: str, path: str, js
     )
 
 
+def _apply_access_key(request: web.Request) -> None:
+    """
+    If the integration relayed an access key via the X-NodePulse-Access-Key
+    header, push it down to the live Meshtastic connection so admin operations
+    (e.g. on nodes that require authentication) can succeed. Harmless when no
+    key is supplied or the node does not require one.
+    """
+    key = request.headers.get("X-NodePulse-Access-Key")
+    if key:
+        conn: MeshtasticConnection = request.app["connection"]
+        conn.set_access_key(key)
+
+
 def _json_response(data: Any, status: int = 200) -> web.Response:
     """Helper that serialises to JSON with consistent content-type."""
     return web.Response(
@@ -138,6 +151,7 @@ async def handle_status(request: web.Request) -> web.Response:
     integration's DataUpdateCoordinator to determine binary sensor state.
     """
     conn: MeshtasticConnection = request.app["connection"]
+    _apply_access_key(request)
     try:
         status = await conn.get_status()
         return _json_response(status)
@@ -160,6 +174,7 @@ async def handle_nodes(request: web.Request) -> web.Response:
     """
     conn: MeshtasticConnection = request.app["connection"]
     ignored: set = request.app["ignored_nodes"]
+    _apply_access_key(request)
 
     try:
         nodes = await conn.get_nodes()
@@ -382,7 +397,7 @@ async def handle_track_node(request: web.Request) -> web.Response:
     enabled = bool(body.get("enabled", False))
 
     try:
-        data = await _relay_to_integration(
+        await _relay_to_integration(
             request, "POST", "/api/nodepulse/track",
             json_body={"node_id": node_id, "enabled": enabled},
         )

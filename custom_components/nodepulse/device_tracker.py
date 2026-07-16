@@ -85,7 +85,7 @@ async def async_setup_entry(
 
             registered_node_ids.add(node_id)
             new_trackers.append(NodeTracker(coordinator, entry, node_id))
-            logger.info({"node_id": node_id}, "Registering device tracker for node")
+            logger.info("Registering device tracker for node (node_id=%s)", node_id)
 
         if new_trackers:
             async_add_entities(new_trackers)
