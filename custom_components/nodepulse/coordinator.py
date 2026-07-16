@@ -157,6 +157,10 @@ class NodePulseCoordinator(DataUpdateCoordinator):
             "NodePulse data refreshed (host=%s, node_count=%s, message_count=%s)",
             self._host, len(nodes), len(messages) if messages else 0,
         )
+        logger.debug(
+            "NodePulse messages sample: %s",
+            messages[:2] if messages else None
+        )
         return {"status": status, "nodes": nodes, "messages": messages}
 
 
