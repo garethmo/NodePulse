@@ -25,6 +25,7 @@ from homeassistant.components.sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     PERCENTAGE,
+    UnitOfLength,
     UnitOfTemperature,
     UnitOfPressure,
 )
@@ -108,7 +109,11 @@ async def async_setup_entry(
                 NodeTemperatureSensor(coordinator, entry, node_id),
                 NodeHumiditySensor(coordinator, entry, node_id),
                 NodePressureSensor(coordinator, entry, node_id),
-                NodeMessageSensor(coordinator, entry, node_id),
+                NodeLatitudeSensor(coordinator, entry, node_id),
+                NodeLongitudeSensor(coordinator, entry, node_id),
+                NodeAltitudeSensor(coordinator, entry, node_id),
+                NodeMessageReceivedSensor(coordinator, entry, node_id),
+                NodeMessageSentSensor(coordinator, entry, node_id),
             ]
             registered_entities.extend(sensor_set)
             new_entities.extend(sensor_set)
@@ -303,37 +308,104 @@ class NodePressureSensor(_NodeSensorBase):
         self._attr_name = "Pressure"
 
 
-class NodeMessageSensor(_NodeSensorBase):
-    """Last received text message from this node, for automation triggers."""
-    _metric_key = "last_message"
-    _attr_icon = "mdi:message-text"
-    _attr_has_entity_name = True
+class NodeLatitudeSensor(_NodeSensorBase):
+    """GPS latitude (°) reported by the node's last position fix, if any."""
+    _metric_key = "latitude"
+    _attr_device_class = SensorDeviceClass.GPS
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "°"
 
     def __init__(self, coordinator, entry, node_id):
         super().__init__(coordinator, entry, node_id)
-        self._attr_unique_id = f"{entry.entry_id}_{node_id}_message"
-        self._attr_name = "Last Message"
+        self._attr_unique_id = f"{entry.entry_id}_{node_id}_latitude"
+        self._attr_name = "Latitude"
+
+
+class NodeLongitudeSensor(_NodeSensorBase):
+    """GPS longitude (°) reported by the node's last position fix, if any."""
+    _metric_key = "longitude"
+    _attr_device_class = SensorDeviceClass.GPS
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "°"
+
+    def __init__(self, coordinator, entry, node_id):
+        super().__init__(coordinator, entry, node_id)
+        self._attr_unique_id = f"{entry.entry_id}_{node_id}_longitude"
+        self._attr_name = "Longitude"
+
+
+class NodeAltitudeSensor(_NodeSensorBase):
+    """GPS altitude (m) reported by the node's last position fix, if any."""
+    _metric_key = "altitude"
+    _attr_device_class = SensorDeviceClass.DISTANCE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfLength.METERS
+
+    def __init__(self, coordinator, entry, node_id):
+        super().__init__(coordinator, entry, node_id)
+        self._attr_unique_id = f"{entry.entry_id}_{node_id}_altitude"
+        self._attr_name = "Altitude"
+
+
+class NodeMessageSensor(_NodeSensorBase):
+    """Base class for per-node message sensors that surface a message feed.
+
+    Two concrete subclasses expose the most recent received and sent message
+    for a node, so automations can trigger on both directions independently.
+    """
+
+    _attr_icon = "mdi:message-text"
+    _attr_has_entity_name = True
+
+    _outgoing: bool  # True = sent messages, False = received messages
+
+    def __init__(self, coordinator, entry, node_id):
+        super().__init__(coordinator, entry, node_id)
+        direction = "sent" if self._outgoing else "received"
+        self._attr_unique_id = f"{entry.entry_id}_{node_id}_message_{direction}"
+
+    def _node_messages(self) -> List[Dict[str, Any]]:
+        """Return received/sent messages involving this node, oldest first."""
+        messages = (self.coordinator.data or {}).get("messages", [])
+        node_messages = [
+            m for m in messages
+            if (m.get("to_id") == self._node_id or m.get("from_id") == self._node_id)
+            and bool(m.get("outgoing")) == self._outgoing
+        ]
+        return node_messages
 
     @property
     def native_value(self) -> str:
-        """Return the most recent message text sent TO this node."""
-        messages = (self.coordinator.data or {}).get("messages", [])
+        """Return the most recent message text for this direction."""
+        node_messages = self._node_messages()
         logger.debug(
-            "NodeMessageSensor (node_id=%s): messages count=%s, sample=%s",
-            self._node_id, len(messages), messages[:2] if messages else None
-        )
-        if not messages:
-            return None
-        # Filter messages sent TO this node and return the most recent
-        node_messages = [m for m in messages if m.get("to_id") == self._node_id]
-        logger.debug(
-            "NodeMessageSensor (node_id=%s): filtered messages count=%s",
-            self._node_id, len(node_messages)
+            "NodeMessageSensor (node_id=%s, outgoing=%s): filtered count=%s",
+            self._node_id, self._outgoing, len(node_messages)
         )
         if not node_messages:
             return None
         # Messages are returned oldest first, so get the last one
-        return node_messages[-1].get("text") if node_messages else None
+        return node_messages[-1].get("text")
+
+
+class NodeMessageReceivedSensor(NodeMessageSensor):
+    """Last received text message for this node, for automation triggers."""
+
+    _outgoing = False
+
+    def __init__(self, coordinator, entry, node_id):
+        super().__init__(coordinator, entry, node_id)
+        self._attr_name = "Last Message Received"
+
+
+class NodeMessageSentSensor(NodeMessageSensor):
+    """Last sent text message for this node, for automation triggers."""
+
+    _outgoing = True
+
+    def __init__(self, coordinator, entry, node_id):
+        super().__init__(coordinator, entry, node_id)
+        self._attr_name = "Last Message Sent"
 
 
 # ---------------------------------------------------------------------------

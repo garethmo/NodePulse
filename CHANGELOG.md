@@ -2,6 +2,11 @@
 
 All notable changes to NodePulse are documented here.
 
+## [0.2.12] - 2026-07-16
+### Added
+- **GPS coordinate sensors** for each tracked node: Latitude, Longitude, and Altitude, sourced from the node's last known position fix.
+- **Separate sent/received message sensors** — the single "Last Message" sensor is replaced by "Last Message Received" and "Last Message Sent" so automations can trigger on each direction independently.
+
 ## [0.2.11] - 2026-07-16
 ### Added
 - **Message sensor entities** for each tracked node, showing the last received text message for automation triggers.
