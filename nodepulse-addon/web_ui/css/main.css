@@ -695,6 +695,22 @@ body::before {
 }
 .node-label::before { display: none; } /* hide default Leaflet arrow */
 
+/* Leaflet control: toggle link lines */
+.leaflet-control-linktoggle {
+  width: 30px;
+  height: 30px;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--text-teal, #00d4aa);
+  background: var(--bg-card, #141c2e);
+  border: 1px solid var(--border-subtle, rgba(255,255,255,0.06));
+  border-radius: 6px;
+  cursor: pointer;
+}
+.leaflet-control-linktoggle:hover {
+  border-color: var(--border-accent, rgba(0,212,170,0.6));
+}
+
 /* "?" marker for nodes that have no GPS fix (MeshSense-style unknown location) */
 .node-card-unknown {
   display: inline-flex;

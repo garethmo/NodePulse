@@ -92,6 +92,13 @@ class MeshtasticConnection:
         self._msg_lock = threading.Lock()
         self._messages: "collections.deque" = collections.deque(maxlen=200)
 
+        # Mutable cache of the last node list we read from the interface. The
+        # meshtastic library updates interface.nodes asynchronously (e.g. when a
+        # traceroute/position response arrives); keeping our own snapshot lets us
+        # merge those late updates so /api/nodes reflects them on the next poll.
+        self._nodes_lock = threading.Lock()
+        self._nodes: List[Dict[str, Any]] = []
+
     # ------------------------------------------------------------------
     # Public async API
     # ------------------------------------------------------------------
@@ -145,12 +152,19 @@ class MeshtasticConnection:
         return await asyncio.to_thread(self._send_message_sync, text, destination, channel)
 
     async def request_traceroute(self, destination: str) -> bool:
-        """Request a traceroute packet towards a specific destination node ID."""
-        return await asyncio.to_thread(self._request_traceroute_sync, destination)
+        """Request a traceroute towards a specific destination node."""
+        ok = await asyncio.to_thread(self._request_traceroute_sync, destination)
+        # Pull the response (per-hop SNR / route) into our cache so the API
+        # reflects it on the next poll.
+        await asyncio.to_thread(self._refresh_node_from_interface, destination)
+        return ok
 
     async def request_position(self, destination: str) -> bool:
         """Request a fresh GPS position from a specific destination node."""
-        return await asyncio.to_thread(self._request_position_sync, destination)
+        ok = await asyncio.to_thread(self._request_position_sync, destination)
+        # Merge the node's reply position into our cache.
+        await asyncio.to_thread(self._refresh_node_from_interface, destination)
+        return ok
 
     async def get_messages(self) -> List[Dict[str, Any]]:
         """Return the most recent received text messages (oldest first)."""
@@ -385,39 +399,53 @@ class MeshtasticConnection:
         with self._lock:
             if not self._connected or self._interface is None:
                 return []
-
             nodes_raw = self._interface.nodes or {}
             result = []
 
-            for node_id, node_data in nodes_raw.items():
-                # Extract the nested sub-objects safely — the meshtastic library
-                # returns protobuf-derived dicts whose keys may be absent.
-                user = node_data.get("user", {})
-                position = node_data.get("position", {})
-                device_metrics = node_data.get("deviceMetrics", {})
-                environment = node_data.get("environmentMetrics", {}) or {}
+            # Merge the interface's latest node data into our persistent cache.
+            # This keeps late-arriving traceroute/position updates visible on the
+            # next poll even though the library updates interface.nodes async.
+            with self._nodes_lock:
+                cached = {n.get("id"): n for n in self._nodes}
+                for node_id, node_data in nodes_raw.items():
+                    # Extract the nested sub-objects safely — the meshtastic
+                    # library returns protobuf-derived dicts whose keys may be
+                    # absent.
+                    user = node_data.get("user", {})
+                    position = node_data.get("position", {})
+                    device_metrics = node_data.get("deviceMetrics", {})
+                    environment = node_data.get("environmentMetrics", {}) or {}
 
-                result.append({
-                    "id": node_id,
-                    "long_name": user.get("longName", ""),
-                    "short_name": user.get("shortName", ""),
-                    "hw_model": user.get("hwModel", ""),
-                    "last_heard": node_data.get("lastHeard"),
-                    "snr": node_data.get("snr"),
-                    "rssi": node_data.get("rssi"),
-                    "hops_away": node_data.get("hopsAway"),
-                    "is_licensed": user.get("isLicensed", False),
-                    "latitude": position.get("latitude"),
-                    "longitude": position.get("longitude"),
-                    "altitude": position.get("altitude"),
-                    "battery_level": device_metrics.get("batteryLevel"),
-                    "voltage": device_metrics.get("voltage"),
-                    "channel_utilization": device_metrics.get("channelUtilization"),
-                    "air_util_tx": device_metrics.get("airUtilTx"),
-                    "temperature": environment.get("temperature"),
-                    "relative_humidity": environment.get("relative_humidity"),
-                    "barometric_pressure": environment.get("barometric_pressure"),
-                })
+                    entry = {
+                        "id": node_id,
+                        "long_name": user.get("longName", ""),
+                        "short_name": user.get("shortName", ""),
+                        "hw_model": user.get("hwModel", ""),
+                        "last_heard": node_data.get("lastHeard"),
+                        "snr": node_data.get("snr"),
+                        "rssi": node_data.get("rssi"),
+                        "hops_away": node_data.get("hopsAway"),
+                        "is_licensed": user.get("isLicensed", False),
+                        "latitude": position.get("latitude"),
+                        "longitude": position.get("longitude"),
+                        "altitude": position.get("altitude"),
+                        "battery_level": device_metrics.get("batteryLevel"),
+                        "voltage": device_metrics.get("voltage"),
+                        "channel_utilization": device_metrics.get("channelUtilization"),
+                        "air_util_tx": device_metrics.get("airUtilTx"),
+                        "temperature": environment.get("temperature"),
+                        "relative_humidity": environment.get("relative_humidity"),
+                        "barometric_pressure": environment.get("barometric_pressure"),
+                    }
+                    # Preserve any fields we already track but the raw entry
+                    # lacks (defensive — keeps our cached view stable).
+                    if node_id in cached:
+                        cached[node_id].update(entry)
+                        result.append(cached[node_id])
+                    else:
+                        cached[node_id] = entry
+                        result.append(entry)
+                self._nodes = list(cached.values())
 
             return result
 
@@ -470,7 +498,11 @@ class MeshtasticConnection:
             if not self._connected or self._interface is None:
                 return False
             try:
-                self._interface.sendTraceRoute(destination)
+                # hopLimit=None lets the library default it; the call blocks until
+                # the RouteDiscovery reply arrives (the library waits internally),
+                # and the per-hop SNR is written into the node's DB so /api/nodes
+                # reflects the result on the next poll.
+                self._interface.sendTraceRoute(destination, None)
                 return True
             except Exception as exc:
                 logger.error(
@@ -483,10 +515,38 @@ class MeshtasticConnection:
             if not self._connected or self._interface is None:
                 return False
             try:
-                self._interface.sendPosition(destinationId=destination)
+                # Request a position with wantResponse=True. The node replies with
+                # a POSITION_APP packet which the library funnels through
+                # onResponsePosition -> _onPositionReceive, updating its node DB.
+                # We then copy that fresh fix into our own nodes dict below.
+                self._interface.sendPosition(destinationId=destination, wantResponse=True)
                 return True
             except Exception as exc:
                 logger.error(
                     {"destination": destination, "error": str(exc)}, "Position request failed"
                 )
                 return False
+
+    def _refresh_node_from_interface(self, node_id: str) -> None:
+        """
+        Merge the latest position/metrics for a node from the meshtastic
+        library's own node DB into our cached ``self._nodes`` dict.
+
+        The library updates ``interface.nodes`` asynchronously when a
+        traceroute/position response arrives. The next ``_get_nodes_sync`` call
+        already re-merges everything, but calling this ensures the freshly
+        returned data is reflected on the immediate next poll.
+        """
+        if self._interface is None or not node_id:
+            return
+        lib_node = self._interface.nodes.get(node_id)
+        if lib_node is None:
+            return
+        with self._nodes_lock:
+            existing = next(
+                (n for n in self._nodes if n.get("id") == node_id), None
+            )
+            if existing is not None:
+                existing.update(lib_node)
+            else:
+                self._nodes.append(dict(lib_node))

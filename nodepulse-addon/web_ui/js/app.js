@@ -399,6 +399,8 @@ function switchView(viewName) {
     fullMap.init();
     fullMap.updateNodes(state.nodes);
     fullMap.invalidateSize();
+  } else if (viewName === 'settings') {
+    renderSettings();
   }
 }
 
@@ -507,6 +509,22 @@ async function init() {
   // Event delegation on the nodes grid — attached once here so it is NOT
   // re-added on every 15s poll inside renderNodesGrid().
   document.getElementById('nodes-grid').addEventListener('click', handleNodeCardAction);
+
+  // Map link-line toggle: a control button on each Leaflet map dispatches a
+  // custom event; the "L" key is a keyboard shortcut for the same action.
+  const onToggleLinks = () => {
+    const dash = dashMap.toggleLinks();
+    fullMap.toggleLinks();
+    showToast(`Link lines ${dash ? 'shown' : 'hidden'}`, 'info', 1500);
+  };
+  document.getElementById('map').addEventListener('nodepulse:togglelinks', onToggleLinks);
+  document.getElementById('full-map').addEventListener('nodepulse:togglelinks', onToggleLinks);
+  document.addEventListener('keydown', (e) => {
+    // Ignore when typing in an input/textarea.
+    const tag = (e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea') return;
+    if (e.key === 'l' || e.key === 'L') onToggleLinks();
+  });
 
   // Set the initial active view.
   switchView('dashboard');

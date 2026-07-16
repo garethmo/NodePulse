@@ -78,6 +78,25 @@ function createMap(elementId) {
     maxZoom: 19,
   }).addTo(map);
 
+  // Toggle-link-lines control (also bound to the "L" keyboard shortcut).
+  const LinkToggleControl = L.Control.extend({
+    options: { position: 'topright' },
+    onAdd() {
+      const btn = L.DomUtil.create('button', 'leaflet-control-linktoggle');
+      btn.type = 'button';
+      btn.title = 'Toggle link lines (L)';
+      btn.textContent = '⤳';
+      L.DomEvent.disableClickPropagation(btn);
+      L.DomEvent.on(btn, 'click', () => {
+        // Notify the owning MapManager via a custom event on the map element.
+        const evt = new CustomEvent('nodepulse:togglelinks');
+        map.getContainer().dispatchEvent(evt);
+      });
+      return btn;
+    },
+  });
+  map.addControl(new LinkToggleControl());
+
   return map;
 }
 
@@ -98,6 +117,22 @@ export class MapManager {
     this._selfId = null;
     // Map<nodeId, L.Polyline> — link lines from the self node to each node.
     this._links = new Map();
+    // Whether the link lines are currently shown.
+    this._linksVisible = true;
+  }
+
+  /**
+   * Toggle the visibility of the link lines (distance connectors between the
+   * self node and every other GPS-fixed node). Returns the new visibility.
+   * Triggered by the map control button and the "L" keyboard shortcut.
+   */
+  toggleLinks() {
+    this._linksVisible = !this._linksVisible;
+    for (const line of this._links.values()) {
+      if (this._linksVisible) line.addTo(this._map);
+      else this._map.removeLayer(line);
+    }
+    return this._linksVisible;
   }
 
   /**
@@ -219,7 +254,9 @@ export class MapManager {
       }).bindTooltip(`↔ ${formatDistance(km)}`, {
         sticky: true,
         className: 'link-label',
-      }).addTo(this._map);
+      });
+      // Only add to the map if link lines are currently enabled.
+      if (this._linksVisible) line.addTo(this._map);
       this._links.set(id, line);
     }
   }
