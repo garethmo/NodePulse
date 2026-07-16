@@ -43,10 +43,23 @@ async def async_setup_entry(
     """
     coordinator: NodePulseCoordinator = hass.data[DOMAIN][entry.entry_id]
     registered_node_ids: Set[str] = set()
+    registered_entities: List[CoordinatorEntity] = []
 
     @callback
     def _discover_new_trackers() -> None:
         nodes: List[Dict] = coordinator.data.get("nodes", [])
+        visible_ids = {n.get("id") for n in nodes if n.get("id")}
+
+        # Remove trackers for nodes that are no longer tracked (or gone).
+        for entity in list(registered_entities):
+            nid = getattr(entity, "_node_id", None)
+            if nid is not None and (
+                nid not in coordinator.tracked_nodes or nid not in visible_ids
+            ):
+                registered_entities.remove(entity)
+                registered_node_ids.discard(nid)
+                hass.async_create_task(entity.async_remove(force_remove=True))
+
         new_trackers = []
 
         for node in nodes:
@@ -54,9 +67,11 @@ async def async_setup_entry(
             if not node_id or node_id in registered_node_ids:
                 continue
 
-            # Only register a tracker if the node has reported at least one
-            # GPS fix — avoids cluttering the map with nodes that will never
-            # have a location.
+            # Only one tracked node gets a tracker (the Web UI toggle drives
+            # this), and only if it has reported at least one GPS fix.
+            if node_id not in coordinator.tracked_nodes:
+                continue
+
             lat = node.get("latitude")
             lon = node.get("longitude")
             if lat is None or lon is None:

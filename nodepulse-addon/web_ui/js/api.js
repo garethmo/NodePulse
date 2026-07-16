@@ -102,3 +102,21 @@ export async function requestPosition(destination) {
     body: JSON.stringify({ destination }),
   });
 }
+
+/** Fetch the set of node IDs currently tracked as HA entities. */
+export async function fetchTrackedNodes() {
+  return _apiFetch('/tracked-nodes');
+}
+
+/**
+ * Enable or disable HA entity tracking for a specific node.
+ * @param {string} nodeId - Node ID hex string (e.g. "!abcd1234").
+ * @param {boolean} enabled - True to create entities, false to remove them.
+ */
+export async function trackNode(nodeId, enabled) {
+  return _apiFetch('/track-node', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ node_id: nodeId, enabled }),
+  });
+}

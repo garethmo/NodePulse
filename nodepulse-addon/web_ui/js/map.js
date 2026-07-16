@@ -117,18 +117,26 @@ export class MapManager {
     this._selfId = null;
     // Map<nodeId, L.Polyline> — link lines from the self node to each node.
     this._links = new Map();
+    // Map<nodeId, L.Polyline> — multi-hop traceroute route paths discovered
+    // between nodes (shows which intermediate nodes can talk to each other).
+    this._routeLinks = new Map();
     // Whether the link lines are currently shown.
     this._linksVisible = true;
   }
 
   /**
    * Toggle the visibility of the link lines (distance connectors between the
-   * self node and every other GPS-fixed node). Returns the new visibility.
+   * self node and every other GPS-fixed node, plus discovered traceroute
+   * routes). Returns the new visibility.
    * Triggered by the map control button and the "L" keyboard shortcut.
    */
   toggleLinks() {
     this._linksVisible = !this._linksVisible;
     for (const line of this._links.values()) {
+      if (this._linksVisible) line.addTo(this._map);
+      else this._map.removeLayer(line);
+    }
+    for (const line of this._routeLinks.values()) {
       if (this._linksVisible) line.addTo(this._map);
       else this._map.removeLayer(line);
     }
@@ -206,6 +214,7 @@ export class MapManager {
 
       // Always refresh popup content and the name label in case metrics changed.
       const existing = this._markers.get(id);
+      existing._nodeData = node; // stash raw data so link drawing can read routes
       existing.setPopupContent(this._buildPopupHtml(node));
       existing.setTooltipContent(escapeHtml(node.long_name || node.id));
       if (isSelf) existing.setIcon(SELF_ICON);
@@ -224,22 +233,34 @@ export class MapManager {
   }
 
   /**
-   * Draw a line from the self node to each node that has a GPS fix, labelled
-   * with the great-circle distance. Existing link lines are replaced so they
-   * stay correct as positions update on every poll.
+   * Draw link lines showing which nodes can talk to each other.
+   *
+   * Two kinds of links are drawn:
+   *   1. Self → node: a direct distance connector from the local node to every
+   *      other GPS-fixed node (the existing behaviour). A node with
+   *      hops_away == 1 is known to be directly reachable from the self node.
+   *   2. Traceroute routes: when a traceroute has been run, the discovered
+   *      hop path lists the intermediate node IDs. We draw a multi-segment
+   *      polyline through those nodes to visualise the actual mesh path that
+   *      traffic takes between the self node and the destination.
+   *
+   * All link lines are rebuilt each poll so they track live position changes.
    */
   _updateLinks() {
     if (!this._map) return;
 
-    // Clear previous link lines.
+    // Clear previous link lines of both kinds.
     for (const line of this._links.values()) line.remove();
     this._links.clear();
+    for (const line of this._routeLinks.values()) line.remove();
+    this._routeLinks.clear();
 
     if (!this._selfId) return;
     const selfMarker = this._markers.get(this._selfId);
     if (!selfMarker) return;
     const selfLatLng = selfMarker.getLatLng();
 
+    // --- 1. Self → node distance connectors ---------------------------
     for (const [id, marker] of this._markers) {
       if (id === this._selfId) continue;
       const latLng = marker.getLatLng();
@@ -255,9 +276,48 @@ export class MapManager {
         sticky: true,
         className: 'link-label',
       });
-      // Only add to the map if link lines are currently enabled.
       if (this._linksVisible) line.addTo(this._map);
       this._links.set(id, line);
+    }
+
+    // --- 2. Discovered traceroute routes between nodes ----------------
+    for (const [id, marker] of this._markers) {
+      const route = marker._nodeData && marker._nodeData.traceroute;
+      if (!route) continue;
+
+      // The route is keyed under the destination node. Build the ordered list
+      // of node IDs: self -> route nodes -> destination (route), and the
+      // mirrored path for routeBack. We draw both discovered directions.
+      const selfId = this._selfId;
+      const toNum = (n) => '!' + (n >>> 0).toString(16).padStart(8, '0');
+      const segments = [];
+
+      // Forward path: self -> ...route... -> from_id (the responding node).
+      const forward = [selfId, ...(route.route || []).map(toNum)];
+      if (route.from_id) forward.push(route.from_id);
+      segments.push(forward);
+
+      // Return path: from_id -> ...routeBack... -> self.
+      if (route.route_back && route.route_back.length) {
+        const back = [route.from_id, ...(route.route_back || []).map(toNum), selfId];
+        segments.push(back);
+      }
+
+      for (const path of segments) {
+        const pts = [];
+        for (const nid of path) {
+          const m = this._markers.get(nid);
+          if (m) pts.push(m.getLatLng());
+        }
+        if (pts.length < 2) continue; // not all hops have known coordinates
+        const line = L.polyline(pts, {
+          color: '#4fc3f7',
+          weight: 2,
+          opacity: 0.7,
+        }).bindTooltip('Traceroute path', { sticky: true, className: 'link-label' });
+        if (this._linksVisible) line.addTo(this._map);
+        this._routeLinks.set(`${id}-${segments.indexOf(path)}`, line);
+      }
     }
   }
 

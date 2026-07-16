@@ -471,19 +471,6 @@ body::before {
   flex-shrink: 0;
 }
 
-#destination-select {
-  font-family: inherit;
-  font-size: 11px;
-  background: var(--bg-input);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  color: var(--text-secondary);
-  padding: var(--space-xs) var(--space-sm);
-  min-width: 0;
-  flex-shrink: 0;
-  max-width: 100px;
-}
-
 #message-input {
   flex: 1;
   background: var(--bg-input);
@@ -517,6 +504,82 @@ body::before {
 }
 #send-btn:hover { opacity: 0.85; box-shadow: var(--glow-teal); }
 #send-btn:active { transform: scale(0.97); }
+
+/* --- Conversation tabs (channel + DM threads) ------------------------------ */
+#conversation-tabs {
+  display: flex;
+  gap: 6px;
+  padding: var(--space-sm) var(--space-md);
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border-subtle);
+  scrollbar-width: thin;
+}
+.conversation-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+.conversation-tab:hover { border-color: var(--border-accent); }
+.conversation-tab.active {
+  background: linear-gradient(135deg, rgba(0,212,170,0.2), rgba(79,195,247,0.15));
+  border-color: var(--border-accent);
+  color: var(--text-teal);
+}
+.conv-badge {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--color-teal);
+  color: #0a0e1a;
+  font-size: 10px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* --- Compose recipient pill ------------------------------------------------ */
+#compose-recipient {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 var(--space-sm);
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  max-width: 120px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+#compose-recipient .recipient-icon { color: var(--text-teal); }
+#recipient-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.message-empty {
+  padding: var(--space-xl);
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.message-text { white-space: pre-wrap; word-break: break-word; }
+.message-bubble.incoming .message-sender { color: var(--color-teal); }
 
 /* --- Charts Row ----------------------------------------------------------- */
 #charts-row {
@@ -602,6 +665,50 @@ body::before {
   background: var(--bg-highlight);
   border-color: var(--border-accent);
   color: var(--text-teal);
+}
+
+.node-card-traceroute {
+  margin-top: var(--space-sm);
+  padding: var(--space-sm);
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+}
+.node-card-traceroute .traceroute-path {
+  color: var(--text-teal);
+  margin: 2px 0;
+  line-height: 1.5;
+}
+.node-card-traceroute .traceroute-time {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.node-track-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+.node-track-toggle input { cursor: pointer; }
+
+#node-filter {
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  padding: 8px 12px;
+  font-family: inherit;
+  font-size: 13px;
+}
+#node-filter:focus {
+  outline: none;
+  border-color: var(--border-accent);
 }
 
 /* --- Map View ------------------------------------------------------------- */

@@ -56,23 +56,47 @@ async def async_setup_entry(
 
     # Track which node IDs already have entities so we don't duplicate them.
     registered_node_ids: Set[str] = set()
+    # Keep references so we can remove entities when a node is untracked.
+    registered_entities: List[CoordinatorEntity] = []
 
     # Always create the aggregate node count sensor immediately.
     async_add_entities([NodeCountSensor(coordinator, entry)])
 
     @callback
     def _discover_new_nodes() -> None:
-        """Called after every coordinator update to find and register new nodes."""
-        nodes: List[Dict] = coordinator.data.get("nodes", [])
-        new_entities = []
+        """Called after every coordinator update to find and register new nodes.
 
+        Only nodes the user has chosen to track (coordinator.tracked_nodes) get
+        per-node sensor entities. This lets the Web UI's "Track in HA" toggle
+        selectively create entities for individual nodes instead of importing
+        the whole mesh at once.
+        """
+        nodes: List[Dict] = coordinator.data.get("nodes", [])
+        visible_ids = {n.get("id") for n in nodes if n.get("id")}
+
+        # Remove entities for nodes that are no longer tracked (or gone).
+        for entity in list(registered_entities):
+            nid = getattr(entity, "_node_id", None)
+            if nid is not None and (
+                nid not in coordinator.tracked_nodes or nid not in visible_ids
+            ):
+                registered_entities.remove(entity)
+                registered_node_ids.discard(nid)
+                hass.async_create_task(entity.async_remove(force_remove=True))
+
+        new_entities = []
         for node in nodes:
             node_id = node.get("id")
-            if not node_id or node_id in registered_node_ids:
-                continue  # already registered or bad data
+            if not node_id:
+                continue
+            # Per-node entities are created ONLY for tracked nodes.
+            if node_id not in coordinator.tracked_nodes:
+                continue
+            if node_id in registered_node_ids:
+                continue  # already registered
 
             registered_node_ids.add(node_id)
-            new_entities.extend([
+            sensor_set = [
                 NodeSnrSensor(coordinator, entry, node_id),
                 NodeRssiSensor(coordinator, entry, node_id),
                 NodeHopsSensor(coordinator, entry, node_id),
@@ -81,7 +105,9 @@ async def async_setup_entry(
                 NodeTemperatureSensor(coordinator, entry, node_id),
                 NodeHumiditySensor(coordinator, entry, node_id),
                 NodePressureSensor(coordinator, entry, node_id),
-            ])
+            ]
+            registered_entities.extend(sensor_set)
+            new_entities.extend(sensor_set)
             logger.info({"node_id": node_id}, "Registering new node sensors")
 
         if new_entities:

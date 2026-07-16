@@ -11,13 +11,20 @@ All responses use JSON. Error responses always include a human-readable
 """
 import json
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, List
 
+import aiohttp
 from aiohttp import web
 
 from .connection import MeshtasticConnection
 
 logger = logging.getLogger(__name__)
+
+# Default base URL of the NodePulse HA custom integration. Both the addon and
+# the integration run on the HA host, so localhost is reachable. The integration
+# exposes a local relay endpoint that is the ONLY component allowed to register
+# HA entities — the Web UI (behind HA Ingress) cannot reach HA core directly.
+_INTEGRATION_BASE_URL = "http://localhost:8099"
 
 
 def _json_response(data: Any, status: int = 200) -> web.Response:
@@ -235,3 +242,89 @@ async def handle_request_position(request: web.Request) -> web.Response:
             "Position request dispatch failed (destination=%s): %s", destination, exc
         )
         return _error_response("Failed to dispatch position request")
+
+
+# ---------------------------------------------------------------------------
+# Route: GET /api/tracked-nodes
+# ---------------------------------------------------------------------------
+
+async def handle_tracked_nodes(request: web.Request) -> web.Response:
+    """
+    Return the node IDs the user currently tracks as HA entities.
+
+    The authoritative tracked-set lives in the integration's config entry
+    options (the integration is the only component that can register entities).
+    We proxy the request to the integration's local relay endpoint so the Web
+    UI has a single source of truth.
+    """
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{_INTEGRATION_BASE_URL}/api/nodepulse/tracked-nodes",
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status != 200:
+                    return _error_response(
+                        "Integration did not return tracked nodes", status=502
+                    )
+                data = await resp.json()
+                node_ids = data.get("node_ids", [])
+                return _json_response({"node_ids": node_ids})
+    except Exception as exc:
+        logger.error("Failed to fetch tracked nodes from integration: %s", exc)
+        return _error_response("Failed to reach NodePulse integration")
+
+
+# ---------------------------------------------------------------------------
+# Route: POST /api/track-node
+# ---------------------------------------------------------------------------
+
+async def handle_track_node(request: web.Request) -> web.Response:
+    """
+    Enable or disable HA entity tracking for a node.
+
+    Expected JSON body:
+        { "node_id": "!abcd1234", "enabled": true }
+
+    The Web UI cannot register HA entities directly, so we relay the request
+    to the NodePulse integration's local API (running on localhost:8099). The
+    integration validates the node and creates/removes the device_tracker +
+    sensor set for that node.
+    """
+    try:
+        body: Dict[str, Any] = await request.json()
+    except Exception:
+        return _error_response("Request body must be valid JSON", status=400)
+
+    node_id = (body.get("node_id") or "").strip()
+    if not node_id:
+        return _error_response("'node_id' field is required", status=400)
+
+    enabled = bool(body.get("enabled", False))
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{_INTEGRATION_BASE_URL}/api/nodepulse/track",
+                headers={"Content-Type": "application/json"},
+                json={"node_id": node_id, "enabled": enabled},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status not in (200, 201):
+                    detail = ""
+                    try:
+                        err = await resp.json()
+                        detail = err.get("error", "")
+                    except Exception:
+                        pass
+                    return _error_response(
+                        f"Integration rejected track request: {detail}".strip(),
+                        status=502,
+                    )
+                return _json_response({"node_id": node_id, "enabled": enabled})
+    except Exception as exc:
+        logger.error(
+            "Failed to relay track-node request to integration (node=%s): %s",
+            node_id, exc,
+        )
+        return _error_response("Failed to reach NodePulse integration")

@@ -138,14 +138,16 @@
           <div class="card-header">
             <span class="card-title">Messages</span>
           </div>
+          <div id="conversation-tabs" role="tablist" aria-label="Conversations"></div>
           <div id="message-list"></div>
           <div id="message-compose">
-            <select id="destination-select" title="Message destination">
-              <option value="">Broadcast</option>
-            </select>
+            <div id="compose-recipient" title="Recipient">
+              <span class="recipient-icon">➤</span>
+              <span id="recipient-label">Primary</span>
+            </div>
             <textarea
               id="message-input"
-              placeholder="Type a message… (Enter to send)"
+              placeholder="Type a message… (Enter to send, Shift+Enter for newline)"
               rows="1"
               aria-label="Message text"
             ></textarea>
@@ -182,10 +184,17 @@
         </div>
       </div><!-- /view-dashboard -->
 
-      <!-- ---- NODES VIEW --------------------------------------------- -->
+       <!-- ---- NODES VIEW --------------------------------------------- -->
       <div id="view-nodes" class="view">
-        <div class="card-header" style="border:none;padding-left:0">
-          <h1 style="font-size:20px;font-weight:700">All Nodes</h1>
+        <div class="card-header" style="border:none;padding-left:0;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <h1 style="font-size:20px;font-weight:700;margin:0">All Nodes</h1>
+          <input
+            id="node-filter"
+            type="search"
+            placeholder="Filter by name, short name, or ID…"
+            aria-label="Filter nodes"
+            style="margin-left:auto;min-width:240px;max-width:360px;flex:1"
+          />
         </div>
         <div id="nodes-grid"></div>
       </div>
@@ -219,7 +228,7 @@
           <div class="settings-group-title">About</div>
           <div class="settings-row">
             <span class="settings-row-label">NodePulse Version</span>
-            <span class="settings-row-value">0.1.6</span>
+            <span class="settings-row-value">0.1.8</span>
           </div>
           <div class="settings-row">
             <span class="settings-row-label">Poll Interval</span>

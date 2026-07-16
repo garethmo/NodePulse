@@ -13,6 +13,7 @@ CONF_HOST          = "host"
 CONF_ACCESS_KEY    = "access_key"
 CONF_SCAN_INTERVAL = "scan_interval"
 CONF_IGNORED_NODES = "ignored_nodes"
+CONF_TRACKED_NODES = "tracked_nodes"
 
 # Defaults
 DEFAULT_SCAN_INTERVAL = 30  # seconds

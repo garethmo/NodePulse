@@ -13,7 +13,7 @@
  * is easy to trace top-to-bottom.
  */
 
-import { fetchStatus, fetchNodes, fetchChannels, fetchMessages, sendMessage, requestTraceRoute, requestPosition } from './api.js';
+import { fetchStatus, fetchNodes, fetchChannels, fetchMessages, sendMessage, requestTraceRoute, requestPosition, fetchTrackedNodes, trackNode } from './api.js';
 import { MapManager } from './map.js';
 import { ChartManager } from './charts.js';
 
@@ -32,6 +32,11 @@ const state = {
   currentView:    'dashboard',
   seenMessageIds: new Set(),  // dedupe inbound messages across polls
   selfId:         null,   // node ID of the locally-connected node
+  trackedNodes:   new Set(), // node IDs currently tracked as HA entities
+  nodeFilter:     '',       // free-text filter for the Nodes tab
+  activeConversation: 'ch:0', // currently-open thread (ch:<n> or dm:<nodeId>)
+  conversations:  {},       // key -> { key, name, kind, unread }
+  messagesByConv: {},       // key -> [message objects], persisted across polls
 };
 
 // ============================================================================
@@ -107,6 +112,29 @@ function formatDistance(km) {
   return `${km.toFixed(2)} km`;
 }
 
+// Distance (km) from the self/local node to a given node, or null if either
+// side lacks a GPS fix. Used to sort the node list and grid by proximity.
+function nodeDistanceKm(node) {
+  const self = state.nodes.find(n => n.id === state.selfId);
+  if (!self || self.latitude == null || self.longitude == null) return null;
+  if (node.latitude == null || node.longitude == null) return null;
+  if (node.id === state.selfId) return 0;
+  return haversineKm(self.latitude, self.longitude, node.latitude, node.longitude);
+}
+
+// Sort nodes by distance from the self node (nearest first); nodes without a
+// GPS fix or when the self node has no fix sort last.
+function sortByDistance(nodes) {
+  return [...nodes].sort((a, b) => {
+    const da = nodeDistanceKm(a);
+    const db = nodeDistanceKm(b);
+    if (da == null && db == null) return (b.last_heard ?? 0) - (a.last_heard ?? 0);
+    if (da == null) return 1;
+    if (db == null) return -1;
+    return da - db;
+  });
+}
+
 // ============================================================================
 // Rendering: Status Bar
 // ============================================================================
@@ -138,8 +166,9 @@ function renderNodeList(nodes) {
     return;
   }
 
-  // Sort: most-recently-heard first, unknown last.
-  const sorted = [...nodes].sort((a, b) => (b.last_heard ?? 0) - (a.last_heard ?? 0));
+  // Sort by distance from the self node (nearest first); falls back to
+  // most-recently-heard when GPS data is unavailable.
+  const sorted = sortByDistance(nodes);
 
   for (const node of sorted) {
     const li = document.createElement('li');
@@ -174,9 +203,6 @@ function renderNodeList(nodes) {
     li.addEventListener('click', () => selectNode(node.id));
     ul.appendChild(li);
   }
-
-  // Also refresh the destination select in the messaging pane.
-  _updateDestinationSelect(sorted);
 }
 
 // ============================================================================
@@ -191,6 +217,25 @@ function renderNodesGrid(nodes) {
     return;
   }
 
+  // Apply the free-text filter from the Nodes tab search box. Match against
+  // long name, short name, hardware model, or node ID (all case-insensitive).
+  const q = state.nodeFilter.trim().toLowerCase();
+  const filtered = q
+    ? nodes.filter(n =>
+        (n.long_name || '').toLowerCase().includes(q) ||
+        (n.short_name || '').toLowerCase().includes(q) ||
+        (n.hw_model || '').toLowerCase().includes(q) ||
+        (n.id || '').toLowerCase().includes(q))
+    : nodes;
+
+  if (filtered.length === 0) {
+    grid.innerHTML = `<div class="list-placeholder">No nodes match "${escapeHtml(state.nodeFilter)}".</div>`;
+    return;
+  }
+
+  // Sort the filtered nodes by distance from the self node (nearest first).
+  const sorted = sortByDistance(filtered);
+
   // Resolve the self node's coordinates once so we can compute per-node
   // distance (MeshSense-style "distance from your node").
   const selfNode = state.nodes.find(n => n.id === state.selfId);
@@ -198,7 +243,7 @@ function renderNodesGrid(nodes) {
   const selfLon  = selfNode?.longitude;
   const selfHasGps = selfLat != null && selfLon != null;
 
-  for (const node of nodes) {
+  for (const node of sorted) {
     const card = document.createElement('div');
     card.className = 'node-card';
 
@@ -218,6 +263,29 @@ function renderNodesGrid(nodes) {
     const tempText = node.temperature       != null ? `${node.temperature.toFixed(1)} °C` : 'N/A';
     const humText  = node.relative_humidity != null ? `${node.relative_humidity.toFixed(0)} %` : 'N/A';
     const presText = node.barometric_pressure != null ? `${node.barometric_pressure.toFixed(0)} hPa` : 'N/A';
+
+    // Traceroute route (if one has been captured for this node).
+    let tracerouteHtml = '';
+    const tr = node.traceroute;
+    if (tr) {
+      const formatHop = (n) => {
+        const id = '!' + (n >>> 0).toString(16).padStart(8, '0');
+        const match = state.nodes.find(nn => nn.id === id);
+        return escapeHtml(match ? (match.short_name || match.long_name || id) : id);
+      };
+      const forward = (tr.route || []).map(formatHop);
+      if (tr.from_id) forward.push(escapeHtml(state.nodes.find(n => n.id === tr.from_id)?.short_name || tr.from_id));
+      const pathStr = forward.length
+        ? `<strong>${escapeHtml(state.selfId || 'Self')}</strong> → ${forward.join(' → ')}`
+        : 'No route discovered';
+      const ago = formatRelativeTime(tr.timestamp);
+      tracerouteHtml = `
+        <div class="node-card-traceroute">
+          <div class="metric-label">Traceroute</div>
+          <div class="traceroute-path">${pathStr}</div>
+          <div class="traceroute-time">${ago}</div>
+        </div>`;
+    }
 
     card.innerHTML = `
       <div class="node-card-header">
@@ -265,10 +333,15 @@ function renderNodesGrid(nodes) {
           <div class="metric-value neutral" style="font-size:12px">${presText}</div>
         </div>
       </div>
+      ${tracerouteHtml}
       <div class="node-card-actions">
         <button class="action-btn" data-action="traceroute" data-node="${escapeHtml(node.id)}">Traceroute</button>
         <button class="action-btn" data-action="position"   data-node="${escapeHtml(node.id)}">Req. Position</button>
         <button class="action-btn" data-action="message"    data-node="${escapeHtml(node.id)}">Message</button>
+        <label class="node-track-toggle" title="Create Home Assistant entities for this node">
+          <input type="checkbox" data-action="track" data-node="${escapeHtml(node.id)}" ${state.trackedNodes.has(node.id) ? 'checked' : ''} />
+          <span>Track in HA</span>
+        </label>
       </div>`;
 
     grid.appendChild(card);
@@ -303,10 +376,27 @@ async function handleNodeCardAction(event) {
       showToast(`Position request failed: ${err.message}`, 'error');
     }
   } else if (action === 'message') {
-    // Switch to dashboard and pre-select this node as DM target.
-    switchView('dashboard');
-    document.getElementById('destination-select').value = nodeId;
-    document.getElementById('message-input').focus();
+    // Open (or focus) this node's Direct-Message thread on the dashboard.
+    openDirectMessage(nodeId);
+  } else if (action === 'track') {
+    const checkbox = btn;
+    const enabled = checkbox.checked;
+    // Optimistically reflect the intended state; revert on failure.
+    if (enabled) state.trackedNodes.add(nodeId);
+    else state.trackedNodes.delete(nodeId);
+    try {
+      await trackNode(nodeId, enabled);
+      showToast(
+        `${enabled ? 'Tracking' : 'Stopped tracking'} ${nodeId} in Home Assistant`,
+        'success',
+      );
+    } catch (err) {
+      // Roll back on error so the checkbox matches reality.
+      if (enabled) state.trackedNodes.delete(nodeId);
+      else state.trackedNodes.add(nodeId);
+      showToast(`Track request failed: ${err.message}`, 'error');
+      btn.checked = !enabled;
+    }
   }
 }
 
@@ -320,52 +410,169 @@ function selectNode(nodeId) {
 }
 
 // ============================================================================
-// Messaging
+// Messaging — conversation threads (mirrors the Meshtastic Android app:
+// one thread per channel + one Direct-Message thread per node).
 // ============================================================================
-function _updateDestinationSelect(nodes) {
-  const select = document.getElementById('destination-select');
-  const current = select.value;
-  select.innerHTML = `<option value="">Broadcast</option>`;
-  for (const node of nodes) {
-    const opt = document.createElement('option');
-    opt.value = node.id;
-    opt.textContent = node.short_name || node.long_name || node.id;
-    select.appendChild(opt);
+
+// Resolve a friendly display name for a node ID from the current node list.
+function nodeName(nodeId) {
+  if (!nodeId) return nodeId;
+  const n = state.nodes.find(x => x.id === nodeId);
+  return n ? (n.long_name || n.short_name || nodeId) : nodeId;
+}
+
+// Build the canonical conversation key + display name for a destination the
+// user is about to message. `destination` is a node ID (DM) or ""/null (the
+// active channel's broadcast).
+function conversationForKey(key) {
+  if (key.startsWith('dm:')) {
+    const nodeId = key.slice(3);
+    return { key, kind: 'dm', name: nodeName(nodeId), nodeId };
   }
-  // Restore previously selected destination if it still exists.
-  if (current && select.querySelector(`option[value="${current}"]`)) {
-    select.value = current;
+  const ch = parseInt(key.slice(3), 10) || 0;
+  return { key, kind: 'channel', name: ch === 0 ? 'Primary' : `Channel ${ch}`, channel: ch };
+}
+
+function _ensureConversation(key) {
+  if (!state.conversations[key]) {
+    state.conversations[key] = { ...conversationForKey(key), unread: 0 };
+  }
+  return state.conversations[key];
+}
+
+// Render the conversation tab bar (channels + DM threads) with unread badges.
+function renderConversationTabs() {
+  const bar = document.getElementById('conversation-tabs');
+  if (!bar) return;
+
+  // Always include the Primary channel; add any channel/DM seen in messages.
+  const keys = new Set(['ch:0']);
+  for (const k of Object.keys(state.conversations)) keys.add(k);
+  for (const k of Object.keys(state.messagesByConv)) {
+    if (state.messagesByConv[k].length) keys.add(k);
+  }
+
+  const ordered = [...keys].sort((a, b) => {
+    // Channels first (by number), then DMs.
+    const ca = a.startsWith('ch:') ? 0 : 1;
+    const cb = b.startsWith('ch:') ? 0 : 1;
+    if (ca !== cb) return ca - cb;
+    return a.localeCompare(b);
+  });
+
+  bar.innerHTML = '';
+  for (const key of ordered) {
+    const conv = _ensureConversation(key);
+    const tab = document.createElement('button');
+    tab.className = `conversation-tab ${key === state.activeConversation ? 'active' : ''}`;
+    tab.dataset.conv = key;
+    tab.title = conv.name;
+    const badge = conv.unread > 0
+      ? `<span class="conv-badge">${conv.unread > 99 ? '99+' : conv.unread}</span>` : '';
+    tab.innerHTML = `<span class="conv-name">${escapeHtml(conv.name)}</span>${badge}`;
+    tab.addEventListener('click', () => selectConversation(key));
+    bar.appendChild(tab);
   }
 }
 
-function appendMessage(text, sender, type) {
+function selectConversation(key) {
+  state.activeConversation = key;
+  const conv = _ensureConversation(key);
+  conv.unread = 0;
+
+  // Reflect the recipient in the compose box + set the hidden destination.
+  const label = document.getElementById('recipient-label');
+  if (label) label.textContent = conv.name;
+
+  renderConversationTabs();
+  renderMessageList();
+}
+
+// Append a message object to its conversation thread + (optionally) to the UI.
+function storeMessage(msg) {
+  const key = msg.conversation || (msg.is_dm ? `dm:${msg.from_id}` : `ch:${msg.channel ?? 0}`);
+  if (!state.messagesByConv[key]) state.messagesByConv[key] = [];
+  // Dedupe by id to avoid double-adding on poll repeats.
+  if (state.messagesByConv[key].some(m => m.id === msg.id)) return;
+  state.messagesByConv[key].push(msg);
+
+  const conv = _ensureConversation(key);
+  // Mark unread only if it arrived in a non-active conversation and isn't ours.
+  if (key !== state.activeConversation && !msg.outgoing) {
+    conv.unread = (conv.unread || 0) + 1;
+  }
+}
+
+function renderMessageList() {
   const list = document.getElementById('message-list');
-  const bubble = document.createElement('div');
-  bubble.className = `message-bubble ${type}`;
-  const time = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
-  bubble.innerHTML = `
-    <div class="message-sender">${escapeHtml(sender)}</div>
-    <div>${escapeHtml(text)}</div>
-    <div class="message-time">${time}</div>`;
-  list.appendChild(bubble);
+  if (!list) return;
+  list.innerHTML = '';
+
+  const thread = state.messagesByConv[state.activeConversation] || [];
+
+  if (thread.length === 0) {
+    list.innerHTML = `<div class="message-empty">No messages yet in this conversation.</div>`;
+    return;
+  }
+
+  for (const msg of thread) {
+    const bubble = document.createElement('div');
+    const type = msg.outgoing ? 'outgoing' : 'incoming';
+    bubble.className = `message-bubble ${type}`;
+    const time = new Date((msg.timestamp || Date.now() / 1000) * 1000)
+      .toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+    const sender = msg.outgoing
+      ? 'Me'
+      : (msg.from_name || nodeName(msg.from_id) || 'Unknown');
+    bubble.innerHTML = `
+      ${msg.outgoing ? '' : `<div class="message-sender">${escapeHtml(sender)}</div>`}
+      <div class="message-text">${escapeHtml(msg.text)}</div>
+      <div class="message-time">${time}</div>`;
+    list.appendChild(bubble);
+  }
   list.scrollTop = list.scrollHeight;
 }
 
-async function handleSend() {
-  const input       = document.getElementById('message-input');
-  const destSelect  = document.getElementById('destination-select');
-  const text        = input.value.trim();
-  const destination = destSelect.value || null;
+// Switch the active conversation to a node's DM thread (used when the user
+// clicks "Message" on a node card or a node in the list).
+function openDirectMessage(nodeId) {
+  const key = `dm:${nodeId}`;
+  selectConversation(key);
+  if (state.currentView !== 'dashboard') switchView('dashboard');
+}
 
+// Grow the compose textarea with its content (capped) for comfortable typing.
+function _autoSizeInput(el) {
+  if (!el) return;
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+}
+
+async function handleSend() {
+  const input  = document.getElementById('message-input');
+  const text   = input.value.trim();
   if (!text) return;
 
-  input.value = '';
+  const conv = conversationForKey(state.activeConversation);
+  const destination = conv.kind === 'dm' ? conv.nodeId : null;
+  const channel = conv.kind === 'dm' ? 0 : conv.channel;
 
-  // Optimistically show the outgoing message immediately.
-  appendMessage(text, 'Me', 'outgoing');
+  // Optimistically render the outgoing message in the active thread.
+  const optimistic = {
+    id: `local-${Date.now()}`,
+    text,
+    outgoing: true,
+    conversation: state.activeConversation,
+    timestamp: Date.now() / 1000,
+    from_name: 'Me',
+  };
+  storeMessage(optimistic);
+  renderMessageList();
+  input.value = '';
+  _autoSizeInput(input);
 
   try {
-    await sendMessage(text, destination);
+    await sendMessage(text, destination, channel);
   } catch (err) {
     showToast(`Send failed: ${err.message}`, 'error');
   }
@@ -425,10 +632,11 @@ async function renderSettings() {
 // ============================================================================
 async function pollData() {
   // Fetch status and nodes in parallel — independent requests.
-  const [statusResult, nodesResult, messagesResult] = await Promise.allSettled([
+  const [statusResult, nodesResult, messagesResult, trackedResult] = await Promise.allSettled([
     fetchStatus(),
     fetchNodes(),
     fetchMessages(),
+    fetchTrackedNodes(),
   ]);
 
   if (statusResult.status === 'fulfilled') {
@@ -468,6 +676,13 @@ async function pollData() {
   } else {
     console.warn('Messages fetch failed:', messagesResult.reason);
   }
+
+  if (trackedResult.status === 'fulfilled') {
+    const tracked = trackedResult.value || [];
+    state.trackedNodes = new Set(Array.isArray(tracked) ? tracked : tracked.node_ids || []);
+  } else {
+    console.warn('Tracked-nodes fetch failed:', trackedResult.reason);
+  }
 }
 
 /**
@@ -477,10 +692,17 @@ async function pollData() {
  */
 function renderIncomingMessages(messages) {
   if (!Array.isArray(messages)) return;
+  let changed = false;
   for (const msg of messages) {
     if (!msg.id || state.seenMessageIds.has(msg.id)) continue;
     state.seenMessageIds.add(msg.id);
-    appendMessage(msg.text, msg.from_name || msg.from_id || 'Unknown', 'incoming');
+    storeMessage(msg);
+    changed = true;
+  }
+  if (changed) {
+    renderConversationTabs();
+    // Only repaint the list if we're looking at the affected (or a) thread.
+    renderMessageList();
   }
 }
 
@@ -499,16 +721,28 @@ async function init() {
 
   // Wire up the send button and Enter key shortcut in the message input.
   document.getElementById('send-btn').addEventListener('click', handleSend);
-  document.getElementById('message-input').addEventListener('keydown', e => {
+  const msgInput = document.getElementById('message-input');
+  msgInput.addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
     }
   });
+  msgInput.addEventListener('input', () => _autoSizeInput(msgInput));
 
   // Event delegation on the nodes grid — attached once here so it is NOT
   // re-added on every 15s poll inside renderNodesGrid().
   document.getElementById('nodes-grid').addEventListener('click', handleNodeCardAction);
+
+  // Nodes-tab filter: re-render the grid from the current cached node list
+  // without waiting for the next poll.
+  const nodeFilter = document.getElementById('node-filter');
+  if (nodeFilter) {
+    nodeFilter.addEventListener('input', (e) => {
+      state.nodeFilter = e.target.value;
+      renderNodesGrid(state.nodes);
+    });
+  }
 
   // Map link-line toggle: a control button on each Leaflet map dispatches a
   // custom event; the "L" key is a keyboard shortcut for the same action.
@@ -534,6 +768,7 @@ async function init() {
     <li class="list-placeholder"><div class="spinner"></div>Loading nodes…</li>`;
 
   await pollData();                          // first immediate fetch
+  selectConversation(state.activeConversation); // initialise message panel
   dashMap.fitToMarkers();                    // zoom map to show the whole network
 
   // Schedule the repeating poll loop.

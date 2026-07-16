@@ -33,6 +33,8 @@ from .routes import (
     handle_send,
     handle_status,
     handle_traceroute,
+    handle_track_node,
+    handle_tracked_nodes,
 )
 
 # Configure structured logging early so all subsequent imports can log.
@@ -129,6 +131,8 @@ def build_app(config) -> web.Application:
     app.router.add_post("/api/send", handle_send)
     app.router.add_post("/api/traceRoute", handle_traceroute)
     app.router.add_post("/api/requestPosition", handle_request_position)
+    app.router.add_get("/api/tracked-nodes", handle_tracked_nodes)
+    app.router.add_post("/api/track-node", handle_track_node)
 
     # --- Static Web UI ---
     # Serve the dashboard from the root path. Under HA Ingress the addon is

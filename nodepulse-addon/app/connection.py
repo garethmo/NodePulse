@@ -99,6 +99,11 @@ class MeshtasticConnection:
         self._nodes_lock = threading.Lock()
         self._nodes: List[Dict[str, Any]] = []
 
+        # Destination node ID of the most recent traceroute request. The reply
+        # packet only carries the origin (the responding node), not the original
+        # request target, so we remember it to attribute the route correctly.
+        self._pending_traceroute_dest: Optional[str] = None
+
     # ------------------------------------------------------------------
     # Public async API
     # ------------------------------------------------------------------
@@ -322,12 +327,23 @@ class MeshtasticConnection:
         """
         Pubsub listener for inbound Meshtastic packets.
 
-        Only text messages are captured into the ring buffer; position,
-        telemetry, and other packet types are ignored. Runs on the meshtastic
-        library's background thread, so access to ``_messages`` is locked.
+        Text messages are captured into the ring buffer for the Web UI feed.
+        Traceroute replies (TRACEROUTE_APP) are captured into the per-node
+        cache so the UI can show the discovered route + per-hop SNR — the
+        meshtastic library only sets an internal acknowledgment flag and does
+        NOT persist the route anywhere we can read. Runs on the meshtastic
+        library's background thread, so shared state access is locked.
         """
         try:
             decoded = packet.get("decoded", {}) or {}
+            portnum = decoded.get("portnum")
+
+            # --- Traceroute replies -------------------------------------
+            if portnum == "TRACEROUTE_APP":
+                self._capture_traceroute(packet)
+                return
+
+            # --- Text messages ------------------------------------------
             text = decoded.get("text")
             if not text:
                 return
@@ -335,18 +351,49 @@ class MeshtasticConnection:
             from_num = packet.get("from")
             from_id = ("!" + format(from_num, "08x")) if from_num is not None else None
 
+            to_num = packet.get("to")
+            to_id = ("!" + format(to_num, "08x")) if to_num is not None else None
+
+            # Identify the local/self node so we can mark direction and decide
+            # whether an inbound packet is a broadcast (channel) or a direct
+            # message to us. We derive it lazily from myInfo if available.
+            self_num = None
+            if self._interface is not None:
+                my_info = getattr(self._interface, "myInfo", None)
+                self_num = getattr(my_info, "my_node_num", None)
+            self_id = ("!" + format(self_num, "08x")) if self_num is not None else None
+
             name = None
             if from_num is not None and self._interface is not None:
                 node = self._interface.nodes.get(from_num)
                 if node:
                     name = (node.get("user") or {}).get("longName")
 
+            channel = packet.get("channel", 0)
+            # A packet is a DM if it is addressed to a specific node (not the
+            # broadcast address). Meshtastic uses a high-bit marker for broadcast.
+            is_dm = to_id is not None and to_id != from_id and to_num not in (0xFFFFFFFF, None)
+
+            # Conversation key groups messages into threads mirroring the
+            # Meshtastic Android app: each channel is one thread ("Primary",
+            # "LongFast", …) and each node we DM is its own thread.
+            if is_dm:
+                # The "other party" is whoever isn't us.
+                other = from_id if from_id != self_id else to_id
+                conversation = f"dm:{other}"
+            else:
+                conversation = f"ch:{channel}"
+
             entry = {
-                "id": f"{from_id or 'unknown'}-{packet.get('channel', 0)}-{int(time.time() * 1000)}",
+                "id": f"{from_id or 'unknown'}-{channel}-{int(time.time() * 1000)}-{len(self._messages)}",
                 "from_id": from_id,
+                "to_id": to_id,
                 "from_name": name or from_id or "Unknown",
                 "text": text,
-                "channel": packet.get("channel", 0),
+                "channel": channel,
+                "conversation": conversation,
+                "is_dm": is_dm,
+                "outgoing": from_id == self_id,
                 "rx_snr": packet.get("rxSnr"),
                 "rx_rssi": packet.get("rxRssi"),
                 "timestamp": int(time.time()),
@@ -355,6 +402,62 @@ class MeshtasticConnection:
                 self._messages.append(entry)
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("Error handling received packet (ignored): %s", exc)
+
+    def _capture_traceroute(self, packet: Dict[str, Any]) -> None:
+        """
+        Parse a TRACEROUTE_APP reply and store the discovered route on the
+        destination node's cache entry so the Web UI can render it.
+
+        The reply is addressed to us (to == our node), and ``from`` is the
+        origin of the response (the node we asked, or an intermediate that
+        answered). We key the route under the requesting destination if known,
+        otherwise under the packet's ``from`` node.
+        """
+        try:
+            from meshtastic.protobuf.mesh_pb2 import RouteDiscovery
+            decoded = packet.get("decoded", {}) or {}
+            payload = decoded.get("payload")
+            if not payload:
+                return
+            rd = RouteDiscovery()
+            rd.ParseFromString(payload)
+            as_dict = {}
+            try:
+                from google.protobuf.json_format import MessageToDict
+                as_dict = MessageToDict(rd)
+            except Exception:
+                as_dict = {}
+
+            route = as_dict.get("route", [])
+            snr_towards = as_dict.get("snrTowards", [])
+            route_back = as_dict.get("routeBack", [])
+            snr_back = as_dict.get("snrBack", [])
+
+            from_num = packet.get("from")
+            from_id = ("!" + format(from_num, "08x")) if from_num is not None else None
+
+            record = {
+                "from_id": from_id,
+                "route": route,
+                "snr_towards": [s / 4 for s in snr_towards],
+                "route_back": route_back,
+                "snr_back": [s / 4 for s in snr_back],
+                "timestamp": int(time.time()),
+            }
+
+            # Store under the node this route belongs to. Prefer the node the
+            # user asked about if we have a pending request; otherwise the
+            # reply's origin.
+            target_id = self._pending_traceroute_dest or from_id
+            with self._nodes_lock:
+                node = next(
+                    (n for n in self._nodes if n.get("id") == target_id), None
+                )
+                if node is not None:
+                    node["traceroute"] = record
+                self._pending_traceroute_dest = None
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Error capturing traceroute (ignored): %s", exc)
 
     def _get_messages_sync(self) -> List[Dict[str, Any]]:
         with self._msg_lock:
@@ -436,6 +539,7 @@ class MeshtasticConnection:
                         "temperature": environment.get("temperature"),
                         "relative_humidity": environment.get("relative_humidity"),
                         "barometric_pressure": environment.get("barometric_pressure"),
+                        "traceroute": node_data.get("traceroute"),
                     }
                     # Preserve any fields we already track but the raw entry
                     # lacks (defensive — keeps our cached view stable).
@@ -498,11 +602,17 @@ class MeshtasticConnection:
             if not self._connected or self._interface is None:
                 return False
             try:
-                # hopLimit=None lets the library default it; the call blocks until
-                # the RouteDiscovery reply arrives (the library waits internally),
-                # and the per-hop SNR is written into the node's DB so /api/nodes
-                # reflects the result on the next poll.
-                self._interface.sendTraceRoute(destination, None)
+                # hopLimit is a REQUIRED positional argument in meshtastic 2.7.x —
+                # passing None raises TypeError. A value of 0 lets the firmware
+                # apply its default max-hop behaviour; we use a small sane default.
+                # The call blocks until the RouteDiscovery reply arrives (the
+                # library waits internally for the acknowledgment flag). The
+                # actual per-hop route SNR is NOT stored by the library, so we
+                # capture it ourselves in _on_mesh_receive (TRACEROUTE_APP) and
+                # merge it into our node cache below.
+                self._interface.sendTraceRoute(destination, 0)
+                # Pull whatever route data we've captured so far into the cache.
+                self._refresh_node_from_interface(destination)
                 return True
             except Exception as exc:
                 logger.error(

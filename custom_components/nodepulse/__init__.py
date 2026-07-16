@@ -14,6 +14,7 @@ from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN, PLATFORMS
 from .coordinator import NodePulseCoordinator
+from .api import NodePulseTrackView, NodePulseTrackedNodesView
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Forward to all platform modules (binary_sensor, sensor, device_tracker).
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # Register the local relay HTTP views used by the addon Web UI's
+    # "Track in HA" toggle. The views mutate coordinator.tracked_nodes, which
+    # the platforms consult when discovering entities.
+    hass.http.register_view(NodePulseTrackView)
+    hass.http.register_view(NodePulseTrackedNodesView)
 
     # Register a listener so option changes (e.g. scan_interval) trigger a reload.
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
