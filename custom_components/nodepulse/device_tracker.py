@@ -47,7 +47,7 @@ async def async_setup_entry(
 
     @callback
     def _discover_new_trackers() -> None:
-        nodes: List[Dict] = coordinator.data.get("nodes", [])
+        nodes: List[Dict] = (coordinator.data or {}).get("nodes", [])
         visible_ids = {n.get("id") for n in nodes if n.get("id")}
 
         # Remove trackers for nodes that are no longer tracked (or gone).
@@ -120,7 +120,8 @@ class NodeTracker(CoordinatorEntity, TrackerEntity):
         }
 
     def _get_node(self) -> Optional[Dict[str, Any]]:
-        for node in self.coordinator.data.get("nodes", []):
+        nodes = (self.coordinator.data or {}).get("nodes", [])
+        for node in nodes:
             if node.get("id") == self._node_id:
                 return node
         return None

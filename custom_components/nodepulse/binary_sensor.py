@@ -62,5 +62,5 @@ class NodePulseConnectionSensor(CoordinatorEntity, BinarySensorEntity):
     @property
     def is_on(self) -> bool:
         """Return True when the addon reports an active connection."""
-        status = self.coordinator.data.get("status", {})
+        status = (self.coordinator.data or {}).get("status", {})
         return bool(status.get("connected", False))

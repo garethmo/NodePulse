@@ -71,7 +71,7 @@ async def async_setup_entry(
         selectively create entities for individual nodes instead of importing
         the whole mesh at once.
         """
-        nodes: List[Dict] = coordinator.data.get("nodes", [])
+        nodes: List[Dict] = (coordinator.data or {}).get("nodes", [])
         visible_ids = {n.get("id") for n in nodes if n.get("id")}
 
         # Remove entities for nodes that are no longer tracked (or gone).
@@ -139,7 +139,7 @@ class NodeCountSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self) -> int:
-        return len(self.coordinator.data.get("nodes", []))
+        return len((self.coordinator.data or {}).get("nodes", []))
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +169,8 @@ class _NodeSensorBase(CoordinatorEntity, SensorEntity):
 
     def _get_node(self) -> Optional[Dict[str, Any]]:
         """Find this node's dict in the coordinator data."""
-        for node in self.coordinator.data.get("nodes", []):
+        nodes = (self.coordinator.data or {}).get("nodes", [])
+        for node in nodes:
             if node.get("id") == self._node_id:
                 return node
         return None

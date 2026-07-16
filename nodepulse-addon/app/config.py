@@ -99,7 +99,7 @@ def load_config() -> Config:
         access_key=raw.get("access_key") or None,
         scan_interval=int(raw.get("scan_interval", 30)),
         ignored_nodes=[n for n in raw.get("ignored_nodes", []) if n],
-        ha_base_url=raw.get("ha_base_url", "http://localhost:8123").rstrip("/"),
+        ha_base_url=raw.get("ha_base_url", "http://homeassistant:8123").rstrip("/"),
     )
 
 

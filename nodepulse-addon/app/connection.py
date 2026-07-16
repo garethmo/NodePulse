@@ -100,6 +100,9 @@ class MeshtasticConnection:
         # Populated by the pubsub "meshtastic.receive" listener below.
         self._msg_lock = threading.Lock()
         self._messages: "collections.deque" = collections.deque(maxlen=200)
+        # Serialises disk persistence (load/save) so a read and a write from
+        # different threads can never interleave and corrupt the JSON file.
+        self._persist_lock = threading.Lock()
 
         # Restore any previously-persisted messages so history survives restarts.
         self._load_messages()
@@ -430,7 +433,10 @@ class MeshtasticConnection:
             }
             with self._msg_lock:
                 self._messages.append(entry)
-                self._save_messages()
+            # Persistence is offloaded to a short-lived daemon thread so we
+            # never block the meshtastic receive thread (and never interleave
+            # writes — _save_messages takes _persist_lock).
+            self._schedule_save(self._messages, _MESSAGES_FILE)
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("Error handling received packet (ignored): %s", exc)
 
@@ -442,8 +448,9 @@ class MeshtasticConnection:
         try:
             if not os.path.exists(_MESSAGES_FILE):
                 return
-            with open(_MESSAGES_FILE, "r", encoding="utf-8") as fh:
-                data = json.load(fh)
+            with self._persist_lock:
+                with open(_MESSAGES_FILE, "r", encoding="utf-8") as fh:
+                    data = json.load(fh)
             if isinstance(data, list):
                 # Keep only the most recent `maxlen` entries.
                 self._messages = collections.deque(data[-self._messages.maxlen:], maxlen=self._messages.maxlen)
@@ -455,18 +462,54 @@ class MeshtasticConnection:
         """Persist the current message buffer to disk (best-effort)."""
         try:
             os.makedirs(_DATA_DIR, exist_ok=True)
-            with open(_MESSAGES_FILE, "w", encoding="utf-8") as fh:
-                json.dump(list(self._messages), fh)
+            # Snapshot under lock so the writer sees a consistent list, then
+            # release before the (slow) disk write. The _persist_lock guards
+            # against concurrent reads/writes to the same file.
+            with self._msg_lock:
+                snapshot = list(self._messages)
+            with self._persist_lock:
+                with open(_MESSAGES_FILE, "w", encoding="utf-8") as fh:
+                    json.dump(snapshot, fh)
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("Could not persist messages (ignored): %s", exc)
+
+    def _schedule_save(self, source_deque, path: str) -> None:
+        """
+        Offload a deque snapshot to disk on a daemon thread.
+
+        The meshtastic pubsub listener runs on the library's own background
+        thread; doing a blocking json.dump there would stall inbound packet
+        processing. We snapshot the deque and hand the write to a throwaway
+        daemon thread instead.
+        """
+        try:
+            with self._msg_lock:
+                snapshot = list(source_deque)
+            t = threading.Thread(
+                target=self._write_json, args=(snapshot, path), daemon=True
+            )
+            t.start()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Could not schedule save (ignored): %s", exc)
+
+    def _write_json(self, snapshot, path: str) -> None:
+        """Write `snapshot` as JSON to `path` (runs on a worker thread)."""
+        try:
+            os.makedirs(_DATA_DIR, exist_ok=True)
+            with self._persist_lock:
+                with open(path, "w", encoding="utf-8") as fh:
+                    json.dump(snapshot, fh)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Persist write failed (ignored): %s", exc)
 
     def _load_traceroutes(self) -> None:
         """Restore persisted traceroute results keyed by node ID (best-effort)."""
         try:
             if not os.path.exists(_TRACEROUTES_FILE):
                 return
-            with open(_TRACEROUTES_FILE, "r", encoding="utf-8") as fh:
-                data = json.load(fh)
+            with self._persist_lock:
+                with open(_TRACEROUTES_FILE, "r", encoding="utf-8") as fh:
+                    data = json.load(fh)
             if isinstance(data, dict):
                 self._traceroutes = {str(k): v for k, v in data.items()}
                 logger.info(
@@ -477,13 +520,19 @@ class MeshtasticConnection:
             logger.debug("Could not load persisted traceroutes (ignored): %s", exc)
 
     def _save_traceroutes(self) -> None:
-        """Persist the current traceroute results to disk (best-effort)."""
+        """Persist the current traceroute results to disk (best-effort).
+
+        Offloaded to a daemon thread so the meshtastic receive thread is never
+        blocked, and serialised via _persist_lock.
+        """
         try:
-            os.makedirs(_DATA_DIR, exist_ok=True)
-            with open(_TRACEROUTES_FILE, "w", encoding="utf-8") as fh:
-                json.dump(self._traceroutes, fh)
+            snapshot = dict(self._traceroutes)
+            t = threading.Thread(
+                target=self._write_json, args=(snapshot, _TRACEROUTES_FILE), daemon=True
+            )
+            t.start()
         except Exception as exc:  # pragma: no cover - defensive
-            logger.debug("Could not persist traceroutes (ignored): %s", exc)
+            logger.debug("Could not schedule traceroute save (ignored): %s", exc)
 
     def _capture_traceroute(self, packet: Dict[str, Any]) -> None:
         """
@@ -650,8 +699,10 @@ class MeshtasticConnection:
             # This keeps late-arriving traceroute/position updates visible on the
             # next poll even though the library updates interface.nodes async.
             with self._nodes_lock:
-                cached = {n.get("id"): n for n in self._nodes}
+                cached = {n.get("id"): n for n in self._nodes if n.get("id")}
                 for node_id, node_data in nodes_raw.items():
+                    if not node_id:
+                        continue
                     # Extract the nested sub-objects safely — the meshtastic
                     # library returns protobuf-derived dicts whose keys may be
                     # absent.
