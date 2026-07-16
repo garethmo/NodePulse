@@ -318,10 +318,18 @@ class NodeMessageSensor(_NodeSensorBase):
     def native_value(self) -> str:
         """Return the most recent message text from this node."""
         messages = (self.coordinator.data or {}).get("messages", [])
+        logger.debug(
+            "NodeMessageSensor (node_id=%s): messages count=%s, sample=%s",
+            self._node_id, len(messages), messages[:2] if messages else None
+        )
         if not messages:
             return None
         # Filter messages from this node and return the most recent
         node_messages = [m for m in messages if m.get("from_id") == self._node_id]
+        logger.debug(
+            "NodeMessageSensor (node_id=%s): filtered messages count=%s",
+            self._node_id, len(node_messages)
+        )
         if not node_messages:
             return None
         # Messages are returned oldest first, so get the last one
