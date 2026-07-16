@@ -744,21 +744,26 @@ async function init() {
     });
   }
 
-  // Map link-line toggle: a control button on each Leaflet map dispatches a
-  // custom event; the "L" key is a keyboard shortcut for the same action.
-  const onToggleLinks = () => {
-    const dash = dashMap.toggleLinks();
-    fullMap.toggleLinks();
-    showToast(`Link lines ${dash ? 'shown' : 'hidden'}`, 'info', 1500);
+  // Map overlay toggles: control buttons on each Leaflet map dispatch custom
+  // events; the "L"/"T"/"N" keys are keyboard shortcuts for the same actions.
+  const wireToggle = (eventName, key, toggleFn, label) => {
+    const handler = () => {
+      const dash = toggleFn(dashMap);
+      toggleFn(fullMap);
+      showToast(`${label} ${dash ? 'shown' : 'hidden'}`, 'info', 1500);
+    };
+    document.getElementById('map').addEventListener(eventName, handler);
+    document.getElementById('full-map').addEventListener(eventName, handler);
+    document.addEventListener('keydown', (e) => {
+      // Ignore when typing in an input/textarea.
+      const tag = (e.target.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea') return;
+      if (e.key === key || e.key === key.toUpperCase()) handler();
+    });
   };
-  document.getElementById('map').addEventListener('nodepulse:togglelinks', onToggleLinks);
-  document.getElementById('full-map').addEventListener('nodepulse:togglelinks', onToggleLinks);
-  document.addEventListener('keydown', (e) => {
-    // Ignore when typing in an input/textarea.
-    const tag = (e.target.tagName || '').toLowerCase();
-    if (tag === 'input' || tag === 'textarea') return;
-    if (e.key === 'l' || e.key === 'L') onToggleLinks();
-  });
+  wireToggle('nodepulse:togglelinks',  'l', (m) => m.toggleLinks(), 'Link lines');
+  wireToggle('nodepulse:toggletraces', 't', (m) => m.toggleTraces(), 'Traceroute paths');
+  wireToggle('nodepulse:togglenames',  'n', (m) => m.toggleNames(), 'Node names');
 
   // Set the initial active view.
   switchView('dashboard');
@@ -769,7 +774,9 @@ async function init() {
 
   await pollData();                          // first immediate fetch
   selectConversation(state.activeConversation); // initialise message panel
-  dashMap.fitToMarkers();                    // zoom map to show the whole network
+  // NOTE: we intentionally do NOT auto-fit to markers on first load so the map
+  // stays centred on its default view (Durban, South Africa). Users can still
+  // pan/zoom, and the fitToMarkers() helper remains available if needed.
 
   // Schedule the repeating poll loop.
   setInterval(pollData, POLL_INTERVAL_MS);

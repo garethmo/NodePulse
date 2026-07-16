@@ -419,6 +419,33 @@ body::before {
   height: 100%;
 }
 
+/* Map overlay toggle buttons (links / traceroutes / names) */
+.leaflet-control-maptoggle {
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition-fast);
+}
+.leaflet-control-maptoggle:hover {
+  border-color: var(--border-accent);
+  color: var(--text-teal);
+}
+.leaflet-control-maptoggle.active {
+  background: linear-gradient(135deg, rgba(0,212,170,0.25), rgba(79,195,247,0.2));
+  border-color: var(--border-accent);
+  color: var(--text-teal);
+  box-shadow: var(--glow-teal);
+}
+
 /* Override Leaflet popup styles to match dark theme */
 .leaflet-popup-content-wrapper {
   background: var(--bg-card) !important;

@@ -1,7 +1,7 @@
 {
   "domain": "nodepulse",
   "name": "NodePulse",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "documentation": "https://github.com/garethmo/NodePulse",
   "issue_tracker": "https://github.com/garethmo/NodePulse/issues",
   "requirements": [],

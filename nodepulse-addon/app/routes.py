@@ -326,7 +326,11 @@ async def handle_track_node(request: web.Request) -> web.Response:
                 return _json_response({"node_id": node_id, "enabled": enabled})
     except Exception as exc:
         logger.error(
-            "Failed to relay track-node request to integration (node=%s): %s",
-            node_id, exc,
+            "Failed to relay track-node request to integration (node=%s, base=%s): %s",
+            node_id, base, exc,
         )
-        return _error_response("Failed to reach NodePulse integration")
+        return _error_response(
+            f"Could not reach NodePulse integration at {base}. "
+            "Ensure the NodePulse integration is installed and ha_base_url "
+            "points at Home Assistant core."
+        )

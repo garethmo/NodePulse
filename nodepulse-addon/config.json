@@ -1,6 +1,6 @@
 {
   "name": "NodePulse",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "slug": "nodepulse",
   "description": "Monitor Meshtastic mesh network health — nodes, signal metrics, GPS mapping, and encrypted direct messaging.",
   "url": "https://github.com/garethmo/NodePulse",
@@ -22,7 +22,7 @@
     "access_key": "",
     "scan_interval": 30,
     "ignored_nodes": [],
-    "ha_base_url": "http://localhost:8123"
+    "ha_base_url": "http://homeassistant:8123"
   },
   "schema": {
     "log_level": "list(trace|debug|info|notice|warning|error|fatal)",

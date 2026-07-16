@@ -61,14 +61,23 @@ function formatDistance(km) {
   return `${km.toFixed(2)} km`;
 }
 
+// Default map view — Durban, South Africa (the user's local mesh region).
+const DEFAULT_CENTER = [-29.8587, 31.0218];
+const DEFAULT_ZOOM = 12;
+
+// Distinct colours for each kind of overlay so they are easy to tell apart.
+const COLOR_LINK_SELF   = '#00d4aa'; // self -> node connectors (teal)
+const COLOR_LINK_PEER   = '#ffb74d'; // node <-> node proximity (amber)
+const COLOR_TRACEROUTE  = '#4fc3f7'; // discovered traceroute paths (blue)
+
 /**
  * Create and return a Leaflet map bound to a DOM element ID.
- * Defaults to a world view (zoom 3) until nodes with coordinates load.
+ * Starts centred on Durban, South Africa at a street/neighbourhood zoom.
  */
 function createMap(elementId) {
   const map = L.map(elementId, {
-    center: [20, 0],
-    zoom: 3,
+    center: DEFAULT_CENTER,
+    zoom: DEFAULT_ZOOM,
     zoomControl: true,
   });
 
@@ -78,24 +87,35 @@ function createMap(elementId) {
     maxZoom: 19,
   }).addTo(map);
 
-  // Toggle-link-lines control (also bound to the "L" keyboard shortcut).
-  const LinkToggleControl = L.Control.extend({
-    options: { position: 'topright' },
-    onAdd() {
-      const btn = L.DomUtil.create('button', 'leaflet-control-linktoggle');
-      btn.type = 'button';
-      btn.title = 'Toggle link lines (L)';
-      btn.textContent = '⤳';
-      L.DomEvent.disableClickPropagation(btn);
-      L.DomEvent.on(btn, 'click', () => {
-        // Notify the owning MapManager via a custom event on the map element.
-        const evt = new CustomEvent('nodepulse:togglelinks');
-        map.getContainer().dispatchEvent(evt);
-      });
-      return btn;
-    },
-  });
-  map.addControl(new LinkToggleControl());
+  // --- Map overlay toggle controls (top-right) ---------------------------
+  // Each button toggles one overlay category and dispatches a custom event
+  // that the owning MapManager listens for. The "L"/"T"/"N" keys mirror them.
+  const makeToggle = (eventName, title, glyph, initialOn) => {
+    const Ctrl = L.Control.extend({
+      options: { position: 'topright' },
+      onAdd() {
+        const btn = L.DomUtil.create('button', 'leaflet-control-maptoggle');
+        btn.type = 'button';
+        btn.title = title;
+        btn.textContent = glyph;
+        if (initialOn) btn.classList.add('active');
+        L.DomEvent.disableClickPropagation(btn);
+        L.DomEvent.on(btn, 'click', () => {
+          const evt = new CustomEvent(eventName);
+          map.getContainer().dispatchEvent(evt);
+        });
+        return btn;
+      },
+    });
+    map.addControl(new Ctrl());
+  };
+
+  // Links (self<->node + peer proximity): teal/amber  — key "L"
+  makeToggle('nodepulse:togglelinks',   'Toggle link lines (L)',        '⤳', true);
+  // Traceroute paths: blue                            — key "T"
+  makeToggle('nodepulse:toggletraces',  'Toggle traceroute paths (T)', '⤴', true);
+  // Node name labels                                 — key "N"
+  makeToggle('nodepulse:togglenames',   'Toggle node names (N)',       '🏷', true);
 
   return map;
 }
@@ -120,15 +140,16 @@ export class MapManager {
     // Map<nodeId, L.Polyline> — multi-hop traceroute route paths discovered
     // between nodes (shows which intermediate nodes can talk to each other).
     this._routeLinks = new Map();
-    // Whether the link lines are currently shown.
-    this._linksVisible = true;
+    // Separate visibility flags for each overlay category so they can be
+    // toggled independently from the map controls.
+    this._linksVisible = true;    // self<->node + peer proximity lines
+    this._tracesVisible = true;  // discovered traceroute paths
+    this._namesVisible = true;    // permanent node-name labels
   }
 
   /**
-   * Toggle the visibility of the link lines (distance connectors between the
-   * self node and every other GPS-fixed node, plus discovered traceroute
-   * routes). Returns the new visibility.
-   * Triggered by the map control button and the "L" keyboard shortcut.
+   * Toggle the link lines (self<->node connectors + peer proximity links).
+   * Returns the new visibility. Triggered by the map control and "L" key.
    */
   toggleLinks() {
     this._linksVisible = !this._linksVisible;
@@ -136,11 +157,35 @@ export class MapManager {
       if (this._linksVisible) line.addTo(this._map);
       else this._map.removeLayer(line);
     }
+    return this._linksVisible;
+  }
+
+  /**
+   * Toggle the discovered traceroute path lines. Returns the new visibility.
+   * Triggered by the map control and "T" key.
+   */
+  toggleTraces() {
+    this._tracesVisible = !this._tracesVisible;
     for (const line of this._routeLinks.values()) {
-      if (this._linksVisible) line.addTo(this._map);
+      if (this._tracesVisible) line.addTo(this._map);
       else this._map.removeLayer(line);
     }
-    return this._linksVisible;
+    return this._tracesVisible;
+  }
+
+  /**
+   * Toggle the permanent node-name labels. Returns the new visibility.
+   * Triggered by the map control and "N" key.
+   */
+  toggleNames() {
+    this._namesVisible = !this._namesVisible;
+    for (const marker of this._markers.values()) {
+      const tip = marker.getTooltip();
+      if (!tip) continue;
+      if (this._namesVisible) marker.openTooltip();
+      else marker.closeTooltip();
+    }
+    return this._namesVisible;
   }
 
   /**
@@ -217,6 +262,9 @@ export class MapManager {
       existing._nodeData = node; // stash raw data so link drawing can read routes
       existing.setPopupContent(this._buildPopupHtml(node));
       existing.setTooltipContent(escapeHtml(node.long_name || node.id));
+      // Respect the current name-label visibility toggle.
+      if (this._namesVisible) existing.openTooltip();
+      else existing.closeTooltip();
       if (isSelf) existing.setIcon(SELF_ICON);
     }
 
@@ -275,7 +323,7 @@ export class MapManager {
       selfMarker._nodeData.longitude != null &&
       !(selfMarker._nodeData.latitude === 0 && selfMarker._nodeData.longitude === 0));
 
-    // --- 1. Self → node distance connectors ---------------------------
+    // --- 1. Self → node distance connectors (teal) -------------------
     if (selfHasGps) {
       const selfLatLng = selfMarker.getLatLng();
       for (const { id, marker } of gpsMarkers) {
@@ -285,7 +333,7 @@ export class MapManager {
           selfLatLng.lat, selfLatLng.lng, latLng.lat, latLng.lng
         );
         const line = L.polyline([selfLatLng, latLng], {
-          color: '#00d4aa',
+          color: COLOR_LINK_SELF,
           weight: 1.5,
           opacity: 0.6,
           dashArray: '4 4',
@@ -298,7 +346,7 @@ export class MapManager {
       }
     }
 
-    // --- 2. Node ↔ node proximity / direct-reachability links ---------
+    // --- 2. Node ↔ node proximity / direct-reachability links (amber) -
     // Two nodes are treated as linked if BOTH are one hop from the local node
     // (they share the same direct-RF neighbourhood) or if the great-circle
     // distance between them is within a typical LoRa range (~15 km). This is a
@@ -317,7 +365,7 @@ export class MapManager {
         if (!bothDirect && km > RANGE_KM) continue;
 
         const line = L.polyline([a.marker.getLatLng(), b.marker.getLatLng()], {
-          color: '#4fc3f7',
+          color: COLOR_LINK_PEER,
           weight: 1,
           opacity: 0.35,
           dashArray: '2 3',
@@ -330,7 +378,7 @@ export class MapManager {
       }
     }
 
-    // --- 3. Discovered traceroute routes between nodes ----------------
+    // --- 3. Discovered traceroute routes between nodes (blue) ---------
     for (const { id, marker } of gpsMarkers) {
       const route = marker._nodeData && marker._nodeData.traceroute;
       if (!route) continue;
@@ -361,11 +409,11 @@ export class MapManager {
         }
         if (pts.length < 2) continue; // not all hops have known coordinates
         const line = L.polyline(pts, {
-          color: '#4fc3f7',
+          color: COLOR_TRACEROUTE,
           weight: 2,
           opacity: 0.7,
         }).bindTooltip('Traceroute path', { sticky: true, className: 'link-label' });
-        if (this._linksVisible) line.addTo(this._map);
+        if (this._tracesVisible) line.addTo(this._map);
         this._routeLinks.set(`${id}-${segments.indexOf(path)}`, line);
       }
     }

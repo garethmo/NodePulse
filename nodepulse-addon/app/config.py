@@ -53,9 +53,10 @@ class Config:
     ignored_nodes: List[str] = field(default_factory=list)
     # Base URL of the Home Assistant core instance that hosts the NodePulse
     # custom integration. The integration's relay endpoints (/api/nodepulse/*)
-    # are served by HA core, NOT by this addon, so the addon must reach HA on
-    # its own port (8123 by default) to forward "Track in HA" requests.
-    ha_base_url: str = "http://localhost:8123"
+    # are served by HA core, NOT by this addon. From inside the addon's Docker
+    # container, "localhost" is the addon itself — HA core is reachable on the
+    # supervisor network at "homeassistant:8123" (the standard addon->HA host).
+    ha_base_url: str = "http://homeassistant:8123"
 
 
 def load_config() -> Config:
