@@ -93,9 +93,20 @@ def _host_candidates(host: str) -> list:
     if host:
         candidates.append(host.rstrip("/"))
     slug = "nodepulse"
+    slug2 = "nodepulse_addon"
     for base in (
         f"http://a0d7b954-{slug}",
         f"http://a0d7b954-{slug}:8099",
+        f"http://local-{slug}",
+        f"http://local-{slug}:8099",
+        f"http://local_{slug}",
+        f"http://local_{slug}:8099",
+        f"http://local-{slug2}",
+        f"http://local-{slug2}:8099",
+        f"http://local_{slug2}",
+        f"http://local_{slug2}:8099",
+        f"http://local-{slug2.replace('_', '-')}",
+        f"http://local-{slug2.replace('_', '-')}:8099",
         f"http://{slug}",
         f"http://{slug}:8099",
     ):

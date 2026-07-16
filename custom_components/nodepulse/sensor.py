@@ -24,10 +24,8 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
-    SIGNAL_STRENGTH_DECIBELS,
-    SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
     PERCENTAGE,
-    TEMP_CELSIUS,
+    UnitOfTemperature,
     UnitOfPressure,
 )
 from homeassistant.core import HomeAssistant, callback
@@ -170,7 +168,7 @@ class _NodeSensorBase(CoordinatorEntity, SensorEntity):
         super().__init__(coordinator)
         self._node_id = node_id
         # Per-node device groups all metrics under one HA device per node.
-        self._attr_device_info = _node_device_info(entry, node_id)
+        self._attr_device_info = _node_device_info(entry, node_id, coordinator)
 
     def _get_node(self) -> Optional[Dict[str, Any]]:
         """Find this node's dict in the coordinator data."""
@@ -201,7 +199,7 @@ class NodeSnrSensor(_NodeSensorBase):
     _metric_key = "snr"
     _attr_device_class = SensorDeviceClass.SIGNAL_STRENGTH
     _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_native_unit_of_measurement = SIGNAL_STRENGTH_DECIBELS
+    _attr_native_unit_of_measurement = "dB"
 
     def __init__(self, coordinator, entry, node_id):
         super().__init__(coordinator, entry, node_id)
@@ -213,7 +211,7 @@ class NodeRssiSensor(_NodeSensorBase):
     _metric_key = "rssi"
     _attr_device_class = SensorDeviceClass.SIGNAL_STRENGTH
     _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_native_unit_of_measurement = SIGNAL_STRENGTH_DECIBELS_MILLIWATT
+    _attr_native_unit_of_measurement = "dBm"
 
     def __init__(self, coordinator, entry, node_id):
         super().__init__(coordinator, entry, node_id)
@@ -270,7 +268,7 @@ class NodeTemperatureSensor(_NodeSensorBase):
     _metric_key = "temperature"
     _attr_device_class = SensorDeviceClass.TEMPERATURE
     _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_native_unit_of_measurement = TEMP_CELSIUS
+    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
 
     def __init__(self, coordinator, entry, node_id):
         super().__init__(coordinator, entry, node_id)
@@ -318,11 +316,28 @@ def _device_info(entry: ConfigEntry) -> Dict:
     }
 
 
-def _node_device_info(entry: ConfigEntry, node_id: str) -> Dict:
+def _node_device_info(entry: ConfigEntry, node_id: str, coordinator) -> Dict:
     """Device info dict for a specific Meshtastic node device group."""
+    name = f"Mesh Node {node_id}"
+    model = "Meshtastic Node"
+
+    nodes = (coordinator.data or {}).get("nodes", [])
+    node = next((n for n in nodes if n.get("id") == node_id), None)
+    if node:
+        short = node.get("short_name")
+        long_n = node.get("long_name")
+        if short and long_n:
+            name = f"{long_n} ({short})"
+        elif short or long_n:
+            name = short or long_n
+        hw = node.get("hw_model")
+        if hw:
+            model = hw
+
     return {
         "identifiers": {(DOMAIN, node_id)},
-        "name": f"Mesh Node {node_id}",
+        "name": name,
         "manufacturer": "Meshtastic",
+        "model": model,
         "via_device": (DOMAIN, entry.entry_id),
     }

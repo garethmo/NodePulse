@@ -321,12 +321,13 @@ export class MapManager {
   _updateLinks() {
     if (!this._map) return;
 
-    // Clear previous link lines of all kinds.
-    for (const line of this._selfLinks.values()) line.remove();
+    // Remove all existing Leaflet layers from the map before rebuilding.
+    // Simply clearing the Map() store leaves stale polylines on the canvas.
+    this._selfLinks.forEach(l => { try { l.remove(); } catch (_) {} });
+    this._peerLinks.forEach(l => { try { l.remove(); } catch (_) {} });
+    this._routeLinks.forEach(l => { try { l.remove(); } catch (_) {} });
     this._selfLinks.clear();
-    for (const line of this._peerLinks.values()) line.remove();
     this._peerLinks.clear();
-    for (const line of this._routeLinks.values()) line.remove();
     this._routeLinks.clear();
 
     // Collect GPS-fixed markers (exclude the self node from the pairing set).
@@ -400,42 +401,56 @@ export class MapManager {
     }
 
     // --- 3. Discovered traceroute routes between nodes (blue) ---------
+    // Helper: normalise a raw integer node number to the '!xxxxxxxx' format.
+    const toNodeId = (n) => '!' + (n >>> 0).toString(16).padStart(8, '0');
+
+    // Build a lookup of ALL nodes (incl. those without GPS) so we can
+    // resolve names even when we can't draw a segment.
+    const allNodes = new Map();
+    for (const [nid, m] of this._markers) allNodes.set(nid, m);
+
+    let lineIndex = 0;
     for (const { id, marker } of gpsMarkers) {
       const route = marker._nodeData && marker._nodeData.traceroute;
       if (!route) continue;
 
-      // The route is keyed under the destination node. Build the ordered list
-      // of node IDs: self -> route nodes -> destination (route), and the
-      // mirrored path for routeBack. We draw both discovered directions.
-      const selfId = this._selfId;
-      const toNum = (n) => '!' + (n >>> 0).toString(16).padStart(8, '0');
       const segments = [];
 
-      // Forward path: self -> ...route... -> from_id (the responding node).
-      const forward = [selfId, ...(route.route || []).map(toNum)];
+      // Forward path: self → intermediate hops → responding node.
+      const forward = [this._selfId, ...(route.route || []).map(toNodeId)];
       if (route.from_id) forward.push(route.from_id);
-      segments.push(forward);
+      segments.push({ path: forward, label: `Traceroute → ${id}` });
 
-      // Return path: from_id -> ...routeBack... -> self.
+      // Return path (if the device reported one).
       if (route.route_back && route.route_back.length) {
-        const back = [route.from_id, ...(route.route_back || []).map(toNum), selfId];
-        segments.push(back);
+        const back = [route.from_id, ...(route.route_back || []).map(toNodeId), this._selfId];
+        segments.push({ path: back, label: `Traceroute ← ${id}` });
       }
 
-      for (const path of segments) {
-        const pts = [];
-        for (const nid of path) {
-          const m = this._markers.get(nid);
-          if (m) pts.push(m.getLatLng());
+      for (const { path, label } of segments) {
+        // Draw segment-by-segment so we skip individual hops that lack GPS
+        // without dropping the entire route. Even a 2-node partial segment
+        // gives useful topology information.
+        for (let i = 0; i < path.length - 1; i++) {
+          const mA = this._markers.get(path[i]);
+          const mB = this._markers.get(path[i + 1]);
+          if (!mA || !mB) continue; // neither hop has a map marker
+
+          const lA = mA.getLatLng();
+          const lB = mB.getLatLng();
+          // Skip (0,0) placeholder positions — some nodes report 0,0 before
+          // they have a GPS fix, which draws bogus lines to the ocean.
+          if ((lA.lat === 0 && lA.lng === 0) || (lB.lat === 0 && lB.lng === 0)) continue;
+
+          const line = L.polyline([lA, lB], {
+            color: COLOR_TRACEROUTE,
+            weight: 2.5,
+            opacity: 0.8,
+          }).bindTooltip(label, { sticky: true, className: 'link-label' });
+
+          if (this._tracesVisible) line.addTo(this._map);
+          this._routeLinks.set(`tr-${id}-${lineIndex++}`, line);
         }
-        if (pts.length < 2) continue; // not all hops have known coordinates
-        const line = L.polyline(pts, {
-          color: COLOR_TRACEROUTE,
-          weight: 2,
-          opacity: 0.7,
-        }).bindTooltip('Traceroute path', { sticky: true, className: 'link-label' });
-        if (this._tracesVisible) line.addTo(this._map);
-        this._routeLinks.set(`${id}-${segments.indexOf(path)}`, line);
       }
     }
   }

@@ -145,15 +145,30 @@ def _error_response(message: str, status: int = 500) -> web.Response:
 
 async def handle_status(request: web.Request) -> web.Response:
     """
-    Return the current connection state and basic node identity.
+    Return the current connection state, node identity, and addon configuration.
 
-    This is the primary health-check endpoint polled by the HA custom
-    integration's DataUpdateCoordinator to determine binary sensor state.
+    This is polled by the HA integration and the Web UI Settings page. We merge
+    in the live config values so the Settings view can display them without
+    needing a separate endpoint.
     """
     conn: MeshtasticConnection = request.app["connection"]
+    config = request.app["config"]
     _apply_access_key(request)
     try:
         status = await conn.get_status()
+        # Attach the addon's runtime config so the Settings page can render it.
+        status["config"] = {
+            "connection_type": config.connection_type,
+            "meshtastic_host": config.meshtastic_host,
+            "meshtastic_port": config.meshtastic_port,
+            "proxy_host": config.proxy_host or "",
+            "proxy_port": config.proxy_port,
+            "scan_interval": config.scan_interval,
+            "log_level": config.log_level,
+            "ha_base_url": config.ha_base_url,
+            "ignored_nodes": list(getattr(config, "ignored_nodes", [])),
+            "access_key_set": bool(config.access_key),
+        }
         return _json_response(status)
     except Exception as exc:
         logger.error("Error fetching status: %s", exc)

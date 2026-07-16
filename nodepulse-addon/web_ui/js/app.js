@@ -717,16 +717,45 @@ function switchView(viewName) {
 // ============================================================================
 // Settings View — populate with read-only config info
 // ============================================================================
+function _setEl(id, text) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = text ?? '—';
+}
+
 async function renderSettings() {
-  // Fetch status to display current connection details.
   try {
     const status = await fetchStatus();
-    const host   = document.getElementById('settings-host');
-    const conn   = document.getElementById('settings-conn');
-    const count  = document.getElementById('settings-count');
-    if (host)  host.textContent  = 'Configured in /data/options.json';
-    if (conn)  conn.textContent  = status.connected ? 'Connected' : 'Disconnected';
-    if (count) count.textContent = status.node_count ?? '—';
+    const cfg = status.config || {};
+
+    // Connection
+    _setEl('settings-conn',      status.connected ? '✓ Connected' : '✗ Disconnected');
+    _setEl('settings-conn-type', cfg.connection_type
+      ? (cfg.connection_type === 'direct' ? 'Direct (TCP)' : 'Proxy') : '—');
+    _setEl('settings-host',      cfg.meshtastic_host || '—');
+    _setEl('settings-port',      cfg.meshtastic_port ?? '—');
+
+    // Show/hide proxy rows based on mode
+    const proxyRow = document.getElementById('settings-proxy-row');
+    const proxyPortRow = document.getElementById('settings-proxy-port-row');
+    const isProxy = cfg.connection_type === 'proxy';
+    if (proxyRow)     proxyRow.style.display     = isProxy ? '' : 'none';
+    if (proxyPortRow) proxyPortRow.style.display  = isProxy ? '' : 'none';
+    _setEl('settings-proxy-host', cfg.proxy_host || '—');
+    _setEl('settings-proxy-port', cfg.proxy_port ?? '—');
+
+    // Mesh
+    _setEl('settings-count',   status.node_count ?? '—');
+    const ignored = cfg.ignored_nodes;
+    _setEl('settings-ignored', (ignored && ignored.length > 0) ? ignored.join(', ') : 'None');
+
+    // Home Assistant
+    _setEl('settings-ha-url',    cfg.ha_base_url || '—');
+    _setEl('settings-access-key', cfg.access_key_set ? '••••••• (set)' : 'Not set');
+
+    // Schedule & Logging
+    _setEl('settings-scan-interval', cfg.scan_interval != null ? `${cfg.scan_interval} s` : '—');
+    _setEl('settings-log-level',     cfg.log_level || '—');
+
   } catch (_) { /* settings are informational — fail silently */ }
 }
 

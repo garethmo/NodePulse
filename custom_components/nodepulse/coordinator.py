@@ -64,6 +64,10 @@ class NodePulseCoordinator(DataUpdateCoordinator):
         # the addon container).
         self._host_candidates = _host_candidates(self._host)
 
+        # The first candidate that actually responds is promoted to the front of
+        # the list so future polls skip straight to it without re-scanning DNS.
+        self._working_host: str | None = None
+
         scan_interval = config_entry.options.get(
             CONF_SCAN_INTERVAL,
             config_entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
@@ -116,7 +120,7 @@ class NodePulseCoordinator(DataUpdateCoordinator):
         """Write the current tracked set back into the config entry options."""
         new_options = dict(self._config_entry.options)
         new_options[CONF_TRACKED_NODES] = list(self.tracked_nodes)
-        await hass.config_entries.async_update_entry(
+        hass.config_entries.async_update_entry(
             self._config_entry, options=new_options
         )
 
@@ -129,7 +133,21 @@ class NodePulseCoordinator(DataUpdateCoordinator):
         as unavailable — this is preferable to silently returning stale data.
         """
         try:
-            status, nodes = await _fetch_all(self._session, self._host_candidates, self._access_key)
+            # If we previously discovered a working host, try it first so the
+            # full candidate scan is only done once (avoids repeated DNS timeouts).
+            if self._working_host:
+                candidates = [self._working_host] + [
+                    c for c in self._host_candidates if c != self._working_host
+                ]
+            else:
+                candidates = self._host_candidates
+
+            status, nodes, working = await _fetch_all(
+                self._session, candidates, self._access_key
+            )
+            if working and working != self._working_host:
+                logger.info("NodePulse addon reached at %s — pinning as preferred host", working)
+                self._working_host = working
         except aiohttp.ClientError as exc:
             raise UpdateFailed(f"Network error reaching addon at {self._host}: {exc}") from exc
         except Exception as exc:
@@ -144,44 +162,47 @@ class NodePulseCoordinator(DataUpdateCoordinator):
 
 async def _fetch_all(
     session: aiohttp.ClientSession, candidates: list, access_key: str | None = None
-) -> tuple[Dict, List[Dict]]:
+) -> tuple[Dict, List[Dict], str | None]:
     """
-    Fetch /api/status and /api/nodes concurrently.
+    Fetch /api/status and /api/nodes, returning the working host alongside the data.
 
-    Tries each candidate host in order until one responds, so the integration
-    connects even if the configured host is wrong. Separating the network calls
-    from the coordinator class keeps _fetch_all unit-testable.
+    Tries each candidate in order until one responds. Returns a 3-tuple of
+    (status, nodes, working_host) so the coordinator can pin the responsive host
+    and avoid repeated DNS timeouts on every subsequent poll.
     """
     import asyncio
 
-    status, nodes = await asyncio.gather(
-        _get_json_first(session, candidates, "/api/status", access_key),
-        _get_json_first(session, candidates, "/api/nodes", access_key),
-    )
-    return status, nodes
-
-
-async def _get_json_first(
-    session: aiohttp.ClientSession, candidates: list, path: str, access_key: str | None = None
-) -> Any:
-    """Try each candidate host for `path` until one returns valid JSON."""
-    last_exc: Exception | None = None
+    # Probe candidates sequentially (not concurrently) so we stop as soon as one
+    # responds — firing all candidates in parallel would hammer every slug at once.
+    working_host: str | None = None
     for host in candidates:
-        url = f"{host}{path}"
         try:
-            return await _get_json(session, url, access_key)
-        except Exception as exc:  # try the next candidate
-            last_exc = exc
-            logger.debug("Addon fetch failed (url=%s): %s", url, exc)
-    if last_exc:
-        raise last_exc
-    raise UpdateFailed("No NodePulse addon host candidate was reachable")
+            status, nodes = await asyncio.gather(
+                _get_json(session, f"{host}/api/status", access_key),
+                _get_json(session, f"{host}/api/nodes", access_key),
+            )
+            working_host = host
+            return status, nodes, working_host
+        except Exception as exc:
+            logger.debug("Addon host unreachable (host=%s): %s", host, exc)
+            continue
+
+    raise UpdateFailed(
+        f"No NodePulse addon host was reachable. Tried: {', '.join(candidates)}"
+    )
 
 
 async def _get_json(session: aiohttp.ClientSession, url: str, access_key: str | None = None) -> Any:
-    """Perform a GET request and return parsed JSON, raising on HTTP errors."""
+    """
+    Perform a GET request and return parsed JSON, raising on HTTP errors.
+
+    Uses a short connect timeout (3 s) so unreachable / wrong-DNS candidates
+    are skipped quickly rather than blocking for the full 10-second total timeout.
+    A longer read timeout is kept for the actual data transfer.
+    """
     headers = {"X-NodePulse-Access-Key": access_key} if access_key else None
-    async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+    timeout = aiohttp.ClientTimeout(connect=3, total=10)
+    async with session.get(url, headers=headers, timeout=timeout) as resp:
         resp.raise_for_status()
         return await resp.json()
 
@@ -198,9 +219,20 @@ def _host_candidates(host: str) -> list:
     if host:
         candidates.append(host.rstrip("/"))
     slug = "nodepulse"
+    slug2 = "nodepulse_addon"
     for base in (
         f"http://a0d7b954-{slug}",
         f"http://a0d7b954-{slug}:8099",
+        f"http://local-{slug}",
+        f"http://local-{slug}:8099",
+        f"http://local_{slug}",
+        f"http://local_{slug}:8099",
+        f"http://local-{slug2}",
+        f"http://local-{slug2}:8099",
+        f"http://local_{slug2}",
+        f"http://local_{slug2}:8099",
+        f"http://local-{slug2.replace('_', '-')}",
+        f"http://local-{slug2.replace('_', '-')}:8099",
         f"http://{slug}",
         f"http://{slug}:8099",
     ):

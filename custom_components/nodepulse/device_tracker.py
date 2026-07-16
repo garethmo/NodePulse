@@ -116,10 +116,29 @@ class NodeTracker(CoordinatorEntity, TrackerEntity):
         super().__init__(coordinator)
         self._node_id = node_id
         self._attr_unique_id = f"{entry.entry_id}_{node_id}_tracker"
+
+        # Resolve a human-readable name from the coordinator's latest data.
+        # Falls back to the hex ID if node data isn't loaded yet.
+        name = f"Mesh Node {node_id}"
+        model = "Meshtastic Node"
+        nodes = (coordinator.data or {}).get("nodes", [])
+        node = next((n for n in nodes if n.get("id") == node_id), None)
+        if node:
+            short = node.get("short_name")
+            long_n = node.get("long_name")
+            if short and long_n:
+                name = f"{long_n} ({short})"
+            elif short or long_n:
+                name = short or long_n
+            hw = node.get("hw_model")
+            if hw:
+                model = hw
+
         self._attr_device_info = {
             "identifiers": {(DOMAIN, node_id)},
-            "name": f"Mesh Node {node_id}",
+            "name": name,
             "manufacturer": "Meshtastic",
+            "model": model,
             "via_device": (DOMAIN, entry.entry_id),
         }
 

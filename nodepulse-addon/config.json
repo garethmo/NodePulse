@@ -1,6 +1,6 @@
 {
   "name": "NodePulse",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "slug": "nodepulse",
   "description": "Monitor Meshtastic mesh network health — nodes, signal metrics, GPS mapping, and encrypted direct messaging.",
   "url": "https://github.com/garethmo/NodePulse",

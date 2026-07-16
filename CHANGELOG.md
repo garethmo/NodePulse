@@ -2,6 +2,19 @@
 
 All notable changes to NodePulse are documented here.
 
+## [0.2.9] - 2026-07-16
+### Fixed
+- Fixed an `ImportError` preventing integration load on HA 2024.5+ by replacing the deprecated `TEMP_CELSIUS` and `SIGNAL_STRENGTH_DECIBELS` constants.
+- Resolved an `Integration error: 'bool' object can't be awaited` exception when clicking "Track in HA" on newer HA versions.
+- Fixed a bug where partial traceroutes failed to render on the map if an intermediate hop lacked a GPS fix.
+- Map links now clean up correctly and won't visually persist after they've been cleared.
+- Fixed an issue where the HA integration would hang for 10 seconds per incorrect local DNS slug before finding the addon.
+
+### Changed
+- The Web UI Settings tab now dynamically displays the live config including connection status, logging, and integration keys instead of static text.
+- Device names in the Home Assistant integration now use the node's long/short name instead of just the raw hex ID.
+- Promoted the first successfully resolving HA addon DNS slug to avoid repeatedly testing unreachable ones in every poll.
+
 ## [0.2.8] - 2026-07-16
 
 ### Fixed
