@@ -37,6 +37,7 @@ const state = {
   activeConversation: 'ch:0', // currently-open thread (ch:<n> or dm:<nodeId>)
   conversations:  {},       // key -> { key, name, kind, unread }
   messagesByConv: {},       // key -> [message objects], persisted across polls
+  channels:       [],       // configured mesh channels from the node
 };
 
 // ============================================================================
@@ -484,8 +485,52 @@ function selectConversation(key) {
   const label = document.getElementById('recipient-label');
   if (label) label.textContent = conv.name;
 
+  // Sync the channel selector to the active conversation, and show/hide it
+  // for DMs (which always send on channel 0).
+  syncChannelSelect();
+
   renderConversationTabs();
   renderMessageList();
+}
+
+// Populate and sync the channel <select> in the compose box. Only meaningful
+// for channel (broadcast) conversations — hidden for DMs.
+function renderChannelSelect() {
+  const sel = document.getElementById('channel-select');
+  if (!sel) return;
+  const prev = sel.value;
+
+  const chans = (state.channels || []).filter(c => c && c.index != null);
+  // Always ensure channel 0 (Primary) is present.
+  const hasPrimary = chans.some(c => c.index === 0);
+  const list = hasPrimary ? chans : [{ index: 0, name: 'Primary' }, ...chans];
+
+  sel.innerHTML = '';
+  for (const c of list) {
+    const opt = document.createElement('option');
+    opt.value = String(c.index);
+    opt.textContent = c.name ? `${c.name} (ch ${c.index})` : `Channel ${c.index}`;
+    sel.appendChild(opt);
+  }
+
+  // Restore previous selection if still present, else default to Primary.
+  if (prev && list.some(c => String(c.index) === prev)) sel.value = prev;
+  else sel.value = '0';
+
+  syncChannelSelect();
+}
+
+// Show/hide + value-sync the channel selector based on the active conversation.
+function syncChannelSelect() {
+  const sel = document.getElementById('channel-select');
+  if (!sel) return;
+  const conv = conversationForKey(state.activeConversation);
+  if (conv.kind === 'dm') {
+    sel.style.display = 'none';
+  } else {
+    sel.style.display = '';
+    sel.value = String(conv.channel ?? 0);
+  }
 }
 
 // Append a message object to its conversation thread + (optionally) to the UI.
@@ -677,11 +722,12 @@ async function renderSettings() {
 // ============================================================================
 async function pollData() {
   // Fetch status and nodes in parallel — independent requests.
-  const [statusResult, nodesResult, messagesResult, trackedResult] = await Promise.allSettled([
+  const [statusResult, nodesResult, messagesResult, trackedResult, channelsResult] = await Promise.allSettled([
     fetchStatus(),
     fetchNodes(),
     fetchMessages(),
     fetchTrackedNodes(),
+    fetchChannels(),
   ]);
 
   if (statusResult.status === 'fulfilled') {
@@ -727,6 +773,14 @@ async function pollData() {
     state.trackedNodes = new Set(Array.isArray(tracked) ? tracked : tracked.node_ids || []);
   } else {
     console.warn('Tracked-nodes fetch failed:', trackedResult.reason);
+  }
+
+  if (channelsResult.status === 'fulfilled') {
+    const chans = Array.isArray(channelsResult.value) ? channelsResult.value : [];
+    state.channels = chans;
+    renderChannelSelect();
+  } else {
+    console.warn('Channels fetch failed:', channelsResult.reason);
   }
 }
 
@@ -774,6 +828,15 @@ async function init() {
     }
   });
   msgInput.addEventListener('input', () => _autoSizeInput(msgInput));
+
+  // Channel selector: switching it jumps to that channel's conversation thread.
+  const channelSelect = document.getElementById('channel-select');
+  if (channelSelect) {
+    channelSelect.addEventListener('change', () => {
+      const ch = parseInt(channelSelect.value, 10) || 0;
+      selectConversation(`ch:${ch}`);
+    });
+  }
 
   // Event delegation on the nodes grid — attached once here so it is NOT
   // re-added on every 15s poll inside renderNodesGrid().

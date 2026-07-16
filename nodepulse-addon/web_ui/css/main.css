@@ -563,6 +563,22 @@ body::before {
 #send-btn:hover { opacity: 0.85; box-shadow: var(--glow-teal); }
 #send-btn:active { transform: scale(0.97); }
 
+#channel-select {
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 13px;
+  padding: 0 var(--space-sm);
+  height: 40px;
+  align-self: flex-end;
+  cursor: pointer;
+  flex-shrink: 0;
+  max-width: 160px;
+}
+#channel-select:focus { border-color: var(--border-active); outline: none; }
+
 /* --- Conversation tabs (channel + DM threads) ------------------------------ */
 #conversation-tabs {
   display: flex;
