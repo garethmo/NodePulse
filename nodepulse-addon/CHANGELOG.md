@@ -2,6 +2,14 @@
 
 All notable changes to NodePulse are documented here.
 
+## [0.2.12] - 2026-07-16
+### Added
+- GPS coordinate sensors (Latitude, Longitude, Altitude) and separate sent/received message sensors are now exposed by the companion integration (see integration changelog).
+
+## [0.2.11] - 2026-07-16
+### Added
+- Message sensor entities in the companion integration for showing the last received text message per tracked node.
+
 ## [0.2.10] - 2026-07-16
 ### Changed
 - Added repository metadata files (`repository.json` and `hacs.json`) to allow direct installation from the GitHub repository via the Home Assistant Add-on Store and HACS.
