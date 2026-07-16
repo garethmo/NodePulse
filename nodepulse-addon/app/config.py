@@ -51,6 +51,11 @@ class Config:
     access_key: Optional[str]
     scan_interval: int
     ignored_nodes: List[str] = field(default_factory=list)
+    # Base URL of the Home Assistant core instance that hosts the NodePulse
+    # custom integration. The integration's relay endpoints (/api/nodepulse/*)
+    # are served by HA core, NOT by this addon, so the addon must reach HA on
+    # its own port (8123 by default) to forward "Track in HA" requests.
+    ha_base_url: str = "http://localhost:8123"
 
 
 def load_config() -> Config:
@@ -93,6 +98,7 @@ def load_config() -> Config:
         access_key=raw.get("access_key") or None,
         scan_interval=int(raw.get("scan_interval", 30)),
         ignored_nodes=[n for n in raw.get("ignored_nodes", []) if n],
+        ha_base_url=raw.get("ha_base_url", "http://localhost:8123").rstrip("/"),
     )
 
 

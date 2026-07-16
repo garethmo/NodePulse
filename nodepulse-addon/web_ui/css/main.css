@@ -282,8 +282,14 @@ body::before {
 /* --- Dashboard View Layout ------------------------------------------------ */
 #view-dashboard {
   display: none;
-  grid-template-columns: 300px 1fr 280px;
-  grid-template-rows: 1fr 220px;
+  /* Node list (left) and Messages (right) span the FULL height; the map and
+     charts share the centre column. Narrower side panels free up space for the
+     map and message feed, which are the primary dashboards. */
+  grid-template-columns: 240px 1fr 360px;
+  grid-template-rows: 1fr 200px;
+  grid-template-areas:
+    "nodes map     messages"
+    "nodes charts  messages";
   gap: var(--space-md);
   padding: var(--space-md);
   height: 100%;
@@ -292,6 +298,11 @@ body::before {
 #view-dashboard.active {
   display: grid;
 }
+
+#node-list-card { grid-area: nodes; min-height: 0; }
+#map-card       { grid-area: map; min-height: 0; }
+#messaging-card { grid-area: messages; min-height: 0; }
+#charts-row     { grid-area: charts; min-height: 0; }
 
 /* --- Cards (glassmorphism) ------------------------------------------------ */
 .card {
@@ -399,7 +410,6 @@ body::before {
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* --- Map Panel ------------------------------------------------------------ */
-#map-card { grid-row: 1 / 2; }
 #map-container {
   flex: 1;
   min-height: 0; /* required for leaflet in flex container */
@@ -583,10 +593,10 @@ body::before {
 
 /* --- Charts Row ----------------------------------------------------------- */
 #charts-row {
-  grid-column: 1 / -1;
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: var(--space-md);
+  min-height: 0;
 }
 
 .chart-card { padding-bottom: var(--space-md); }

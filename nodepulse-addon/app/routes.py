@@ -20,11 +20,11 @@ from .connection import MeshtasticConnection
 
 logger = logging.getLogger(__name__)
 
-# Default base URL of the NodePulse HA custom integration. Both the addon and
-# the integration run on the HA host, so localhost is reachable. The integration
-# exposes a local relay endpoint that is the ONLY component allowed to register
-# HA entities — the Web UI (behind HA Ingress) cannot reach HA core directly.
-_INTEGRATION_BASE_URL = "http://localhost:8099"
+# The NodePulse HA custom integration's relay endpoints (/api/nodepulse/*) are
+# served by Home Assistant *core* — NOT by this addon. So the addon must reach
+# HA on its own port (8123 by default), which is configurable via the addon's
+# ha_base_url option. We read it from app["config"] at request time rather than
+# hardcoding it here.
 
 
 def _json_response(data: Any, status: int = 200) -> web.Response:
@@ -258,9 +258,10 @@ async def handle_tracked_nodes(request: web.Request) -> web.Response:
     UI has a single source of truth.
     """
     try:
+        base = request.app["config"].ha_base_url.rstrip("/")
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                f"{_INTEGRATION_BASE_URL}/api/nodepulse/tracked-nodes",
+                f"{base}/api/nodepulse/tracked-nodes",
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
                 if resp.status != 200:
@@ -287,9 +288,9 @@ async def handle_track_node(request: web.Request) -> web.Response:
         { "node_id": "!abcd1234", "enabled": true }
 
     The Web UI cannot register HA entities directly, so we relay the request
-    to the NodePulse integration's local API (running on localhost:8099). The
-    integration validates the node and creates/removes the device_tracker +
-    sensor set for that node.
+    to the NodePulse integration's local API (served by HA core on its own
+    port). The integration validates the node and creates/removes the
+    device_tracker + sensor set for that node.
     """
     try:
         body: Dict[str, Any] = await request.json()
@@ -303,9 +304,10 @@ async def handle_track_node(request: web.Request) -> web.Response:
     enabled = bool(body.get("enabled", False))
 
     try:
+        base = request.app["config"].ha_base_url.rstrip("/")
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                f"{_INTEGRATION_BASE_URL}/api/nodepulse/track",
+                f"{base}/api/nodepulse/track",
                 headers={"Content-Type": "application/json"},
                 json={"node_id": node_id, "enabled": enabled},
                 timeout=aiohttp.ClientTimeout(total=10),

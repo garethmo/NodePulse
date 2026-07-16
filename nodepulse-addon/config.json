@@ -1,6 +1,6 @@
 {
   "name": "NodePulse",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "slug": "nodepulse",
   "description": "Monitor Meshtastic mesh network health — nodes, signal metrics, GPS mapping, and encrypted direct messaging.",
   "url": "https://github.com/garethmo/NodePulse",
@@ -21,7 +21,8 @@
     "proxy_port": 4403,
     "access_key": "",
     "scan_interval": 30,
-    "ignored_nodes": []
+    "ignored_nodes": [],
+    "ha_base_url": "http://localhost:8123"
   },
   "schema": {
     "log_level": "list(trace|debug|info|notice|warning|error|fatal)",
@@ -32,7 +33,8 @@
     "proxy_port": "port",
     "access_key": "str?",
     "scan_interval": "int(10,300)",
-    "ignored_nodes": ["str?"]
+    "ignored_nodes": ["str?"],
+    "ha_base_url": "str?"
   },
   "map": {},
   "ports": {},

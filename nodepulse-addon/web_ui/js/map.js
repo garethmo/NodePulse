@@ -235,14 +235,19 @@ export class MapManager {
   /**
    * Draw link lines showing which nodes can talk to each other.
    *
-   * Two kinds of links are drawn:
-   *   1. Self → node: a direct distance connector from the local node to every
-   *      other GPS-fixed node (the existing behaviour). A node with
-   *      hops_away == 1 is known to be directly reachable from the self node.
-   *   2. Traceroute routes: when a traceroute has been run, the discovered
-   *      hop path lists the intermediate node IDs. We draw a multi-segment
-   *      polyline through those nodes to visualise the actual mesh path that
-   *      traffic takes between the self node and the destination.
+   * Meshtastic firmware does not broadcast a full peer-to-peer link table, so
+   * we reconstruct a *plausible* mesh connectivity graph from the data we do
+   * have (each node's GPS fix, its hops_away from the local node, and any
+   * explicit traceroute results):
+   *
+   *   1. Self → node: when the local node has a GPS fix, draw a connector from
+   *      it to every other GPS-fixed node (the original behaviour).
+   *   2. Node ↔ node proximity links: connect any two GPS-fixed nodes that are
+   *      both directly reachable from the local node (hops_away == 1) or within
+   *      a typical LoRa range of each other. This is the "which nodes can talk
+   *      to each other" view and works even when the local node has no GPS.
+   *   3. Traceroute routes: when a traceroute has been run, the discovered hop
+   *      path lists intermediate node IDs — we draw the actual multi-hop path.
    *
    * All link lines are rebuilt each poll so they track live position changes.
    */
@@ -255,33 +260,78 @@ export class MapManager {
     for (const line of this._routeLinks.values()) line.remove();
     this._routeLinks.clear();
 
-    if (!this._selfId) return;
-    const selfMarker = this._markers.get(this._selfId);
-    if (!selfMarker) return;
-    const selfLatLng = selfMarker.getLatLng();
-
-    // --- 1. Self → node distance connectors ---------------------------
+    // Collect GPS-fixed markers (exclude the self node from the pairing set).
+    const gpsMarkers = [];
     for (const [id, marker] of this._markers) {
-      if (id === this._selfId) continue;
-      const latLng = marker.getLatLng();
-      const km = haversineKm(
-        selfLatLng.lat, selfLatLng.lng, latLng.lat, latLng.lng
-      );
-      const line = L.polyline([selfLatLng, latLng], {
-        color: '#00d4aa',
-        weight: 1.5,
-        opacity: 0.6,
-        dashArray: '4 4',
-      }).bindTooltip(`↔ ${formatDistance(km)}`, {
-        sticky: true,
-        className: 'link-label',
-      });
-      if (this._linksVisible) line.addTo(this._map);
-      this._links.set(id, line);
+      const data = marker._nodeData || {};
+      if (data.latitude == null || data.longitude == null) continue;
+      if (data.latitude === 0 && data.longitude === 0) continue;
+      gpsMarkers.push({ id, marker, data });
     }
 
-    // --- 2. Discovered traceroute routes between nodes ----------------
-    for (const [id, marker] of this._markers) {
+    const selfMarker = this._markers.get(this._selfId);
+    const selfHasGps = !!(selfMarker && selfMarker._nodeData &&
+      selfMarker._nodeData.latitude != null &&
+      selfMarker._nodeData.longitude != null &&
+      !(selfMarker._nodeData.latitude === 0 && selfMarker._nodeData.longitude === 0));
+
+    // --- 1. Self → node distance connectors ---------------------------
+    if (selfHasGps) {
+      const selfLatLng = selfMarker.getLatLng();
+      for (const { id, marker } of gpsMarkers) {
+        if (id === this._selfId) continue;
+        const latLng = marker.getLatLng();
+        const km = haversineKm(
+          selfLatLng.lat, selfLatLng.lng, latLng.lat, latLng.lng
+        );
+        const line = L.polyline([selfLatLng, latLng], {
+          color: '#00d4aa',
+          weight: 1.5,
+          opacity: 0.6,
+          dashArray: '4 4',
+        }).bindTooltip(`↔ ${formatDistance(km)}`, {
+          sticky: true,
+          className: 'link-label',
+        });
+        if (this._linksVisible) line.addTo(this._map);
+        this._links.set(id, line);
+      }
+    }
+
+    // --- 2. Node ↔ node proximity / direct-reachability links ---------
+    // Two nodes are treated as linked if BOTH are one hop from the local node
+    // (they share the same direct-RF neighbourhood) or if the great-circle
+    // distance between them is within a typical LoRa range (~15 km). This is a
+    // heuristic for "can talk to each other", not a guaranteed link.
+    const RANGE_KM = 15;
+    for (let i = 0; i < gpsMarkers.length; i++) {
+      for (let j = i + 1; j < gpsMarkers.length; j++) {
+        const a = gpsMarkers[i];
+        const b = gpsMarkers[j];
+        if (a.id === this._selfId || b.id === this._selfId) continue;
+
+        const bothDirect = a.data.hops_away === 1 && b.data.hops_away === 1;
+        const km = haversineKm(
+          a.data.latitude, a.data.longitude, b.data.latitude, b.data.longitude
+        );
+        if (!bothDirect && km > RANGE_KM) continue;
+
+        const line = L.polyline([a.marker.getLatLng(), b.marker.getLatLng()], {
+          color: '#4fc3f7',
+          weight: 1,
+          opacity: 0.35,
+          dashArray: '2 3',
+        }).bindTooltip(`↔ ${formatDistance(km)}`, {
+          sticky: true,
+          className: 'link-label',
+        });
+        if (this._linksVisible) line.addTo(this._map);
+        this._links.set(`${a.id}|${b.id}`, line);
+      }
+    }
+
+    // --- 3. Discovered traceroute routes between nodes ----------------
+    for (const { id, marker } of gpsMarkers) {
       const route = marker._nodeData && marker._nodeData.traceroute;
       if (!route) continue;
 
