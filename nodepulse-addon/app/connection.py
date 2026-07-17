@@ -47,6 +47,21 @@ _RECONNECT_MAX_DELAY = 60
 # hole) would otherwise block forever and leave the addon stuck "Connecting".
 _CONNECT_TIMEOUT = 15
 
+# Interval (seconds) between active health probes while the connection looks
+# healthy. A passive "is the socket object present?" check is not enough:
+# Meshtastic firmware allows only one TCP client per node, and a session can
+# be dropped silently (node reboot, firmware slot reclaim, network blip) while
+# the OS socket object still exists. We proactively query the node to confirm
+# it is actually responsive, and reconnect if it is not.
+_HEALTH_CHECK_INTERVAL = 60
+
+# Grace period (seconds) after a (re)connection during which an empty node DB
+# is NOT treated as a dead session. The meshtastic library populates
+# interface.nodes asynchronously, so a brand-new connection briefly reports
+# zero nodes even though it is healthy. Treating that as fatal would cause a
+# reconnect loop on slow-syncing nodes.
+_NODE_DB_GRACE_PERIOD = 30
+
 # Substrings that strongly suggest the node already has a TCP client and is
 # rejecting the second connection, rather than a generic network failure.
 _SLOT_CONFLICT_HINTS = (
@@ -89,6 +104,12 @@ class MeshtasticConnection:
 
         # The underlying meshtastic TCP interface — None when disconnected.
         self._interface: Optional[meshtastic.tcp_interface.TCPInterface] = None
+
+        # Timestamp (epoch seconds) of the last successful (re)connection.
+        # Used by the health check to give a freshly-established session a grace
+        # period before we treat an empty node DB as a dead connection — the
+        # library populates interface.nodes asynchronously after connect.
+        self._last_connect_ts: float = 0.0
 
         # Protects _interface from concurrent access across threads.
         self._lock = threading.Lock()
@@ -216,18 +237,23 @@ class MeshtasticConnection:
 
     async def monitor_connection(self) -> None:
         """
-        Background coroutine that periodically checks the connection health
-        and triggers reconnection if the interface has gone stale.
+        Background coroutine that keeps the connection to the Meshtastic node
+        live. It runs as a persistent asyncio Task from main.py and is the ONLY
+        place reconnection is initiated (avoids races from multiple callers).
 
-        This is designed to be run as a persistent asyncio Task from main.py.
-        It is the ONLY place where reconnection is initiated, which avoids
-        race conditions from multiple callers trying to reconnect simultaneously.
+        While the session looks healthy we probe the node every
+        ``_HEALTH_CHECK_INTERVAL`` seconds. The probe is an active query (not a
+        passive socket check) so a silently-dropped session is detected and
+        recovered quickly instead of looking "connected" while delivering no
+        data. When the probe fails we reconnect with capped exponential
+        backoff.
         """
         delay = _RECONNECT_BASE_DELAY
         is_first_attempt = True
         while True:
-            # Skip the initial backoff so we connect as soon as the addon
-            # starts; only sleep between *subsequent* reconnect attempts.
+            # Wait before each check. On the very first loop we connect
+            # immediately (no backoff); afterwards we wait either the health
+            # interval (when healthy) or the current backoff (when reconnecting).
             if not is_first_attempt:
                 await asyncio.sleep(delay)
 
@@ -263,7 +289,7 @@ class MeshtasticConnection:
                     await asyncio.wait_for(
                         asyncio.to_thread(self._connect_sync), timeout=_CONNECT_TIMEOUT
                     )
-                    delay = _RECONNECT_BASE_DELAY  # reset on success
+                    delay = _HEALTH_CHECK_INTERVAL  # healthy: poll at the probe cadence
                 except asyncio.TimeoutError:
                     delay = min(delay * 2, _RECONNECT_MAX_DELAY)
                     logger.error(
@@ -276,6 +302,10 @@ class MeshtasticConnection:
                         "Reconnect failed — will retry in %ss (host=%s): %s",
                         delay, self._host, exc,
                     )
+            else:
+                # Healthy: report connected and poll again at the probe cadence.
+                self._connected = True
+                delay = _HEALTH_CHECK_INTERVAL
 
             is_first_attempt = False
 
@@ -377,6 +407,7 @@ class MeshtasticConnection:
                     )
                 raise
             self._connected = True
+            self._last_connect_ts = time.time()
             logger.info(
                 "Connected to Meshtastic node (host=%s, port=%s)", self._host, self._port
             )
@@ -710,24 +741,45 @@ class MeshtasticConnection:
 
     def _is_interface_healthy(self) -> bool:
         """
-        Heuristic health check on the interface.
+        Active health check that confirms the node is actually responsive.
 
-        The meshtastic TCP interface stores the live socket on the PUBLIC
-        `socket` attribute (NOT `_socket`). If it is None, the socket was
-        closed unexpectedly and we need to reconnect. This is preferable to a
-        full ping-style check because it avoids extra network traffic on
-        healthy connections.
+        A passive "is the socket object present?" check is not enough: the
+        meshtastic TCP interface can keep a stale socket object after the node
+        has silently dropped the session (single-slot firmware reclaim, node
+        reboot, network blip). We instead proactively query the node DB; if
+        that raises, the session is dead and we must reconnect.
+
+        A *freshly established* session is given a short grace period before an
+        empty node DB is treated as fatal: the meshtastic library populates
+        ``interface.nodes`` asynchronously after connect, so a brand-new
+        connection will briefly report zero nodes even though it is healthy.
+        Without this grace period the monitor would force a reconnect loop on
+        slow-syncing nodes.
         """
         with self._lock:
             if self._interface is None:
                 return False
-            # Check the underlying socket — if it's gone the connection is dead.
-            # NOTE: the attribute is `socket` (verified against meshtastic
-            # 2.7.x). A stale `_socket` lookup always returned None, which
-            # falsely reported a healthy connection as dead and caused an
-            # endless reconnect loop.
-            sock = getattr(self._interface, "socket", None)
-            return sock is not None
+            # The socket object may still exist on a dead session, so we do not
+            # rely on it. Probe the node instead.
+            try:
+                nodes = self._interface.nodes
+            except Exception as exc:
+                logger.debug("Health probe failed (node DB unreadable): %s", exc)
+                return False
+            if not nodes:
+                # An empty node DB means the library hasn't synced any nodes
+                # yet. Only treat this as fatal once we are past the initial
+                # grace period for this connection.
+                if time.time() - self._last_connect_ts > _NODE_DB_GRACE_PERIOD:
+                    logger.debug(
+                        "Health probe: node DB empty after grace period — session considered dead"
+                    )
+                    return False
+                logger.debug(
+                    "Health probe: node DB empty but within grace period — treating as healthy"
+                )
+                return True
+            return True
 
     def _get_status_sync(self) -> Dict[str, Any]:
         with self._lock:
@@ -742,6 +794,26 @@ class MeshtasticConnection:
                 } if my_info else None,
                 "node_count": len(self._interface.nodes or {}),
             }
+
+    def _normalize_role(raw: Any) -> str:
+        """
+        Normalise a Meshtastic device role to a clean string.
+
+        The library may expose the role as a protobuf enum object (whose str
+        form is e.g. "Role.CLIENT"), an int (the enum value), or an already
+        clean string. We strip the enum prefix and return the bare name (or an
+        empty string when unknown) so the HA "Role" sensor shows "CLIENT" /
+        "ROUTER" rather than "Role.CLIENT" / "2".
+        """
+        if raw is None:
+            return ""
+        if isinstance(raw, str):
+            return raw.split(".")[-1] if raw else ""
+        # Enum-like object: prefer its .name; fall back to its string form.
+        name = getattr(raw, "name", None)
+        if name:
+            return str(name).split(".")[-1]
+        return str(raw).split(".")[-1]
 
     def _get_nodes_sync(self) -> List[Dict[str, Any]]:
         with self._lock:
@@ -800,9 +872,12 @@ class MeshtasticConnection:
                         "voltage": device_metrics.get("voltage"),
                         "channel_utilization": device_metrics.get("channelUtilization"),
                         "air_util_tx": device_metrics.get("airUtilTx"),
+                        "uptime": device_metrics.get("uptime"),
                         "temperature": environment.get("temperature"),
                         "relative_humidity": environment.get("relative_humidity"),
                         "barometric_pressure": environment.get("barometric_pressure"),
+                        "gas_resistance": environment.get("gasResistance"),
+                        "role": _normalize_role(user.get("role")),
                     }
                     # traceroute is NOT present in the library's raw node dict —
                     # it is only populated by _capture_traceroute into our own

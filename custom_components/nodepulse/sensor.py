@@ -25,9 +25,11 @@ from homeassistant.components.sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     PERCENTAGE,
+    UnitOfElectricPotential,
     UnitOfLength,
     UnitOfTemperature,
     UnitOfPressure,
+    UnitOfTime,
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -109,6 +111,12 @@ async def async_setup_entry(
                 NodeTemperatureSensor(coordinator, entry, node_id),
                 NodeHumiditySensor(coordinator, entry, node_id),
                 NodePressureSensor(coordinator, entry, node_id),
+                NodeVoltageSensor(coordinator, entry, node_id),
+                NodeChannelUtilSensor(coordinator, entry, node_id),
+                NodeAirUtilTxSensor(coordinator, entry, node_id),
+                NodeUptimeSensor(coordinator, entry, node_id),
+                NodeRoleSensor(coordinator, entry, node_id),
+                NodeGasResistanceSensor(coordinator, entry, node_id),
                 NodeLatitudeSensor(coordinator, entry, node_id),
                 NodeLongitudeSensor(coordinator, entry, node_id),
                 NodeAltitudeSensor(coordinator, entry, node_id),
@@ -343,6 +351,80 @@ class NodeAltitudeSensor(_NodeSensorBase):
         super().__init__(coordinator, entry, node_id)
         self._attr_unique_id = f"{entry.entry_id}_{node_id}_altitude"
         self._attr_name = "Altitude"
+
+
+class NodeVoltageSensor(_NodeSensorBase):
+    """Battery supply voltage (V) reported by the node's device metrics, if any."""
+    _metric_key = "voltage"
+    _attr_device_class = SensorDeviceClass.VOLTAGE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfElectricPotential.VOLT
+
+    def __init__(self, coordinator, entry, node_id):
+        super().__init__(coordinator, entry, node_id)
+        self._attr_unique_id = f"{entry.entry_id}_{node_id}_voltage"
+        self._attr_name = "Voltage"
+
+
+class NodeChannelUtilSensor(_NodeSensorBase):
+    """Channel utilization (%) from the node's device metrics, if any."""
+    _metric_key = "channel_utilization"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = PERCENTAGE
+
+    def __init__(self, coordinator, entry, node_id):
+        super().__init__(coordinator, entry, node_id)
+        self._attr_unique_id = f"{entry.entry_id}_{node_id}_channel_util"
+        self._attr_name = "Channel Utilization"
+
+
+class NodeAirUtilTxSensor(_NodeSensorBase):
+    """Airtime utilization for TX (%) from the node's device metrics, if any."""
+    _metric_key = "air_util_tx"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = PERCENTAGE
+
+    def __init__(self, coordinator, entry, node_id):
+        super().__init__(coordinator, entry, node_id)
+        self._attr_unique_id = f"{entry.entry_id}_{node_id}_air_util_tx"
+        self._attr_name = "Air Utilization TX"
+
+
+class NodeUptimeSensor(_NodeSensorBase):
+    """Node uptime (seconds) reported by the device metrics, if any."""
+    _metric_key = "uptime"
+    _attr_device_class = SensorDeviceClass.DURATION
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfTime.SECONDS
+
+    def __init__(self, coordinator, entry, node_id):
+        super().__init__(coordinator, entry, node_id)
+        self._attr_unique_id = f"{entry.entry_id}_{node_id}_uptime"
+        self._attr_name = "Uptime"
+
+
+class NodeRoleSensor(_NodeSensorBase):
+    """Meshtastic device role (e.g. CLIENT, ROUTER) for this node, if known."""
+    _metric_key = "role"
+    _attr_icon = "mdi:account-cog"
+
+    def __init__(self, coordinator, entry, node_id):
+        super().__init__(coordinator, entry, node_id)
+        self._attr_unique_id = f"{entry.entry_id}_{node_id}_role"
+        self._attr_name = "Role"
+
+
+class NodeGasResistanceSensor(_NodeSensorBase):
+    """Gas resistance (MΩ) from the node's environment telemetry, if any."""
+    _metric_key = "gas_resistance"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "MOhms"
+    _attr_icon = "mdi:air-filter"
+
+    def __init__(self, coordinator, entry, node_id):
+        super().__init__(coordinator, entry, node_id)
+        self._attr_unique_id = f"{entry.entry_id}_{node_id}_gas_resistance"
+        self._attr_name = "Gas Resistance"
 
 
 class NodeMessageSensor(_NodeSensorBase):

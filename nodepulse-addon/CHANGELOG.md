@@ -2,6 +2,15 @@
 
 All notable changes to NodePulse are documented here.
 
+## [0.2.13] - 2026-07-16
+### Added
+- Companion integration now exposes Voltage, Channel Utilization, Air Utilization TX, Uptime, Role, and Gas Resistance sensors per tracked node, plus a per-node "Online" binary sensor. The addon now forwards `role`, `uptime`, and `gas_resistance` in the node payload.
+
+### Fixed
+- **Always-live connection** — replaced the passive socket health check with an active node-DB probe run every 60s. A dropped-but-apparently-open TCP session is now detected and reconnected automatically instead of looking healthy while no data flows.
+- **Reconnect loop on slow nodes** — a freshly established session is now given a 30s grace period before an empty node DB is treated as a dead connection, preventing reconnect loops on nodes that sync their node DB asynchronously after connect.
+- **Role normalization** — the device `role` (e.g. CLIENT, ROUTER) is now normalized to a clean name instead of a raw enum string/int.
+
 ## [0.2.12] - 2026-07-16
 ### Added
 - GPS coordinate sensors (Latitude, Longitude, Altitude) and separate sent/received message sensors are now exposed by the companion integration (see integration changelog).

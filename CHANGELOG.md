@@ -2,6 +2,15 @@
 
 All notable changes to NodePulse are documented here.
 
+## [0.2.13] - 2026-07-16
+### Added
+- **New per-node sensors** matching the official Meshtastic integration: Voltage, Channel Utilization, Air Utilization TX, Uptime, Role, and Gas Resistance (when reported by the node's telemetry).
+- **Per-node "Online" binary sensor** — True when a tracked node was last heard within the last 3 hours, enabling per-node online/offline automations.
+
+### Fixed
+- **Always-live mesh connection** — the addon now performs an *active* health probe (querying the node DB) every 60s instead of a passive socket check, so a silently-dropped session (node reboot, single-slot firmware reclaim, network blip) is detected and automatically reconnected instead of reporting "connected" while delivering no data.
+- **Addon reachability** — broadened the list of supervisor DNS hostnames the integration tries (including `addon_nodepulse` and `a0d7b954-nodepulse_addon`), and clarified the "no host reachable" error so it's clear this is a HA↔add-on network/ingress issue, not the mesh node being offline.
+
 ## [0.2.12] - 2026-07-16
 ### Added
 - **GPS coordinate sensors** for each tracked node: Latitude, Longitude, and Altitude, sourced from the node's last known position fix.

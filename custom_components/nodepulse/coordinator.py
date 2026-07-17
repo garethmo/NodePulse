@@ -193,7 +193,11 @@ async def _fetch_all(
             continue
 
     raise UpdateFailed(
-        f"No NodePulse addon host was reachable. Tried: {', '.join(candidates)}"
+        "No NodePulse addon host was reachable from Home Assistant. "
+        "This is a network/ingress issue between HA and the add-on — it does "
+        "NOT mean the mesh node is offline. Verify the add-on is running and "
+        "reachable at the configured host (or via the Supervisor add-on DNS "
+        "name / ingress). Tried: " + ", ".join(candidates)
     )
 
 
@@ -228,6 +232,10 @@ def _host_candidates(host: str) -> list:
     for base in (
         f"http://a0d7b954-{slug}",
         f"http://a0d7b954-{slug}:8099",
+        f"http://a0d7b954-{slug2}",
+        f"http://a0d7b954-{slug2}:8099",
+        f"http://addon_{slug}",
+        f"http://addon_{slug}:8099",
         f"http://local-{slug}",
         f"http://local-{slug}:8099",
         f"http://local_{slug}",
@@ -240,6 +248,8 @@ def _host_candidates(host: str) -> list:
         f"http://local-{slug2.replace('_', '-')}:8099",
         f"http://{slug}",
         f"http://{slug}:8099",
+        f"http://{slug2}",
+        f"http://{slug2}:8099",
     ):
         if base not in candidates:
             candidates.append(base)
