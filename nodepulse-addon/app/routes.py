@@ -14,11 +14,28 @@ import logging
 from typing import Any, Dict, List
 
 import aiohttp
+import re
 from aiohttp import web
 
 from .connection import MeshtasticConnection
 
 logger = logging.getLogger(__name__)
+
+# A canonical Meshtastic node ID is a "!" followed by up to 8 hex digits. The
+# Web UI always sends IDs in this form, so we reject anything else before
+# handing it to the meshtastic library.
+_NODE_ID_RE = re.compile(r"^![0-9a-fA-F]{1,8}$")
+
+
+def _validate_destination(body: Dict[str, Any]):
+    """Extract and validate a 'destination' node ID from a request body.
+
+    Returns the stripped destination string, or None if missing/invalid.
+    """
+    destination = (body.get("destination") or "").strip()
+    if not destination or not _NODE_ID_RE.match(destination):
+        return None
+    return destination
 
 # The NodePulse HA custom integration's relay endpoints (/api/nodepulse/*) are
 # served by Home Assistant *core* — NOT by this addon. So the addon must reach
@@ -345,9 +362,9 @@ async def handle_traceroute(request: web.Request) -> web.Response:
     except Exception:
         return _error_response("Request body must be valid JSON", status=400)
 
-    destination = body.get("destination", "").strip()
-    if not destination:
-        return _error_response("'destination' field is required", status=400)
+    destination = _validate_destination(body)
+    if destination is None:
+        return _error_response("'destination' must be a node ID like '!abc12345'", status=400)
 
     try:
         success = await conn.request_traceroute(destination)
@@ -377,9 +394,9 @@ async def handle_request_position(request: web.Request) -> web.Response:
     except Exception:
         return _error_response("Request body must be valid JSON", status=400)
 
-    destination = body.get("destination", "").strip()
-    if not destination:
-        return _error_response("'destination' field is required", status=400)
+    destination = _validate_destination(body)
+    if destination is None:
+        return _error_response("'destination' must be a node ID like '!abc12345'", status=400)
 
     try:
         success = await conn.request_position(destination)

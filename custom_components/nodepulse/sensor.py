@@ -444,15 +444,54 @@ class NodeMessageSensor(_NodeSensorBase):
         direction = "sent" if self._outgoing else "received"
         self._attr_unique_id = f"{entry.entry_id}_{node_id}_message_{direction}"
 
+    @staticmethod
+    def _norm_node_id(raw: Any) -> Optional[str]:
+        """Normalise a node ID for comparison.
+
+        The addon may emit IDs as ``!XXXXXXXX`` (canonical), ``XXXXXXXX``
+        (no leading bang), or even with mixed case depending on the meshtastic
+        library version and how the packet was decoded. We strip the optional
+        leading ``!`` and lowercase so a tracked node id always matches the
+        message's ``from_id``/``to_id`` regardless of formatting differences.
+        """
+        if not raw:
+            return None
+        s = str(raw).strip().lower()
+        return s[1:] if s.startswith("!") else s
+
+    def _self_node_id(self) -> Optional[str]:
+        """Return the local/self node id (normalised), or None if unknown.
+
+        Prefer the coordinator's status payload (populated from the node's
+        ``myInfo``), which is reliable, over the ``outgoing`` flag recorded by
+        the addon at capture time (which can be wrong when ``myInfo`` wasn't
+        available the moment a packet arrived).
+        """
+        status = (self.coordinator.data or {}).get("status", {})
+        my_info = status.get("my_info") or {}
+        my_num = my_info.get("my_node_num")
+        if my_num is not None:
+            return self._norm_node_id("!" + format(int(my_num), "08x"))
+        return None
+
     def _node_messages(self) -> List[Dict[str, Any]]:
         """Return received/sent messages involving this node, oldest first."""
         messages = (self.coordinator.data or {}).get("messages", [])
-        node_messages = [
-            m for m in messages
-            if (m.get("to_id") == self._node_id or m.get("from_id") == self._node_id)
-            and bool(m.get("outgoing")) == self._outgoing
-        ]
-        return node_messages
+        node_id = self._norm_node_id(self._node_id)
+        self_id = self._self_node_id()
+
+        out = []
+        for m in messages:
+            from_id = self._norm_node_id(m.get("from_id"))
+            to_id = self._norm_node_id(m.get("to_id"))
+            if from_id != node_id and to_id != node_id:
+                continue
+            # Recompute direction from the self id so it's robust even when the
+            # addon's captured ``outgoing`` flag was unreliable.
+            is_outgoing = (from_id == self_id) if self_id else bool(m.get("outgoing"))
+            if is_outgoing == self._outgoing:
+                out.append(m)
+        return out
 
     @property
     def native_value(self) -> str:

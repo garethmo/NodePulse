@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional
 import meshtastic
 import meshtastic.tcp_interface
 from pubsub import pub
+import re
 
 # Persistent storage directory. Under HA Supervisor this is /data, which
 # survives addon restarts (unlike the container's ephemeral filesystem). We
@@ -35,6 +36,31 @@ _DATA_DIR = os.environ.get("NODEPULSE_DATA_DIR", "/data")
 _MESSAGES_FILE = os.path.join(_DATA_DIR, "messages.json")
 _TRACEROUTES_FILE = os.path.join(_DATA_DIR, "traceroutes.json")
 logger = logging.getLogger(__name__)
+
+# A canonical Meshtastic node ID is a "!" followed by the node number in hex.
+# Node numbers are uint32, so 8 hex digits is the full width. This regex is
+# used to validate destinations supplied by the Web UI before we hand them to
+# the meshtastic library.
+_NODE_ID_RE = re.compile(r"^![0-9a-fA-F]{1,8}$")
+
+# Minimum delay (seconds) between traceroute persistence flushes, so a burst of
+# traceroute replies cannot spawn a save thread on every single capture.
+_TRACEROUTE_SAVE_DEBOUNCE = 1.0
+
+
+def _node_id_from_num(num: Any) -> Optional[str]:
+    """Format a Meshtastic node number as a canonical "!hex" ID.
+
+    Used everywhere we turn a raw packet ``from``/``to`` integer into the
+    "!xxxxxxxx" form that the Web UI and our caches key on, so the formatting
+    logic lives in exactly one place.
+    """
+    if num is None:
+        return None
+    try:
+        return "!" + format(int(num) & 0xFFFFFFFF, "08x")
+    except (TypeError, ValueError):
+        return None
 
 # How long (seconds) to wait between reconnection attempts.
 # Using a capped exponential backoff to avoid hammering an offline node.
@@ -142,10 +168,24 @@ class MeshtasticConnection:
         self._nodes_lock = threading.Lock()
         self._nodes: List[Dict[str, Any]] = []
 
-        # Destination node ID of the most recent traceroute request. The reply
+        # Destination node IDs of in-flight traceroute requests. The reply
         # packet only carries the origin (the responding node), not the original
-        # request target, so we remember it to attribute the route correctly.
-        self._pending_traceroute_dest: Optional[str] = None
+        # request target, so we remember the destinations to attribute the
+        # route correctly. A FIFO stack (list) lets overlapping traceroute
+        # requests each be attributed to the right target instead of clobbering
+        # a single shared slot.
+        self._pending_traceroute_dests: List[str] = []
+
+        # Destination node IDs of in-flight position requests. Used to attribute
+        # inbound POSITION_APP replies to the node we actually asked, so we don't
+        # treat every broadcast position as a response to our request.
+        self._pending_position_dests: set = set()
+
+        # Timestamp (monotonic-ish, seconds) of the last traceroute persistence
+        # flush, used to debounce _save_traceroutes. A pending debounced save is
+        # tracked so a burst ends with a final flush of the latest state.
+        self._last_traceroute_save = 0.0
+        self._pending_traceroute_save = False
 
     # ------------------------------------------------------------------
     # Public async API
@@ -323,117 +363,111 @@ class MeshtasticConnection:
         A _connecting guard prevents two concurrent connect attempts from
         racing on self._interface when asyncio.wait_for times out and the
         monitor loop fires again before the previous thread finishes.
+
+        IMPORTANT — lock hygiene: _lock is held only while reading/writing
+        shared state (_interface, _connecting, _subscribed, _connected). It
+        is NEVER held during blocking network I/O (TCPInterface constructor,
+        sendText, sendTraceRoute, requestConfig, fetchNodeDB). Holding _lock
+        during those calls would stall every other thread (get_nodes, health
+        probe, etc.) for the full network round-trip timeout.
         """
+        # Guard check + setup under the lock — no blocking I/O here.
         with self._lock:
-            # Another thread is already mid-connect; bail out to avoid a race.
             if self._connecting:
                 logger.debug("_connect_sync called while connect already in-progress — skipping")
                 return
             self._connecting = True
-            self._close_sync()  # clean up any existing connection first
 
-            logger.info(
-                "Connecting to Meshtastic node (host=%s, port=%s)", self._host, self._port
-            )
-            # The meshtastic library raises on connection failure, which propagates
-            # up to the caller (connect() or monitor_connection()) for handling.
+        # Close any stale interface OUTSIDE the lock. _close_sync acquires
+        # _lock itself for the brief state-mutation steps it needs.
+        self._close_sync()
+
+        logger.info(
+            "Connecting to Meshtastic node (host=%s, port=%s)", self._host, self._port
+        )
+
+        new_interface = None
+        try:
+            # TCPInterface() blocks until the TCP handshake completes (or
+            # raises). We do this OUTSIDE _lock so other threads (health probe,
+            # get_nodes) are never stalled waiting for a network timeout.
+            kwargs = {"hostname": self._host, "portNumber": self._port, "debugOut": None}
             try:
-                # The access_key is used to authenticate admin operations with
-                # the node. Newer meshtastic library versions accept it directly
-                # as a constructor kwarg; older versions do not, so we set it as
-                # an attribute after the interface is created. A node that does
-                # not require a key simply ignores it.
-                kwargs = {"hostname": self._host, "portNumber": self._port, "debugOut": None}
-                try:
-                    kwargs["access_key"] = self._access_key
-                    self._interface = meshtastic.tcp_interface.TCPInterface(**kwargs)
-                except TypeError:
-                    # Older library without an access_key kwarg — construct
-                    # normally, then attach the key if the attribute is supported.
-                    kwargs.pop("access_key", None)
-                    self._interface = meshtastic.tcp_interface.TCPInterface(**kwargs)
-                    if self._access_key is not None:
-                        try:
-                            self._interface.access_key = self._access_key
-                        except AttributeError:
-                            logger.debug(
-                                "meshtastic library does not support access_key — ignoring"
-                            )
-                # Ensure the attribute is set on versions that accept it only
-                # post-construction.
-                if self._access_key is not None and getattr(self._interface, "access_key", None) is None:
+                kwargs["access_key"] = self._access_key
+                new_interface = meshtastic.tcp_interface.TCPInterface(**kwargs)
+            except TypeError:
+                # Older library without an access_key kwarg.
+                kwargs.pop("access_key", None)
+                new_interface = meshtastic.tcp_interface.TCPInterface(**kwargs)
+                if self._access_key is not None:
                     try:
-                        self._interface.access_key = self._access_key
+                        new_interface.access_key = self._access_key
                     except AttributeError:
-                        pass
+                        logger.debug(
+                            "meshtastic library does not support access_key — ignoring"
+                        )
 
-                # Subscribe to inbound packets so the Web UI / API can show a
-                # live message feed. The meshtastic library delivers packets on
-                # its own background thread via pubsub, so we store them
-                # thread-safely. We only subscribe once — subscribing the same
-                # listener twice causes each packet to be delivered twice.
-                if not self._subscribed:
-                    try:
-                        pub.subscribe(self._on_mesh_receive, "meshtastic.receive")
-                        self._subscribed = True
-                    except Exception as exc:  # pragma: no cover - defensive
-                        logger.warning("Could not subscribe to meshtastic receive events: %s", exc)
-            except Exception as exc:
-                self._interface = None
-                self._connected = False
-                if self._mode == "proxy":
-                    # In proxy mode we talk to the official Meshtastic HA
-                    # integration's TCP proxy, not the node directly. A rejected
-                    # connection means that proxy isn't reachable — most often
-                    # because the "TCP Proxy" option is disabled in the official
-                    # integration, or proxy_host/proxy_port point at the wrong place.
-                    logger.error(
-                        "Connection to Meshtastic TCP proxy at %s:%s rejected. "
-                        "Ensure the official Meshtastic HA integration is installed "
-                        "and its 'TCP Proxy' option is enabled, and that proxy_host/"
-                        "proxy_port are correct. Underlying error: %s",
-                        self._host, self._port, exc,
-                    )
-                elif _looks_like_slot_conflict(exc):
-                    # Meshtastic firmware only allows ONE TCP client per node.
-                    # A refused/reset/denied connection almost always means
-                    # another client (e.g. the official Meshtastic HA integration)
-                    # already holds the single slot. The slot is only freed once
-                    # the firmware detects the drop — power-cycle the node or
-                    # disconnect the other client to recover.
-                    logger.error(
-                        "Connection to %s:%s rejected — the node already has a "
-                        "TCP client connected. Meshtastic firmware permits ONLY ONE "
-                        "TCP connection per node, so NodePulse (direct TCP) cannot "
-                        "share it with the official Meshtastic HA integration. To run "
-                        "both: set the official integration to connect via Serial or "
-                        "Bluetooth (freeing the TCP slot for NodePulse), or disable it. "
-                        "If you just disconnected the other client, reboot/power-cycle "
-                        "the node so the firmware releases the slot. Underlying error: %s",
-                        self._host, self._port, exc,
-                    )
-                else:
-                    logger.error(
-                        "Failed to connect to Meshtastic node at %s:%s: %s",
-                        self._host, self._port, exc,
-                    )
-                raise
-            finally:
-                # Always clear the in-progress guard — success or failure.
+            # Ensure the key is set for library versions that only accept it
+            # post-construction.
+            if self._access_key is not None and getattr(new_interface, "access_key", None) is None:
+                try:
+                    new_interface.access_key = self._access_key
+                except AttributeError:
+                    pass
+
+        except Exception as exc:
+            with self._lock:
                 self._connecting = False
-            self._connected = True
-            logger.info(
-                "Connected to Meshtastic node (host=%s, port=%s)", self._host, self._port
-            )
+                self._connected = False
+                self._interface = None
+            if self._mode == "proxy":
+                logger.error(
+                    "Connection to Meshtastic TCP proxy at %s:%s rejected. "
+                    "Ensure the official Meshtastic HA integration is installed "
+                    "and its 'TCP Proxy' option is enabled, and that proxy_host/"
+                    "proxy_port are correct. Underlying error: %s",
+                    self._host, self._port, exc,
+                )
+            elif _looks_like_slot_conflict(exc):
+                logger.error(
+                    "Connection to %s:%s rejected — the node already has a "
+                    "TCP client connected. Meshtastic firmware permits ONLY ONE "
+                    "TCP connection per node, so NodePulse (direct TCP) cannot "
+                    "share it with the official Meshtastic HA integration. To run "
+                    "both: set the official integration to connect via Serial or "
+                    "Bluetooth (freeing the TCP slot for NodePulse), or disable it. "
+                    "If you just disconnected the other client, reboot/power-cycle "
+                    "the node so the firmware releases the slot. Underlying error: %s",
+                    self._host, self._port, exc,
+                )
+            else:
+                logger.error(
+                    "Failed to connect to Meshtastic node at %s:%s: %s",
+                    self._host, self._port, exc,
+                )
+            raise
 
-            # The meshtastic library populates interface.nodes lazily — it only
-            # fills the node DB as NodeInfo packets arrive, which can take a long
-            # time on a busy/slow mesh. Proactively request the node DB + config
-            # right after connect so the dashboard/nodes/map populate within a
-            # couple of seconds instead of waiting for an opportunistic sync.
-            # Best-effort: any method that doesn't exist on this library version
-            # is skipped, and failures are logged but never fatal to the connect.
-            self._trigger_node_db_sync()
+        # Connection succeeded — publish the new interface and subscribe.
+        with self._lock:
+            self._interface = new_interface
+            self._connected = True
+            self._connecting = False
+            # Subscribe to inbound packets. We only subscribe once — subscribing
+            # the same listener twice causes duplicate packet delivery.
+            if not self._subscribed:
+                try:
+                    pub.subscribe(self._on_mesh_receive, "meshtastic.receive")
+                    self._subscribed = True
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.warning("Could not subscribe to meshtastic receive events: %s", exc)
+
+        logger.info(
+            "Connected to Meshtastic node (host=%s, port=%s)", self._host, self._port
+        )
+
+        # Proactively request the node DB so the dashboard populates quickly.
+        # Called OUTSIDE _lock — these library methods do blocking radio I/O.
+        self._trigger_node_db_sync()
 
     def _trigger_node_db_sync(self) -> None:
         """
@@ -488,21 +522,35 @@ class MeshtasticConnection:
                 break
 
     def _close_sync(self) -> None:
-        """Close the current interface, suppressing errors (already closed, etc.)."""
-        if self._subscribed:
-            try:
-                pub.unsubscribe(self._on_mesh_receive, "meshtastic.receive")
-            except Exception:
-                pass
-            self._subscribed = False
-        if self._interface is not None:
-            try:
-                self._interface.close()
-            except Exception as exc:
-                logger.debug("Exception during interface close (ignored): %s", exc)
-            finally:
+        """Close the current interface, suppressing errors (already closed, etc.).
+
+        This method is safe to call with or without _lock held. It acquires
+        _lock itself for the brief state-mutation steps, and then calls
+        interface.close() OUTSIDE the lock so the blocking socket teardown
+        does not prevent concurrent health probes or poll calls from running.
+        """
+        # Swap out shared state under the lock, then close without holding it.
+        with self._lock:
+            if self._subscribed:
+                try:
+                    pub.unsubscribe(self._on_mesh_receive, "meshtastic.receive")
+                except Exception:
+                    pass
+                self._subscribed = False
+
+            iface_to_close = self._interface
+            if iface_to_close is not None:
                 self._interface = None
                 self._connected = False
+
+        # Close the old interface outside the lock. interface.close() may block
+        # briefly on socket teardown; releasing the lock here lets other threads
+        # continue polling while the TCP connection drains.
+        if iface_to_close is not None:
+            try:
+                iface_to_close.close()
+            except Exception as exc:
+                logger.debug("Exception during interface close (ignored): %s", exc)
 
     def _on_mesh_receive(self, packet: Dict[str, Any], interface=None) -> None:
         """
@@ -681,13 +729,30 @@ class MeshtasticConnection:
         """Persist the current traceroute results to disk (best-effort).
 
         Offloaded to a daemon thread so the meshtastic receive thread is never
-        blocked, and serialised via _persist_lock.
+        blocked, and serialised via _persist_lock. Saves are debounced so a
+        burst of traceroute replies cannot spawn a save thread per capture;
+        the most recent result within the debounce window is flushed shortly
+        after the storm settles.
         """
         try:
-            # Snapshot under _nodes_lock so we never read a partially-updated
-            # dict. _capture_traceroute writes self._traceroutes under the same
-            # lock, so skipping it here would be a data-race.
+            now = time.time()
             with self._nodes_lock:
+                # If a save happened very recently, schedule a single trailing
+                # flush after the debounce window so the latest state is still
+                # persisted once the burst settles. A negative delta disables
+                # debouncing entirely (save on every call).
+                if (
+                    _TRACEROUTE_SAVE_DEBOUNCE > 0
+                    and now - self._last_traceroute_save < _TRACEROUTE_SAVE_DEBOUNCE
+                ):
+                    if not self._pending_traceroute_save:
+                        self._pending_traceroute_save = True
+                        threading.Timer(
+                            _TRACEROUTE_SAVE_DEBOUNCE, self._save_traceroutes
+                        ).start()
+                    return
+                self._last_traceroute_save = now
+                self._pending_traceroute_save = False
                 snapshot = dict(self._traceroutes)
             t = threading.Thread(
                 target=self._write_json, args=(snapshot, _TRACEROUTES_FILE), daemon=True
@@ -727,7 +792,7 @@ class MeshtasticConnection:
             snr_back = as_dict.get("snrBack", [])
 
             from_num = packet.get("from")
-            from_id = ("!" + format(from_num, "08x")) if from_num is not None else None
+            from_id = _node_id_from_num(from_num)
 
             record = {
                 "from_id": from_id,
@@ -741,7 +806,13 @@ class MeshtasticConnection:
             # Store under the node this route belongs to. Prefer the node the
             # user asked about if we have a pending request; otherwise the
             # reply's origin. A re-request simply overwrites the previous result.
-            target_id = self._pending_traceroute_dest or from_id
+            # Pop the most recent pending destination (LIFO) so overlapping
+            # traceroute requests each attribute to their own target rather than
+            # clobbering a single shared slot.
+            target_id = from_id
+            with self._nodes_lock:
+                if self._pending_traceroute_dests:
+                    target_id = self._pending_traceroute_dests.pop()
 
             logger.info(
                 "Captured traceroute for %s (target=%s): route=%s route_back=%s",
@@ -756,7 +827,6 @@ class MeshtasticConnection:
                     node["traceroute"] = record
                 # Persist so the result survives addon restarts.
                 self._traceroutes[target_id] = record
-                self._pending_traceroute_dest = None
             self._save_traceroutes()
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("Error capturing traceroute (ignored): %s", exc)
@@ -783,9 +853,19 @@ class MeshtasticConnection:
             pos.ParseFromString(payload)
 
             from_num = packet.get("from")
-            from_id = ("!" + format(from_num, "08x")) if from_num is not None else None
+            from_id = _node_id_from_num(from_num)
             if not from_id:
                 return
+
+            # Only treat this as a reply to a position request we actually made.
+            # POSITION_APP packets also arrive as periodic broadcasts from nodes
+            # we didn't ask; updating our cache on those would make a node appear
+            # to have responded to a request it didn't. If there's no matching
+            # pending request, ignore the packet.
+            with self._nodes_lock:
+                if from_id not in self._pending_position_dests:
+                    return
+                self._pending_position_dests.discard(from_id)
 
             # Integer microdegrees -> decimal degrees. 0 means "not set".
             lat = pos.latitude_i * 1e-7 if pos.latitude_i else None
@@ -944,10 +1024,10 @@ class MeshtasticConnection:
                     "voltage": device_metrics.get("voltage"),
                     "channel_utilization": device_metrics.get("channelUtilization"),
                     "air_util_tx": device_metrics.get("airUtilTx"),
-                    "uptime": device_metrics.get("uptime"),
+                    "uptime": device_metrics.get("uptimeSeconds"),
                     "temperature": environment.get("temperature"),
-                    "relative_humidity": environment.get("relative_humidity"),
-                    "barometric_pressure": environment.get("barometric_pressure"),
+                    "relative_humidity": environment.get("relativeHumidity"),
+                    "barometric_pressure": environment.get("barometricPressure"),
                     "gas_resistance": environment.get("gasResistance"),
                     "role": MeshtasticConnection._normalize_role(user.get("role")),
                 }
@@ -1055,48 +1135,61 @@ class MeshtasticConnection:
                 return False
 
     def _request_traceroute_sync(self, destination: str) -> bool:
+        # Take a snapshot of the interface under the lock, then release it
+        # BEFORE calling sendTraceRoute. sendTraceRoute blocks internally
+        # waiting for the firmware RouteDiscovery ack (can take 30 s+);
+        # holding _lock for that entire duration would freeze get_nodes,
+        # get_status, and the health probe for every poll cycle.
         with self._lock:
             if not self._connected or self._interface is None:
                 return False
-            try:
-                # hopLimit is a REQUIRED positional argument in meshtastic 2.7.x —
-                # passing None raises TypeError. A hopLimit of 0 would prevent the
-                # packet from relaying past directly-connected nodes, so most
-                # traceroutes would silently fail. We use a sane high value (10)
-                # which lets the firmware traverse the mesh; a 0 here is NOT the
-                # "default", it actually disables relaying.
-                # The call blocks until the RouteDiscovery reply arrives (the
-                # library waits internally for the acknowledgment flag). The
-                # actual per-hop route SNR is NOT stored by the library, so we
-                # capture it ourselves in _on_mesh_receive (TRACEROUTE_APP) and
-                # merge it into our node cache below.
-                self._pending_traceroute_dest = destination
-                self._interface.sendTraceRoute(destination, 10)
-                # Pull whatever route data we've captured so far into the cache.
-                self._refresh_node_from_interface(destination)
-                return True
-            except Exception as exc:
-                logger.error(
-                    "Traceroute request failed (destination=%s): %s", destination, exc
-                )
-                return False
+            iface = self._interface
+
+        try:
+            # hopLimit is a REQUIRED positional argument in meshtastic 2.7.x —
+            # passing None raises TypeError. A hopLimit of 0 would prevent the
+            # packet from relaying past directly-connected nodes, so most
+            # traceroutes would silently fail. We use a sane high value (10)
+            # which lets the firmware traverse the mesh; a 0 here is NOT the
+            # "default", it actually disables relaying.
+            # The call blocks until the RouteDiscovery reply arrives (the
+            # library waits internally for the acknowledgment flag). The
+            # actual per-hop route SNR is NOT stored by the library, so we
+            # capture it ourselves in _on_mesh_receive (TRACEROUTE_APP) and
+            # merge it into our node cache below.
+            self._pending_traceroute_dests.append(destination)
+            iface.sendTraceRoute(destination, 10)
+            # Pull whatever route data we've captured so far into the cache.
+            self._refresh_node_from_interface(destination)
+            return True
+        except Exception as exc:
+            logger.error(
+                "Traceroute request failed (destination=%s): %s", destination, exc
+            )
+            return False
 
     def _request_position_sync(self, destination: str) -> bool:
+        # Release the lock before the blocking sendPosition call for the same
+        # reason as _request_traceroute_sync — the firmware round-trip can take
+        # several seconds and must not freeze other polling threads.
         with self._lock:
             if not self._connected or self._interface is None:
                 return False
-            try:
-                # Request a position with wantResponse=True. The node replies with
-                # a POSITION_APP packet which the library funnels through
-                # onResponsePosition -> _onPositionReceive, updating its node DB.
-                # We then copy that fresh fix into our own nodes dict below.
-                self._interface.sendPosition(destinationId=destination, wantResponse=True)
-                return True
-            except Exception as exc:
-                logger.error(
-                    "Position request failed (destination=%s): %s", destination, exc
-                )
-                return False
+            iface = self._interface
+
+        try:
+            # Request a position with wantResponse=True. The node replies with
+            # a POSITION_APP packet which the library funnels through
+            # onResponsePosition -> _onPositionReceive, updating its node DB.
+            # We then copy that fresh fix into our own nodes dict below.
+            iface.sendPosition(destinationId=destination, wantResponse=True)
+            self._pending_position_dests.add(destination)
+            return True
+        except Exception as exc:
+            logger.error(
+                "Position request failed (destination=%s): %s", destination, exc
+            )
+            return False
 
     def _refresh_node_from_interface(self, node_id: str) -> None:
         """
