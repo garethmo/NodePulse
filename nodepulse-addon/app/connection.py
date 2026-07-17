@@ -55,13 +55,6 @@ _CONNECT_TIMEOUT = 15
 # it is actually responsive, and reconnect if it is not.
 _HEALTH_CHECK_INTERVAL = 60
 
-# Grace period (seconds) after a (re)connection during which an empty node DB
-# is NOT treated as a dead session. The meshtastic library populates
-# interface.nodes asynchronously, so a brand-new connection briefly reports
-# zero nodes even though it is healthy. Treating that as fatal would cause a
-# reconnect loop on slow-syncing nodes.
-_NODE_DB_GRACE_PERIOD = 30
-
 # Substrings that strongly suggest the node already has a TCP client and is
 # rejecting the second connection, rather than a generic network failure.
 _SLOT_CONFLICT_HINTS = (
@@ -105,14 +98,21 @@ class MeshtasticConnection:
         # The underlying meshtastic TCP interface — None when disconnected.
         self._interface: Optional[meshtastic.tcp_interface.TCPInterface] = None
 
-        # Timestamp (epoch seconds) of the last successful (re)connection.
-        # Used by the health check to give a freshly-established session a grace
-        # period before we treat an empty node DB as a dead connection — the
-        # library populates interface.nodes asynchronously after connect.
-        self._last_connect_ts: float = 0.0
-
         # Protects _interface from concurrent access across threads.
+        # Lock ordering rule: always acquire _lock BEFORE _nodes_lock.
+        # Never acquire _lock while holding _nodes_lock.
         self._lock = threading.Lock()
+
+        # Guard against two concurrent _connect_sync calls racing on _interface.
+        # Set to True while a connect is in-progress; callers that see it True
+        # return immediately rather than starting a second connection attempt.
+        self._connecting = False
+
+        # Tracks whether the pubsub listener is currently subscribed. The
+        # meshtastic library raises if you subscribe the same listener twice, and
+        # silently accumulates duplicates in some versions — we use this flag to
+        # ensure we subscribe at most once at any time.
+        self._subscribed = False
 
         # Used by the health monitor background task to signal reconnect attempts.
         self._connected = False
@@ -319,8 +319,17 @@ class MeshtasticConnection:
 
         We close any stale interface before creating a new one to avoid
         resource leaks (file descriptors, threads) from orphaned TCP sockets.
+
+        A _connecting guard prevents two concurrent connect attempts from
+        racing on self._interface when asyncio.wait_for times out and the
+        monitor loop fires again before the previous thread finishes.
         """
         with self._lock:
+            # Another thread is already mid-connect; bail out to avoid a race.
+            if self._connecting:
+                logger.debug("_connect_sync called while connect already in-progress — skipping")
+                return
+            self._connecting = True
             self._close_sync()  # clean up any existing connection first
 
             logger.info(
@@ -361,11 +370,14 @@ class MeshtasticConnection:
                 # Subscribe to inbound packets so the Web UI / API can show a
                 # live message feed. The meshtastic library delivers packets on
                 # its own background thread via pubsub, so we store them
-                # thread-safely.
-                try:
-                    pub.subscribe(self._on_mesh_receive, "meshtastic.receive")
-                except Exception as exc:  # pragma: no cover - defensive
-                    logger.warning("Could not subscribe to meshtastic receive events: %s", exc)
+                # thread-safely. We only subscribe once — subscribing the same
+                # listener twice causes each packet to be delivered twice.
+                if not self._subscribed:
+                    try:
+                        pub.subscribe(self._on_mesh_receive, "meshtastic.receive")
+                        self._subscribed = True
+                    except Exception as exc:  # pragma: no cover - defensive
+                        logger.warning("Could not subscribe to meshtastic receive events: %s", exc)
             except Exception as exc:
                 self._interface = None
                 self._connected = False
@@ -406,18 +418,83 @@ class MeshtasticConnection:
                         self._host, self._port, exc,
                     )
                 raise
+            finally:
+                # Always clear the in-progress guard — success or failure.
+                self._connecting = False
             self._connected = True
-            self._last_connect_ts = time.time()
             logger.info(
                 "Connected to Meshtastic node (host=%s, port=%s)", self._host, self._port
             )
 
+            # The meshtastic library populates interface.nodes lazily — it only
+            # fills the node DB as NodeInfo packets arrive, which can take a long
+            # time on a busy/slow mesh. Proactively request the node DB + config
+            # right after connect so the dashboard/nodes/map populate within a
+            # couple of seconds instead of waiting for an opportunistic sync.
+            # Best-effort: any method that doesn't exist on this library version
+            # is skipped, and failures are logged but never fatal to the connect.
+            self._trigger_node_db_sync()
+
+    def _trigger_node_db_sync(self) -> None:
+        """
+        Best-effort: ask the radio to push its node DB + config immediately.
+
+        Called right after a (re)connection. The meshtastic library only fills
+        ``interface.nodes`` as NodeInfo packets arrive opportunistically, which
+        can be very slow; explicitly requesting the data makes the Web UI /
+        API show nodes within a couple of seconds of connecting.
+
+        Tries the common library entry points in order; anything missing on the
+        current library version is skipped. Failures are logged but never fatal
+        — the lazy sync still works as a fallback.
+        """
+        iface = self._interface
+        if iface is None:
+            return
+
+        # 1) Request the full config (also prompts a node-info push).
+        for meth in ("requestConfig", "requestConfigCompressed"):
+            fn = getattr(iface, meth, None)
+            if callable(fn):
+                try:
+                    fn()
+                    logger.debug("Requested node config via %s()", meth)
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.debug("requestConfig (%s) failed (ignored): %s", meth, exc)
+                break
+
+        # 2) Explicitly fetch the node DB if the library exposes it.
+        fetch_db = getattr(iface, "fetchNodeDB", None)
+        if callable(fetch_db):
+            try:
+                fetch_db()
+                logger.debug("Fetched node DB via fetchNodeDB()")
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug("fetchNodeDB() failed (ignored): %s", exc)
+
+        # 3) Probe our own node info — this forces the radio to respond with a
+        #    NodeInfo packet, kick-starting the node-DB sync.
+        for meth in ("getMyNodeInfo", "getNode"):
+            fn = getattr(iface, meth, None)
+            if callable(fn):
+                try:
+                    if meth == "getNode":
+                        fn("^local")
+                    else:
+                        fn()
+                    logger.debug("Triggered node-info via %s()", meth)
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.debug("%s() failed (ignored): %s", meth, exc)
+                break
+
     def _close_sync(self) -> None:
         """Close the current interface, suppressing errors (already closed, etc.)."""
-        try:
-            pub.unsubscribe(self._on_mesh_receive, "meshtastic.receive")
-        except Exception:
-            pass
+        if self._subscribed:
+            try:
+                pub.unsubscribe(self._on_mesh_receive, "meshtastic.receive")
+            except Exception:
+                pass
+            self._subscribed = False
         if self._interface is not None:
             try:
                 self._interface.close()
@@ -741,45 +818,33 @@ class MeshtasticConnection:
 
     def _is_interface_healthy(self) -> bool:
         """
-        Active health check that confirms the node is actually responsive.
+        Health check that decides whether the session needs a reconnect.
 
-        A passive "is the socket object present?" check is not enough: the
-        meshtastic TCP interface can keep a stale socket object after the node
-        has silently dropped the session (single-slot firmware reclaim, node
-        reboot, network blip). We instead proactively query the node DB; if
-        that raises, the session is dead and we must reconnect.
+        We treat the session as dead ONLY when the underlying socket is gone or
+        reading the node DB raises — i.e. a genuinely broken connection. An
+        *empty* node DB is NOT treated as dead: the meshtastic library
+        populates ``interface.nodes`` asynchronously after connect, and on a
+        busy/slow mesh this sync can take well over a minute.
 
-        A *freshly established* session is given a short grace period before an
-        empty node DB is treated as fatal: the meshtastic library populates
-        ``interface.nodes`` asynchronously after connect, so a brand-new
-        connection will briefly report zero nodes even though it is healthy.
-        Without this grace period the monitor would force a reconnect loop on
-        slow-syncing nodes.
+        Lock strategy: we hold _lock only long enough to take a reference to
+        the interface object. The actual DB probe happens *outside* the lock so
+        a concurrent _get_nodes_sync call (which also holds _lock while reading
+        nodes) cannot starve the health probe. If the interface reference
+        becomes None between the check and the probe, the AttributeError is
+        caught and treated as unhealthy.
         """
         with self._lock:
-            if self._interface is None:
-                return False
-            # The socket object may still exist on a dead session, so we do not
-            # rely on it. Probe the node instead.
-            try:
-                nodes = self._interface.nodes
-            except Exception as exc:
-                logger.debug("Health probe failed (node DB unreadable): %s", exc)
-                return False
-            if not nodes:
-                # An empty node DB means the library hasn't synced any nodes
-                # yet. Only treat this as fatal once we are past the initial
-                # grace period for this connection.
-                if time.time() - self._last_connect_ts > _NODE_DB_GRACE_PERIOD:
-                    logger.debug(
-                        "Health probe: node DB empty after grace period — session considered dead"
-                    )
-                    return False
-                logger.debug(
-                    "Health probe: node DB empty but within grace period — treating as healthy"
-                )
-                return True
-            return True
+            iface = self._interface
+        if iface is None:
+            return False
+        # Probe the node DB outside the lock. If the session is dead this will
+        # raise (broken pipe, attribute error, etc.) and we return False.
+        try:
+            _ = iface.nodes
+        except Exception as exc:
+            logger.debug("Health probe failed (node DB unreadable): %s", exc)
+            return False
+        return True
 
     def _get_status_sync(self) -> Dict[str, Any]:
         with self._lock:
@@ -795,6 +860,7 @@ class MeshtasticConnection:
                 "node_count": len(self._interface.nodes or {}),
             }
 
+    @staticmethod
     def _normalize_role(raw: Any) -> str:
         """
         Normalise a Meshtastic device role to a clean string.
@@ -816,105 +882,111 @@ class MeshtasticConnection:
         return str(raw).split(".")[-1]
 
     def _get_nodes_sync(self) -> List[Dict[str, Any]]:
+        # Take a snapshot of the raw node dict under _lock, then release it
+        # immediately. The heavy merge loop runs under _nodes_lock only,
+        # keeping _lock free so the health probe and other readers aren't
+        # blocked for the full duration of the merge.
         with self._lock:
             if not self._connected or self._interface is None:
                 return []
-            nodes_raw = self._interface.nodes or {}
-            result = []
+            nodes_raw = dict(self._interface.nodes or {})
+        # _lock is now released — proceed with the merge.
 
-            # Normalize a node identity (int or "!hex" string) to the canonical
-            # "!xxxxxxxx" form used everywhere in the Web UI and our caches. The
-            # meshtastic library has historically keyed interface.nodes by either
-            # an integer node number or a "!hex" string depending on version, so
-            # we normalise up front to keep traceroute/position merges working.
-            def _norm_id(raw: Any) -> Optional[str]:
-                if raw is None:
-                    return None
-                if isinstance(raw, str):
-                    s = raw.strip()
-                    return s if s.startswith("!") else ("!" + s)
-                try:
-                    return "!" + format(int(raw), "08x")
-                except Exception:
-                    return None
+        result = []
 
-            # Merge the interface's latest node data into our persistent cache.
-            # This keeps late-arriving traceroute/position updates visible on the
-            # next poll even though the library updates interface.nodes async.
-            with self._nodes_lock:
-                cached = {n.get("id"): n for n in self._nodes if n.get("id")}
-                for node_id, node_data in nodes_raw.items():
-                    node_id = _norm_id(node_id)
-                    if not node_id:
-                        continue
-                    # Extract the nested sub-objects safely — the meshtastic
-                    # library returns protobuf-derived dicts whose keys may be
-                    # absent.
-                    user = node_data.get("user", {})
-                    position = node_data.get("position", {})
-                    device_metrics = node_data.get("deviceMetrics", {})
-                    environment = node_data.get("environmentMetrics", {}) or {}
+        # Normalize a node identity (int or "!hex" string) to the canonical
+        # "!xxxxxxxx" form used everywhere in the Web UI and our caches. The
+        # meshtastic library has historically keyed interface.nodes by either
+        # an integer node number or a "!hex" string depending on version, so
+        # we normalise up front to keep traceroute/position merges working.
+        def _norm_id(raw: Any) -> Optional[str]:
+            if raw is None:
+                return None
+            if isinstance(raw, str):
+                s = raw.strip()
+                return s if s.startswith("!") else ("!" + s)
+            try:
+                return "!" + format(int(raw), "08x")
+            except Exception:
+                return None
 
-                    entry = {
-                        "id": node_id,
-                        "long_name": user.get("longName", ""),
-                        "short_name": user.get("shortName", ""),
-                        "hw_model": user.get("hwModel", ""),
-                        "last_heard": node_data.get("lastHeard"),
-                        "snr": node_data.get("snr"),
-                        "rssi": node_data.get("rssi"),
-                        "hops_away": node_data.get("hopsAway"),
-                        "is_licensed": user.get("isLicensed", False),
-                        "latitude": position.get("latitude"),
-                        "longitude": position.get("longitude"),
-                        "altitude": position.get("altitude"),
-                        "battery_level": device_metrics.get("batteryLevel"),
-                        "voltage": device_metrics.get("voltage"),
-                        "channel_utilization": device_metrics.get("channelUtilization"),
-                        "air_util_tx": device_metrics.get("airUtilTx"),
-                        "uptime": device_metrics.get("uptime"),
-                        "temperature": environment.get("temperature"),
-                        "relative_humidity": environment.get("relative_humidity"),
-                        "barometric_pressure": environment.get("barometric_pressure"),
-                        "gas_resistance": environment.get("gasResistance"),
-                        "role": _normalize_role(user.get("role")),
-                    }
-                    # traceroute is NOT present in the library's raw node dict —
-                    # it is only populated by _capture_traceroute into our own
-                    # cache. We must preserve any previously-captured value
-                    # rather than overwrite it with the (always-None) raw entry.
-                    if node_id in cached:
-                        prev = cached[node_id]
-                        # Preserve any captured POSITION_APP fix (from a
-                        # "Req. Position" request) before the raw library update
-                        # potentially overwrites it with None — the library
-                        # never writes these replies into interface.nodes.
-                        prev_lat = prev.get("latitude")
-                        prev_lng = prev.get("longitude")
-                        prev_alt = prev.get("altitude")
-                        cached[node_id].update(entry)
-                        if prev_lat is not None:
-                            cached[node_id]["latitude"] = prev_lat
-                        if prev_lng is not None:
-                            cached[node_id]["longitude"] = prev_lng
-                        if prev_alt is not None:
-                            cached[node_id]["altitude"] = prev_alt
-                        result.append(cached[node_id])
-                    else:
-                        entry["traceroute"] = None
-                        cached[node_id] = entry
-                        result.append(entry)
+        # Merge the interface's latest node data into our persistent cache.
+        # This keeps late-arriving traceroute/position updates visible on the
+        # next poll even though the library updates interface.nodes async.
+        with self._nodes_lock:
+            cached = {n.get("id"): n for n in self._nodes if n.get("id")}
+            for node_id, node_data in nodes_raw.items():
+                node_id = _norm_id(node_id)
+                if not node_id:
+                    continue
+                # Extract the nested sub-objects safely — the meshtastic
+                # library returns protobuf-derived dicts whose keys may be
+                # absent.
+                user = node_data.get("user", {})
+                position = node_data.get("position", {})
+                device_metrics = node_data.get("deviceMetrics", {})
+                environment = node_data.get("environmentMetrics", {}) or {}
 
-                # Merge persisted traceroute results back onto their nodes so a
-                # previously-discovered route is shown even before (or without)
-                # a fresh traceroute request this session.
-                for tid, rec in self._traceroutes.items():
-                    if tid in cached and rec:
-                        cached[tid]["traceroute"] = rec
+                entry = {
+                    "id": node_id,
+                    "long_name": user.get("longName", ""),
+                    "short_name": user.get("shortName", ""),
+                    "hw_model": user.get("hwModel", ""),
+                    "last_heard": node_data.get("lastHeard"),
+                    "snr": node_data.get("snr"),
+                    "rssi": node_data.get("rssi"),
+                    "hops_away": node_data.get("hopsAway"),
+                    "is_licensed": user.get("isLicensed", False),
+                    "latitude": position.get("latitude"),
+                    "longitude": position.get("longitude"),
+                    "altitude": position.get("altitude"),
+                    "battery_level": device_metrics.get("batteryLevel"),
+                    "voltage": device_metrics.get("voltage"),
+                    "channel_utilization": device_metrics.get("channelUtilization"),
+                    "air_util_tx": device_metrics.get("airUtilTx"),
+                    "uptime": device_metrics.get("uptime"),
+                    "temperature": environment.get("temperature"),
+                    "relative_humidity": environment.get("relative_humidity"),
+                    "barometric_pressure": environment.get("barometric_pressure"),
+                    "gas_resistance": environment.get("gasResistance"),
+                    "role": MeshtasticConnection._normalize_role(user.get("role")),
+                }
+                # traceroute is NOT present in the library's raw node dict —
+                # it is only populated by _capture_traceroute into our own
+                # cache. We must preserve any previously-captured value
+                # rather than overwrite it with the (always-None) raw entry.
+                if node_id in cached:
+                    prev = cached[node_id]
+                    # Preserve any captured POSITION_APP fix (from a
+                    # "Req. Position" request) before the raw library update
+                    # potentially overwrites it with None — the library
+                    # never writes these replies into interface.nodes.
+                    prev_lat = prev.get("latitude")
+                    prev_lng = prev.get("longitude")
+                    prev_alt = prev.get("altitude")
+                    cached[node_id].update(entry)
+                    if prev_lat is not None:
+                        cached[node_id]["latitude"] = prev_lat
+                    if prev_lng is not None:
+                        cached[node_id]["longitude"] = prev_lng
+                    if prev_alt is not None:
+                        cached[node_id]["altitude"] = prev_alt
+                    result.append(cached[node_id])
+                else:
+                    entry["traceroute"] = None
+                    cached[node_id] = entry
+                    result.append(entry)
 
-                self._nodes = list(cached.values())
+            # Merge persisted traceroute results back onto their nodes so a
+            # previously-discovered route is shown even before (or without)
+            # a fresh traceroute request this session.
+            for tid, rec in self._traceroutes.items():
+                if tid in cached and rec:
+                    cached[tid]["traceroute"] = rec
 
-            return result
+            self._nodes = list(cached.values())
+
+        return result
 
     def _get_channels_sync(self) -> List[Dict[str, Any]]:
         with self._lock:

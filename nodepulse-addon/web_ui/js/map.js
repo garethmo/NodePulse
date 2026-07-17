@@ -284,7 +284,8 @@ export class MapManager {
       // Respect the current name-label visibility toggle.
       if (this._namesVisible) existing.openTooltip();
       else existing.closeTooltip();
-      if (isSelf) existing.setIcon(SELF_ICON);
+      // Ensure the icon matches current self/node status (e.g. self ID changed).
+      existing.setIcon(icon);
     }
 
     // Remove markers for nodes no longer in the list.

@@ -39,20 +39,43 @@ _HA_CANDIDATES = (
     "http://127.0.0.1:8123",
 )
 
+# Cache the last HA base URL that produced a successful relay response.
+# After the first successful probe we go straight to the known-good URL
+# on subsequent calls, skipping the full waterfall of candidates (which
+# could block up to len(candidates) * per-candidate-timeout seconds).
+# Reset to None if the cached URL fails so the fallback chain re-runs.
+_working_ha_base: str | None = None
+
+# Per-candidate TCP connect timeout (seconds). Keep this short so a host
+# that is unreachable fails quickly and we move to the next candidate.
+_RELAY_TIMEOUT_S = 3
+
 
 async def _relay_to_integration(request: web.Request, method: str, path: str, json_body=None) -> dict:
     """
     Relay an HTTP request to the NodePulse integration's local API, trying each
     candidate HA base URL until one responds.
 
+    On the first successful relay we cache the working base URL. Subsequent
+    calls go straight to the cached URL, skipping the full candidate waterfall.
+    If the cached URL later fails we clear it and fall back to the full list.
+
     Returns the parsed JSON dict on success. Raises RuntimeError with a helpful
     message if no candidate could be reached / all rejected the request.
     """
+    global _working_ha_base
+
     configured = request.app["config"].ha_base_url.rstrip("/")
-    candidates = []
-    if configured not in _HA_CANDIDATES:
-        candidates.append(configured)
-    candidates.extend(_HA_CANDIDATES)
+
+    # Build candidate list: try the cached (known-good) URL first so we skip
+    # the waterfall on every call after the initial probe. Then the user-
+    # configured value (if different), then the hard-coded fallbacks.
+    seen: set[str] = set()
+    candidates: list[str] = []
+    for url in filter(None, [_working_ha_base, configured, *_HA_CANDIDATES]):
+        if url not in seen:
+            seen.add(url)
+            candidates.append(url)
 
     last_status = None
     last_body = None
@@ -62,7 +85,7 @@ async def _relay_to_integration(request: web.Request, method: str, path: str, js
         for base in candidates:
             url = f"{base}{path}"
             try:
-                kwargs = {"timeout": aiohttp.ClientTimeout(total=10)}
+                kwargs: dict = {"timeout": aiohttp.ClientTimeout(total=_RELAY_TIMEOUT_S)}
                 if method.upper() == "POST":
                     kwargs["headers"] = {"Content-Type": "application/json"}
                     kwargs["json"] = json_body
@@ -77,6 +100,10 @@ async def _relay_to_integration(request: web.Request, method: str, path: str, js
                         url, resp.status, dict(resp.headers), raw[:500],
                     )
                     if resp.status in (200, 201):
+                        # Cache this base so we go straight here next time.
+                        if _working_ha_base != base:
+                            _working_ha_base = base
+                            logger.info("HA relay: caching working base URL as %s", base)
                         try:
                             return json.loads(raw)
                         except Exception as exc:
@@ -101,6 +128,10 @@ async def _relay_to_integration(request: web.Request, method: str, path: str, js
             except RuntimeError:
                 raise  # propagate the integration's own error message
             except Exception as exc:
+                # If the cached URL fails, clear it so we re-probe next time.
+                if base == _working_ha_base:
+                    logger.debug("Cached HA base %s is no longer reachable — resetting", base)
+                    _working_ha_base = None
                 logger.debug("Relay candidate %s failed: %s", base, exc)
                 continue
     logger.error(

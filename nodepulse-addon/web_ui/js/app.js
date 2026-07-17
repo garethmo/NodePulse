@@ -17,10 +17,16 @@ import { fetchStatus, fetchNodes, fetchChannels, fetchMessages, sendMessage, req
 import { MapManager } from './map.js';
 import { ChartManager } from './charts.js';
 
-// How often (ms) to poll the backend for fresh data.
+// How often (ms) to poll the backend for fresh node/status/message data.
 // Matches the scan_interval default from config.json (30s) but we use a
 // faster default here so the UI feels live from the first load.
 const POLL_INTERVAL_MS = 15_000;
+
+// How many fast poll cycles to skip between tracked-nodes refreshes.
+// fetchTrackedNodes() relays to HA (potentially slow); we only need it to
+// stay accurate, not be real-time — once every 5 minutes (20 × 15s) is
+// plenty. A value of 0 means "refresh on every poll" (previous behaviour).
+const TRACKED_NODES_POLL_EVERY_N = 20;
 
 // ============================================================================
 // App State — all mutable state lives here, not scattered in closures.
@@ -38,6 +44,9 @@ const state = {
   conversations:  {},       // key -> { key, name, kind, unread }
   messagesByConv: {},       // key -> [message objects], persisted across polls
   channels:       [],       // configured mesh channels from the node
+  // Counter incremented on each fast poll cycle. Used to throttle the slow
+  // tracked-nodes refresh so it does not run on every 15s tick.
+  _pollCount:     0,
 };
 
 // ============================================================================
@@ -160,6 +169,13 @@ function renderStatusBar(status) {
 // ============================================================================
 function renderNodeList(nodes) {
   const ul = document.getElementById('node-list');
+
+  // Fast check: compute a fingerprint of the list. We include the selectedNodeId
+  // so changing selection immediately triggers a re-render to update the highlight.
+  const fingerprint = nodes.map(n => `${n.id}:${n.last_heard}:${n.snr}`).join('|') + '|' + state.selectedNodeId;
+  if (ul.dataset.fingerprint === fingerprint && ul.innerHTML !== '') return;
+  ul.dataset.fingerprint = fingerprint;
+
   ul.innerHTML = '';
 
   if (nodes.length === 0) {
@@ -211,6 +227,13 @@ function renderNodeList(nodes) {
 // ============================================================================
 function renderNodesGrid(nodes) {
   const grid = document.getElementById('nodes-grid');
+
+  // Fast check: compute a fingerprint of the current state that affects the grid.
+  // We include trackedNodes size and node IDs + last_heard + snr + distance (coords).
+  const fingerprint = nodes.map(n => `${n.id}:${n.last_heard}:${n.snr}:${n.latitude}:${n.longitude}:${n.traceroute?.timestamp}`).join('|') + '|' + state.trackedNodes.size + '|' + state.nodeFilter;
+  if (grid.dataset.fingerprint === fingerprint && grid.innerHTML !== '') return;
+  grid.dataset.fingerprint = fingerprint;
+
   grid.innerHTML = '';
 
   if (nodes.length === 0) {
@@ -762,13 +785,42 @@ async function renderSettings() {
 // ============================================================================
 // Main Poll Loop
 // ============================================================================
+
+/**
+ * Refresh tracked-node state from the HA relay.
+ *
+ * This is intentionally NOT part of pollData() because it relays to Home
+ * Assistant (potentially slow — up to several seconds when HA is unreachable).
+ * Running it in the critical poll path would block node/status/map rendering
+ * on every 15s tick. We call it independently on a much slower cadence.
+ */
+async function refreshTrackedNodes() {
+  try {
+    const tracked = await fetchTrackedNodes();
+    state.trackedNodes = new Set(
+      Array.isArray(tracked) ? tracked : (tracked.node_ids || [])
+    );
+    // If nodes are already loaded, re-render the grid so the newly-fetched
+    // checkboxes appear immediately instead of waiting for the next 15s poll.
+    if (state.nodes.length > 0) {
+      renderNodesGrid(state.nodes);
+    }
+  } catch (err) {
+    // Non-fatal — tracked state is cosmetic (checkbox state on node cards).
+    // The warning is intentionally quiet; the UI degrades gracefully.
+    console.warn('Tracked-nodes fetch failed:', err);
+  }
+}
+
 async function pollData() {
-  // Fetch status and nodes in parallel — independent requests.
-  const [statusResult, nodesResult, messagesResult, trackedResult, channelsResult] = await Promise.allSettled([
+  state._pollCount += 1;
+
+  // Fast path: status, nodes, messages, and channels are all served directly
+  // by the addon's own backend — no external relay, reliably sub-second.
+  const [statusResult, nodesResult, messagesResult, channelsResult] = await Promise.allSettled([
     fetchStatus(),
     fetchNodes(),
     fetchMessages(),
-    fetchTrackedNodes(),
     fetchChannels(),
   ]);
 
@@ -810,13 +862,6 @@ async function pollData() {
     console.warn('Messages fetch failed:', messagesResult.reason);
   }
 
-  if (trackedResult.status === 'fulfilled') {
-    const tracked = trackedResult.value || [];
-    state.trackedNodes = new Set(Array.isArray(tracked) ? tracked : tracked.node_ids || []);
-  } else {
-    console.warn('Tracked-nodes fetch failed:', trackedResult.reason);
-  }
-
   if (channelsResult.status === 'fulfilled') {
     const chans = Array.isArray(channelsResult.value) ? channelsResult.value : [];
     state.channels = chans;
@@ -824,6 +869,21 @@ async function pollData() {
   } else {
     console.warn('Channels fetch failed:', channelsResult.reason);
   }
+
+  // Slow path: relay to HA for tracked-node state. Run only on the first poll
+  // (so the checkboxes on the Nodes tab render correctly on initial load) and
+  // then every TRACKED_NODES_POLL_EVERY_N cycles thereafter. This avoids
+  // blocking the fast critical render on every tick.
+  const isFirstPoll = state._pollCount === 1;
+  const isDue = state._pollCount % TRACKED_NODES_POLL_EVERY_N === 0;
+  if (isFirstPoll || isDue) {
+    // Fire-and-forget: do NOT await — let it run concurrently so the rest of
+    // the UI is already rendered before this potentially-slow call finishes.
+    refreshTrackedNodes();
+  }
+
+  // Schedule the next poll safely (no overlapping executions if a fetch stalls).
+  setTimeout(pollData, POLL_INTERVAL_MS);
 }
 
 /**
@@ -928,9 +988,7 @@ async function init() {
   // NOTE: we intentionally do NOT auto-fit to markers on first load so the map
   // stays centred on its default view (Durban, South Africa). Users can still
   // pan/zoom, and the fitToMarkers() helper remains available if needed.
-
-  // Schedule the repeating poll loop.
-  setInterval(pollData, POLL_INTERVAL_MS);
+  // The recursive pollData setTimeout handles subsequent polling.
 }
 
 // ============================================================================
