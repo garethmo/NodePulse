@@ -2,6 +2,24 @@
 
 All notable changes to NodePulse are documented here.
 
+## [0.2.23] - 2026-07-17
+### Changed
+- Mobile-friendly Web UI: slide-in navigation drawer, stacked responsive dashboard, and dynamic viewport height so the panel renders correctly inside the Home Assistant mobile app's ingress view.
+
+## [0.2.22] - 2026-07-17
+### Changed
+- Bumped in lockstep with the integration (0.2.22) for the addon-reachability fix on the integration side.
+
+## [0.2.21] - 2026-07-17
+### Changed
+- **Traceroute dispatch is now fire-and-forget** — `POST /api/traceRoute` returns immediately instead of blocking on the firmware RouteDiscovery ack, avoiding the addon ingress HTTP 503 timeout. Results appear on the next node poll.
+- **RSSI labeled "Not provided"** — The firmware does not expose a persistent per-node RSSI, so the node card and map popup now say "Not provided" instead of a misleading `N/A`.
+- **Landscape settings layout** — The settings screen now uses a responsive grid so groups sit side-by-side on wide screens.
+
+## [0.2.20] - 2026-07-17
+### Added
+- **Outgoing messages recorded in the feed** — Sent text messages are now captured into the message buffer (with `outgoing: True`) at send time, so the Web UI message feed and the integration's "Last Message Sent" entity populate immediately and reliably, instead of relying on the firmware echo.
+
 ## [0.2.16] - 2026-07-17
 ### Fixed
 - **Message sensors showed nothing for tracked nodes** — The integration's "Last Message Received/Sent" sensors failed to match messages because of node-ID formatting differences (leading `!` / letter case) between the tracked node ID and the message `from_id`/`to_id`. Matching is now normalised so it always aligns.

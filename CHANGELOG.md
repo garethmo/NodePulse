@@ -2,6 +2,39 @@
 
 All notable changes to NodePulse are documented here.
 
+## [0.2.23] - 2026-07-17
+### Changed
+- Mobile-friendly addon UI: sidebar becomes a slide-in drawer with a hamburger toggle inside the HA mobile app, dashboard stacks into a scrollable single column with usable map/message heights, dynamic viewport height (`100dvh`) so it fits the ingress iframe, and safe-area insets for notched phones.
+
+## [0.2.22] - 2026-07-17
+### Fixed
+- **Integration could not reach the addon at runtime** — Setup validated connectivity via a supervisor DNS fallback but persisted the user's raw host input. At runtime the coordinator then retried that (often non-resolving) host and failed with "No NodePulse addon host was reachable". Setup now persists the *working* candidate URL, and the candidate list also includes the `addon_nodepulse` supervisor DNS forms. Re-run the integration setup (or re-add the entry) to pick up the corrected host.
+
+## [0.2.21] - 2026-07-17
+### Changed
+- Version bump: traceroute fire-and-forget dispatch, RSSI "Not provided" labeling, logbook unavailable-spam fix, and landscape settings layout.
+
+## [0.2.20] - 2026-07-17
+### Changed
+- Version bump reflecting the device-action / service-registration fixes from 0.2.19.
+
+## [0.2.19] - 2026-07-17
+### Fixed
+- **Device actions were non-functional** — The device-action entrypoint was named `async_call_action`, but Home Assistant calls `async_call_action_from_config(hass, config, variables, context)`. Renamed to the correct hook so `send_message` / `request_position` / `trace_route` device actions actually execute.
+- **Service actions broke with multiple config entries** — Services were registered per `async_setup_entry` and removed on unload of any single entry, which would break other entries and fail when no entry was loaded. Moved registration to `async_setup` / `async_unload` (integration level) and made handlers resolve the coordinator at call time.
+- **Non-functional triggers on the integration device** — `message_*` device triggers/actions are now only offered for actual mesh-node devices, not the integration-level gateway device (whose identifier is a config-entry id).
+- **HTTP errors during actions marked entities unavailable** — Service/notify/action failures now raise a plain error instead of `UpdateFailed`, so a bad node id or offline addon no longer flips all entities to unavailable.
+- Removed unused imports.
+
+## [0.2.17] - 2026-07-17
+### Added
+- **Notify platform** — `notify.mesh_<entry>` entity so mesh messages can be sent from any Home Assistant automation, script, or the UI (supports `target` node ID and `data.channel`).
+- **Per-channel notify entities** — One `notify.mesh_<entry>_channel_<name>` entity per configured Meshtastic channel, mirroring the official integration's channel targets. A channel-pinned entity always broadcasts on that channel.
+- **Integration service actions** — `nodepulse.send_message`, `nodepulse.request_position`, and `nodepulse.trace_route` for direct automation control without the Web UI.
+- **Device triggers** — Per tracked-node automations fire on `message_received` / `message_sent`, and `channel_message.received` (scoped to a channel or direct-message context).
+- **Device actions** — Per tracked-node device actions: `send_message`, `request_position`, and `trace_route`.
+- **Logbook integration** — Sent and received mesh messages are recorded in the Home Assistant logbook timeline.
+
 ## [0.2.16] - 2026-07-17
 ### Fixed
 - **Message sensors showed nothing for tracked nodes** — The "Last Message Received/Sent" sensors failed to match messages because of node-ID formatting differences (leading `!` / letter case) between the tracked node ID and the message `from_id`/`to_id`. Matching is now normalised so it always aligns.

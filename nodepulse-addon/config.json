@@ -1,6 +1,6 @@
 {
   "name": "NodePulse",
-  "version": "0.2.16",
+  "version": "0.2.23",
   "slug": "nodepulse",
   "description": "Comprehensive dashboard and integration for monitoring Meshtastic networks directly within Home Assistant",
   "url": "https://github.com/garethmo/NodePulse",

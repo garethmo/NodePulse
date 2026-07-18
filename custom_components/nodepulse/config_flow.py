@@ -47,14 +47,17 @@ _OPTIONS_SCHEMA = vol.Schema({
 })
 
 
-async def _validate_connection(session: aiohttp.ClientSession, host: str) -> bool:
+async def _validate_connection(session: aiohttp.ClientSession, host: str) -> str | None:
     """
     Attempt to call the /api/status endpoint to verify the addon is reachable.
 
-    Returns True as long as the addon responds with HTTP 200 JSON — we do NOT
-    require ``connected: true`` here because the Meshtastic node may be
-    temporarily offline or still initialising when the user first sets up the
-    integration.  Requiring a live node connection would make the setup fail
+    Returns the first candidate URL that responded with HTTP 200 JSON (so the
+    caller can persist the *working* host, not the raw user input), or None if
+    no candidate responded.
+
+    We do NOT require ``connected: true`` here because the Meshtastic node may
+    be temporarily offline or still initialising when the user first sets up
+    the integration.  Requiring a live node connection would make the setup fail
     whenever the node reboots, forcing the user to remove and re-add the
     integration unnecessarily.
 
@@ -75,10 +78,10 @@ async def _validate_connection(session: aiohttp.ClientSession, host: str) -> boo
                 # We intentionally do NOT check data["connected"] here; the
                 # Meshtastic node may be offline without the addon being broken.
                 await resp.json()
-                return True
+                return candidate
         except Exception as exc:
             logger.debug("Addon connection validation failed (url=%s): %s", url, exc)
-    return False
+    return None
 
 
 def _host_candidates(host: str) -> list:
@@ -97,6 +100,8 @@ def _host_candidates(host: str) -> list:
     for base in (
         f"http://a0d7b954-{slug}",
         f"http://a0d7b954-{slug}:8099",
+        f"http://addon_{slug}",
+        f"http://addon_{slug}:8099",
         f"http://local-{slug}",
         f"http://local-{slug}:8099",
         f"http://local_{slug}",
@@ -133,15 +138,19 @@ class NodePulseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             session = async_get_clientsession(self.hass)
             host = user_input[CONF_HOST].rstrip("/")
 
-            if await _validate_connection(session, host):
-                # Use the host as the unique ID so duplicate entries are prevented.
-                await self.async_set_unique_id(host)
+            working_host = await _validate_connection(session, host)
+            if working_host:
+                # Persist the *working* candidate (which may be a supervisor DNS
+                # alias that resolved when the user's raw input did not), so the
+                # runtime coordinator connects reliably instead of retrying a
+                # host that only validated via a fallback.
+                await self.async_set_unique_id(working_host)
                 self._abort_if_unique_id_configured()
 
                 return self.async_create_entry(
-                    title=f"NodePulse ({host})",
+                    title=f"NodePulse ({working_host})",
                     data={
-                        CONF_HOST: host,
+                        CONF_HOST: working_host,
                         CONF_ACCESS_KEY: user_input.get(CONF_ACCESS_KEY, ""),
                         CONF_SCAN_INTERVAL: user_input.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
                     },

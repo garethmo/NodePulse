@@ -88,11 +88,18 @@
          TOP HEADER
          ================================================================ -->
     <header id="header">
-      <div id="header-tabs">
-        <button class="tab-btn active" data-view="dashboard">Dashboard</button>
-        <button class="tab-btn" data-view="nodes">Nodes</button>
-        <button class="tab-btn" data-view="map">Map</button>
-        <button class="tab-btn" data-view="settings">Settings</button>
+      <div id="header-left">
+        <button id="menu-toggle" aria-label="Open menu" type="button">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
+          </svg>
+        </button>
+        <div id="header-tabs">
+          <button class="tab-btn active" data-view="dashboard">Dashboard</button>
+          <button class="tab-btn" data-view="nodes">Nodes</button>
+          <button class="tab-btn" data-view="map">Map</button>
+          <button class="tab-btn" data-view="settings">Settings</button>
+        </div>
       </div>
       <div id="header-status">
         <div class="status-dot" id="status-dot"></div>
@@ -215,6 +222,8 @@
       <div id="view-settings" class="view">
         <h1 style="font-size:20px;font-weight:700;margin-bottom:var(--space-lg)">Settings</h1>
 
+        <div class="settings-grid">
+
         <!-- ── Connection ── -->
         <div class="settings-group">
           <div class="settings-group-title">Connection</div>
@@ -288,16 +297,20 @@
           <div class="settings-group-title">About</div>
           <div class="settings-row">
             <span class="settings-row-label">NodePulse Version</span>
-            <span class="settings-row-value">0.2.14</span>
+            <span class="settings-row-value">0.2.23</span>
           </div>
           <div class="settings-row">
             <span class="settings-row-label">UI Poll Interval</span>
             <span class="settings-row-value">15 s</span>
           </div>
         </div>
+        </div><!-- /settings-grid -->
       </div>
 
     </main><!-- /main -->
+
+    <!-- Mobile sidebar backdrop (toggled by JS on small screens) -->
+    <div id="sidebar-backdrop"></div>
   </div><!-- /app -->
 
   <!-- Toast container — appended here, positioned fixed via CSS -->

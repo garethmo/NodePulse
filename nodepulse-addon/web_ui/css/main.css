@@ -806,7 +806,18 @@ body::before {
 /* --- Settings View -------------------------------------------------------- */
 #view-settings {
   padding: var(--space-xl);
-  max-width: 600px;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+/* Landscape layout: setting groups flow into a responsive grid so the
+   screen uses horizontal space instead of a single tall column. On narrow
+   viewports it collapses back to a single column. */
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: var(--space-md);
+  align-items: start;
 }
 
 .settings-group {
@@ -814,7 +825,6 @@ body::before {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
   overflow: hidden;
-  margin-bottom: var(--space-md);
 }
 
 .settings-group-title {
@@ -957,3 +967,133 @@ body::before {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border-subtle); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* --- Mobile / Responsive --------------------------------------------------- */
+/* Use dynamic viewport height so the shell fits inside the HA mobile app's
+   ingress iframe (and iOS Safari's collapsing address bar) instead of
+   overflowing with a fixed 100vh. */
+#app {
+  height: 100vh;
+  height: 100dvh;
+}
+
+/* Hamburger toggle + backdrop are desktop-hidden; revealed on small screens. */
+#menu-toggle {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  margin-right: var(--space-sm);
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+#menu-toggle:hover { background: var(--bg-highlight); }
+
+#header-left {
+  display: flex;
+  align-items: center;
+}
+
+#sidebar-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 40;
+}
+body.nav-open #sidebar-backdrop { display: block; }
+
+/* Tablet: keep the sidebar but simplify the dashboard to two columns. */
+@media (max-width: 1024px) {
+  #view-dashboard {
+    grid-template-columns: 220px 1fr;
+    grid-template-rows: 1fr 220px;
+    grid-template-areas:
+      "nodes map"
+      "messages charts";
+  }
+}
+
+/* Phone: sidebar becomes a slide-in drawer; dashboard stacks vertically. */
+@media (max-width: 768px) {
+  #app {
+    grid-template-columns: 0 1fr;
+    grid-template-areas:
+      "header header"
+      "main   main";
+  }
+
+  #menu-toggle { display: inline-flex; }
+
+  #sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 78vw;
+    max-width: 300px;
+    z-index: 50;
+    transform: translateX(-100%);
+    transition: transform var(--transition-base);
+    box-shadow: 4px 0 24px rgba(0, 0, 0, 0.5);
+    padding-top: env(safe-area-inset-top);
+  }
+  body.nav-open #sidebar { transform: translateX(0); }
+
+  #header { padding: 0 var(--space-md); }
+  #header-tabs { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  #header-tabs .tab-btn { white-space: nowrap; }
+
+  #main { overflow-y: auto; }
+
+  /* Stack the dashboard into a single scrollable column with usable heights
+     so nothing collapses to zero inside the ingress iframe. */
+  #view-dashboard {
+    display: none;
+    grid-template-columns: 1fr;
+    grid-template-rows: none;
+    grid-template-areas:
+      "nodes"
+      "map"
+      "messages"
+      "charts";
+    gap: var(--space-md);
+    padding: var(--space-md);
+    height: auto;
+    min-height: 100%;
+    overflow: visible;
+  }
+  #view-dashboard.active { display: flex; flex-direction: column; }
+
+  #node-list-card  { min-height: 320px; }
+  #map-card        { min-height: 60vh; }
+  #messaging-card  { min-height: 420px; }
+  #charts-row      { min-height: 220px; }
+
+  /* Node cards: two-up grid so the list stays compact on phones. */
+  #nodes-grid {
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  }
+
+  .settings-grid {
+    grid-template-columns: 1fr;
+  }
+
+  #view-settings { padding: var(--space-md); }
+
+  /* Keep the message composer pinned and usable on small screens. */
+  .messaging-input-row { flex-wrap: wrap; }
+  .messaging-input-row #msg-input { flex: 1 1 100%; }
+}
+
+/* Very small phones: tighten spacing further. */
+@media (max-width: 420px) {
+  #header-tabs .tab-btn { padding: var(--space-sm) var(--space-sm); font-size: 12px; }
+  .node-card { padding: var(--space-sm); }
+}
+

@@ -104,7 +104,9 @@ class NodePulseTrackView(HomeAssistantView):
                 # Trigger a full refresh to ensure latest node data (including GPS)
                 # is loaded before discovery runs. This fixes a race condition where
                 # device trackers weren't created because GPS data wasn't available yet.
-                await coordinator.async_config_entry_first_refresh()
+                # Use async_refresh() (not async_config_entry_first_refresh()) because
+                # the entry is already LOADED here.
+                await coordinator.async_refresh()
                 logger.debug("Coordinator refresh completed after tracking change")
         except Exception as exc:  # defensive: never return a non-JSON error
             logger.exception(

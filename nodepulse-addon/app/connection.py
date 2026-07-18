@@ -255,14 +255,37 @@ class MeshtasticConnection:
         return await asyncio.to_thread(self._send_message_sync, text, destination, channel)
 
     async def request_traceroute(self, destination: str) -> bool:
-        """Request a traceroute towards a specific destination node."""
+        """Request a traceroute towards a specific destination node.
+
+        Returns immediately after queueing the request. The blocking firmware
+        round-trip (``sendTraceRoute`` can wait 30 s+ for the RouteDiscovery
+        ack) is performed in a background task so the HTTP request does not
+        exceed the addon ingress proxy timeout (which returns HTTP 503). The
+        UI polls ``/api/nodes`` to see the discovered route once it arrives.
+        """
         logger.info("Requesting traceroute to %s", destination)
-        ok = await asyncio.to_thread(self._request_traceroute_sync, destination)
-        logger.info("Traceroute dispatch to %s returned: %s", destination, ok)
-        # Pull the response (per-hop SNR / route) into our cache so the API
-        # reflects it on the next poll.
-        await asyncio.to_thread(self._refresh_node_from_interface, destination)
-        return ok
+        # Record the in-flight destination now so the reply can be attributed
+        # even if the firmware ack is slow to arrive.
+        with self._lock:
+            self._pending_traceroute_dests.append(destination)
+        try:
+            loop = asyncio.get_event_loop()
+            loop.create_task(self._traceroute_dispatch(destination))
+        except RuntimeError:
+            # No running loop (e.g. offline test harness): fall back to a
+            # thread so the request still completes.
+            await asyncio.to_thread(self._request_traceroute_sync, destination)
+        return True
+
+    async def _traceroute_dispatch(self, destination: str) -> None:
+        """Background: perform the blocking send + cache refresh for a traceroute."""
+        try:
+            await asyncio.to_thread(self._request_traceroute_sync, destination)
+            # Pull whatever route data we've captured into the cache.
+            await asyncio.to_thread(self._refresh_node_from_interface, destination)
+            logger.info("Traceroute dispatch to %s completed", destination)
+        except Exception as exc:  # defensive: never crash the background task
+            logger.error("Traceroute background dispatch failed (%s): %s", destination, exc)
 
     async def request_position(self, destination: str) -> bool:
         """Request a fresh GPS position from a specific destination node."""
@@ -1118,6 +1141,26 @@ class MeshtasticConnection:
             if not self._connected or self._interface is None:
                 logger.error("Cannot send message — not connected")
                 return False
+            # Resolve the local/self node id so outgoing messages can be tagged
+            # with the correct direction and conversation thread.
+            self_num = getattr(getattr(self._interface, "myInfo", None), "my_node_num", None)
+            self_id = ("!" + format(self_num, "08x")) if self_num is not None else None
+
+            to_num = None
+            if destination and destination != meshtastic.BROADCAST_ADDR:
+                try:
+                    to_num = int(destination.replace("!", ""), 16)
+                except (ValueError, AttributeError):
+                    to_num = None
+            to_id = ("!" + format(to_num, "08x")) if to_num is not None else None
+
+            is_dm = to_id is not None
+            if is_dm:
+                other = to_id if to_id != self_id else None
+                conversation = f"dm:{other or 'unknown'}"
+            else:
+                conversation = f"ch:{channel}"
+
             try:
                 # sendText handles both broadcast (destinationId=None or BROADCAST)
                 # and unicast DMs. The meshtastic library manages PKI encryption
@@ -1127,6 +1170,24 @@ class MeshtasticConnection:
                     destinationId=destination or meshtastic.BROADCAST_ADDR,
                     channelIndex=channel,
                 )
+
+                entry = {
+                    "id": f"{self_id or 'unknown'}-{channel}-{int(time.time() * 1000)}-sent",
+                    "from_id": self_id,
+                    "to_id": to_id,
+                    "from_name": "You",
+                    "text": text,
+                    "channel": channel,
+                    "conversation": conversation,
+                    "is_dm": is_dm,
+                    "outgoing": True,
+                    "rx_snr": None,
+                    "rx_rssi": None,
+                    "timestamp": int(time.time()),
+                }
+                with self._msg_lock:
+                    self._messages.append(entry)
+                self._schedule_save(self._messages, _MESSAGES_FILE)
                 return True
             except Exception as exc:
                 logger.error(
@@ -1156,11 +1217,10 @@ class MeshtasticConnection:
             # library waits internally for the acknowledgment flag). The
             # actual per-hop route SNR is NOT stored by the library, so we
             # capture it ourselves in _on_mesh_receive (TRACEROUTE_APP) and
-            # merge it into our node cache below.
-            self._pending_traceroute_dests.append(destination)
+            # merge it into our node cache. The destination is already queued in
+            # request_traceroute; the cache refresh is done by the background
+            # dispatch task so this call stays non-blocking.
             iface.sendTraceRoute(destination, 10)
-            # Pull whatever route data we've captured so far into the cache.
-            self._refresh_node_from_interface(destination)
             return True
         except Exception as exc:
             logger.error(

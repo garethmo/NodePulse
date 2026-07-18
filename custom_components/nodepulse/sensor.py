@@ -201,8 +201,17 @@ class _NodeSensorBase(CoordinatorEntity, SensorEntity):
 
     @property
     def available(self) -> bool:
-        """Mark entity unavailable if the node is no longer in the node list."""
-        return super().available and self._get_node() is not None
+        """Entities stay available as long as the coordinator is healthy.
+
+        We intentionally do NOT mark a sensor unavailable just because its node
+        is momentarily absent from the node list — nodes routinely drop in and
+        out of the mesh, and flipping entities to "unavailable" on every blip
+        spams the logbook with useless "Unavailable" entries while the last
+        known value (still shown by the entity) remains meaningful. The
+        coordinator's ``last_update_success`` flag still drives availability so
+        a genuine addon outage correctly marks everything unavailable.
+        """
+        return super().available
 
 
 # ---------------------------------------------------------------------------
@@ -480,15 +489,24 @@ class NodeMessageSensor(_NodeSensorBase):
         node_id = self._norm_node_id(self._node_id)
         self_id = self._self_node_id()
 
+        logger.debug(
+            "NodeMessageSensor filtering: node_id=%s, self_id=%s, total_messages=%s",
+            node_id, self_id, len(messages)
+        )
+
         out = []
         for m in messages:
             from_id = self._norm_node_id(m.get("from_id"))
             to_id = self._norm_node_id(m.get("to_id"))
             if from_id != node_id and to_id != node_id:
                 continue
-            # Recompute direction from the self id so it's robust even when the
+            # Recompute direction from the tracked node id so it's robust even when the
             # addon's captured ``outgoing`` flag was unreliable.
-            is_outgoing = (from_id == self_id) if self_id else bool(m.get("outgoing"))
+            is_outgoing = (from_id == node_id) if node_id else bool(m.get("outgoing"))
+            logger.debug(
+                "Message check: from_id=%s, to_id=%s, is_outgoing=%s, self._outgoing=%s, match=%s",
+                from_id, to_id, is_outgoing, self._outgoing, is_outgoing == self._outgoing
+            )
             if is_outgoing == self._outgoing:
                 out.append(m)
         return out

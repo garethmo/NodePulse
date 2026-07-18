@@ -15,6 +15,11 @@ CONF_SCAN_INTERVAL = "scan_interval"
 CONF_IGNORED_NODES = "ignored_nodes"
 CONF_TRACKED_NODES = "tracked_nodes"
 
+# Shared attribute / data keys
+ATTR_TEXT    = "text"
+ATTR_CHANNEL = "channel"
+ATTR_TARGET  = "target"
+
 # Defaults
 DEFAULT_SCAN_INTERVAL = 30  # seconds
 

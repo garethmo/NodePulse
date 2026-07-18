@@ -469,7 +469,7 @@ export class MapManager {
   /** Build the HTML string for a marker popup. */
   _buildPopupHtml(node) {
     const snrText  = node.snr  != null ? `${node.snr.toFixed(1)} dB` : 'N/A';
-    const rssiText = node.rssi != null ? `${node.rssi} dBm`          : 'N/A';
+    const rssiText = node.rssi != null ? `${node.rssi} dBm`          : 'Not provided';
     const hops     = node.hops_away != null ? node.hops_away : '?';
     const battery  = node.battery_level != null ? `${node.battery_level}%` : 'N/A';
     const alt      = node.altitude != null ? `${Math.round(node.altitude)} m` : 'N/A';

@@ -10,6 +10,7 @@ the N-calls-per-N-entities anti-pattern.
 On a failed fetch, HA's coordinator raises UpdateFailed, which marks all
 entities as "unavailable" automatically — no per-entity error handling needed.
 """
+import asyncio
 import logging
 from datetime import timedelta
 from typing import Any, Dict, List, Set
@@ -89,6 +90,14 @@ class NodePulseCoordinator(DataUpdateCoordinator):
         self.registered_tracker_ids: Set[str] = set()
         self.registered_tracker_entities: List[Any] = []
 
+        # Message IDs already handed to the logbook / device-trigger systems,
+        # so each arriving message is processed exactly once. Bounded so it
+        # can't grow without limit across long uptimes.
+        self._seen_message_ids: Set[Any] = set()
+        # Set to True after the first successful poll so we don't replay the
+        # entire message history as "new" events on startup.
+        self._messages_initialized: bool = False
+
         super().__init__(
             hass,
             logger,
@@ -124,6 +133,75 @@ class NodePulseCoordinator(DataUpdateCoordinator):
             self._config_entry, options=new_options
         )
 
+    # ------------------------------------------------------------------
+    # Action helpers — push commands to the mesh through the addon API.
+    # ------------------------------------------------------------------
+
+    async def _post_json(
+        self, path: str, payload: Dict[str, Any], timeout: float = 30.0
+    ) -> Any:
+        """
+        POST JSON to the addon, trying each host candidate until one responds.
+
+        Returns the parsed JSON body on success. Raises on connection/HTTP
+        failure so callers (services, notify, device actions) can surface a
+        meaningful error to the user.
+        """
+        headers = {"X-NodePulse-Access-Key": self._access_key} if self._access_key else {}
+        headers["Content-Type"] = "application/json"
+        timeout_cfg = aiohttp.ClientTimeout(connect=3, total=timeout)
+        candidates = (
+            [self._working_host] + [c for c in self._host_candidates if c != self._working_host]
+            if self._working_host
+            else self._host_candidates
+        )
+        last_exc: Exception | None = None
+        for host in candidates:
+            url = f"{host.rstrip('/')}{path}"
+            try:
+                async with self._session.post(
+                    url, headers=headers, json=payload, timeout=timeout_cfg
+                ) as resp:
+                    data = await resp.json(content_type=None)
+                    if resp.status >= 400:
+                        raise RuntimeError(
+                            f"Addon returned HTTP {resp.status} for {path}: "
+                            f"{data.get('error', 'unknown error')}"
+                        )
+                    return data
+            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                last_exc = exc
+                logger.debug("Addon POST %s failed (host=%s): %s", path, host, exc)
+                continue
+        raise UpdateFailed(
+            f"Could not reach the NodePulse addon for {path}. Tried: "
+            + ", ".join(candidates)
+        ) from last_exc
+
+    async def async_send_message(
+        self, text: str, destination: str | None = None, channel: int = 0
+    ) -> bool:
+        """Send a text message over the mesh via the addon."""
+        payload: Dict[str, Any] = {"text": text, "channel": int(channel)}
+        if destination:
+            payload["destination"] = destination
+        result = await self._post_json("/api/send", payload)
+        return bool(result.get("sent"))
+
+    async def async_request_position(self, destination: str) -> bool:
+        """Ask a node to report its current GPS position."""
+        result = await self._post_json(
+            "/api/requestPosition", {"destination": destination}
+        )
+        return bool(result.get("dispatched"))
+
+    async def async_trace_route(self, destination: str) -> bool:
+        """Dispatch a traceroute towards a destination node."""
+        result = await self._post_json(
+            "/api/traceRoute", {"destination": destination}
+        )
+        return bool(result.get("dispatched"))
+
     async def _async_update_data(self) -> Dict[str, Any]:
         """
         Fetch a fresh snapshot from the addon.
@@ -142,7 +220,7 @@ class NodePulseCoordinator(DataUpdateCoordinator):
             else:
                 candidates = self._host_candidates
 
-            status, nodes, messages, working = await _fetch_all(
+            status, nodes, messages, channels, working = await _fetch_all(
                 self._session, candidates, self._access_key
             )
             if working and working != self._working_host:
@@ -161,18 +239,43 @@ class NodePulseCoordinator(DataUpdateCoordinator):
             "NodePulse messages sample: %s",
             messages[:2] if messages else None
         )
-        return {"status": status, "nodes": nodes, "messages": messages}
+
+        # Track which message IDs we've already surfaced so we can hand only the
+        # newly-arrived ones to the logbook and device-trigger subsystems.
+        if self._messages_initialized:
+            new_messages = [
+                m for m in messages
+                if (m.get("id") or m.get("text")) not in self._seen_message_ids
+            ]
+        else:
+            # First poll: seed the seen set so we don't replay history, but
+            # don't surface anything as "new".
+            new_messages = []
+            self._messages_initialized = True
+        for m in messages:
+            self._seen_message_ids.add(m.get("id") or m.get("text"))
+        # Bound the seen set so it can't grow forever.
+        if len(self._seen_message_ids) > 2000:
+            self._seen_message_ids = set(list(self._seen_message_ids)[-1000:])
+
+        return {
+            "status": status,
+            "nodes": nodes,
+            "messages": messages,
+            "channels": channels or [],
+            "new_messages": new_messages,
+        }
 
 
 async def _fetch_all(
     session: aiohttp.ClientSession, candidates: list, access_key: str | None = None
-) -> tuple[Dict, List[Dict], List[Dict], str | None]:
+) -> tuple[Dict, List[Dict], List[Dict], List[Dict], str | None]:
     """
-    Fetch /api/status, /api/nodes, and /api/messages, returning the working host alongside the data.
+    Fetch /api/status, /api/nodes, /api/messages, and /api/channels, returning the working host alongside the data.
 
-    Tries each candidate in order until one responds. Returns a 4-tuple of
-    (status, nodes, messages, working_host) so the coordinator can pin the responsive host
-    and avoid repeated DNS timeouts on every subsequent poll.
+    Tries each candidate in order until one responds. Returns a 5-tuple of
+    (status, nodes, messages, channels, working_host) so the coordinator can
+    pin the responsive host and avoid repeated DNS timeouts on every poll.
     """
     import asyncio
 
@@ -181,13 +284,14 @@ async def _fetch_all(
     working_host: str | None = None
     for host in candidates:
         try:
-            status, nodes, messages = await asyncio.gather(
+            status, nodes, messages, channels = await asyncio.gather(
                 _get_json(session, f"{host}/api/status", access_key),
                 _get_json(session, f"{host}/api/nodes", access_key),
                 _get_json(session, f"{host}/api/messages", access_key),
+                _get_json(session, f"{host}/api/channels", access_key),
             )
             working_host = host
-            return status, nodes, messages, working_host
+            return status, nodes, messages, channels, working_host
         except Exception as exc:
             logger.debug("Addon host unreachable (host=%s): %s", host, exc)
             continue

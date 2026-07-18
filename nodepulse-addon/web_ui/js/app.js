@@ -272,7 +272,7 @@ function renderNodesGrid(nodes) {
     card.className = 'node-card';
 
     const snrText   = node.snr         != null ? `${node.snr.toFixed(1)} dB` : 'N/A';
-    const rssiText  = node.rssi        != null ? `${node.rssi} dBm`          : 'N/A';
+    const rssiText  = node.rssi        != null ? `${node.rssi} dBm`          : 'Not provided';
     const hopsText  = node.hops_away   != null ? String(node.hops_away)      : 'N/A';
     const batText   = node.battery_level != null ? `${node.battery_level}%`  : 'N/A';
     const heardText = formatRelativeTime(node.last_heard);
@@ -779,7 +779,13 @@ async function renderSettings() {
     _setEl('settings-scan-interval', cfg.scan_interval != null ? `${cfg.scan_interval} s` : '—');
     _setEl('settings-log-level',     cfg.log_level || '—');
 
-  } catch (_) { /* settings are informational — fail silently */ }
+  } catch (err) {
+    // Surface the failure instead of hiding it behind "—" placeholders so the
+    // cause (e.g. an unreachable addon API under ingress) is visible.
+    const msg = (err && err.message) ? err.message : String(err);
+    _setEl('settings-conn', `⚠ Error: ${msg}`);
+    console.error('renderSettings failed:', err);
+  }
 }
 
 // ============================================================================
@@ -917,8 +923,24 @@ async function init() {
 
   // Wire up navigation clicks — both sidebar nav items and top tab buttons.
   document.querySelectorAll('.nav-item[data-view], .tab-btn[data-view]').forEach(el => {
-    el.addEventListener('click', () => switchView(el.dataset.view));
+    el.addEventListener('click', () => {
+      switchView(el.dataset.view);
+      // Close the mobile drawer after navigating.
+      document.body.classList.remove('nav-open');
+    });
   });
+
+  // Mobile sidebar drawer: hamburger opens it, backdrop closes it.
+  const menuToggle = document.getElementById('menu-toggle');
+  const backdrop = document.getElementById('sidebar-backdrop');
+  if (menuToggle) {
+    menuToggle.addEventListener('click', () => {
+      document.body.classList.toggle('nav-open');
+    });
+  }
+  if (backdrop) {
+    backdrop.addEventListener('click', () => document.body.classList.remove('nav-open'));
+  }
 
   // Wire up the send button and Enter key shortcut in the message input.
   document.getElementById('send-btn').addEventListener('click', handleSend);

@@ -1,0 +1,48 @@
+send_message:
+  name: Send Meshtastic Message
+  description: Send a text message over the mesh via the NodePulse addon.
+  target:
+    entity:
+      integration: nodepulse
+  fields:
+    text:
+      name: Text
+      description: The message body to send.
+      required: true
+      example: "Hello mesh!"
+    target:
+      name: Destination
+      description: "Node ID to send a direct message to (e.g. !abc12345). Omit for a channel broadcast."
+      required: false
+      example: "!abc12345"
+    channel:
+      name: Channel
+      description: Channel index to broadcast on (0-7). Ignored when a destination is given.
+      required: false
+      example: 0
+
+request_position:
+  name: Request Position
+  description: Ask a node to report its current GPS position.
+  target:
+    entity:
+      integration: nodepulse
+  fields:
+    target:
+      name: Destination
+      description: Node ID to request position from (e.g. !abc12345).
+      required: true
+      example: "!abc12345"
+
+trace_route:
+  name: Trace Route
+  description: Dispatch a traceroute towards a destination node.
+  target:
+    entity:
+      integration: nodepulse
+  fields:
+    target:
+      name: Destination
+      description: Node ID to trace a route to (e.g. !abc12345).
+      required: true
+      example: "!abc12345"

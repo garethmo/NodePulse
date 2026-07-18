@@ -30,6 +30,10 @@ NodePulse is a Home Assistant addon and custom integration that gives you deep v
 | 💬 **Messaging** | Send broadcast or DM messages via the Web UI |
 | 🔍 **Traceroute** | Dispatch traceroutes to any node from the Web UI |
 | 🖥️ **Web UI Dashboard** | Full-featured dashboard served via HA Ingress (no port forwarding) |
+| 📨 **Notify Platform** | `notify.mesh_<entry>` entity — send mesh messages from any automation/script, plus one `notify.mesh_<entry>_channel_<name>` entity per configured channel |
+| ⚡ **Service Actions** | `nodepulse.send_message`, `nodepulse.request_position`, `nodepulse.trace_route` |
+| 🤖 **Device Triggers & Actions** | Automate on message received/sent (and `channel_message.received`); send message / request position / trace route per node device |
+| 📜 **Logbook** | Mesh messages recorded in the Home Assistant logbook timeline |
 
 ---
 
