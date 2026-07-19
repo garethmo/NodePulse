@@ -2,6 +2,10 @@
 
 All notable changes to NodePulse are documented here.
 
+## [0.2.28] - 2026-07-19
+### Added
+- **Last-known-position retention** — When a node loses GPS or stops reporting, the radio sends `position=None` and the map marker would previously vanish. NodePulse now keeps the most recent good latitude/longitude/altitude (from the prior fix or a "Req. Position" reply) so the node stays on the map until a newer fix arrives. A new `last_position_fix` attribute (epoch seconds) is exposed on each mesh node device tracker so you can see how stale a fix is and drive automations on it.
+
 ## [0.2.27] - 2026-07-19
 ### Fixed
 - **All channels now show in the Web UI** — The addon read channels from `interface.localConfig.channel_settings`, which the radio frequently leaves empty, so the message dashboard only ever showed the "Primary" tab (until a message arrived on another channel, which created the tab via the message feed). Channels are now read from `interface.localNode.channels` (the `Channel` list the library populates for every slot during connect), filtering out disabled slots while always keeping the primary. Secondary channels (e.g. "LongFast") now appear immediately.

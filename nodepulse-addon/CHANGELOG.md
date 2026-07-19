@@ -2,6 +2,10 @@
 
 All notable changes to NodePulse are documented here.
 
+## [0.2.28] - 2026-07-19
+### Added
+- **Last-known-position retention** — Nodes that lose GPS or stop reporting (`position=None`) keep their previous good latitude/longitude/altitude so the map marker doesn't disappear. A `last_position_fix` timestamp is recorded whenever a valid fix is seen (periodic packet or "Req. Position" reply).
+
 ## [0.2.27] - 2026-07-19
 ### Fixed
 - Channel list now sourced from `interface.localNode.channels` instead of `interface.localConfig.channel_settings` (which is often empty). The Web UI's channel tabs now show every active channel (Primary + secondaries) on load instead of only the Primary tab until a message arrives on another channel.

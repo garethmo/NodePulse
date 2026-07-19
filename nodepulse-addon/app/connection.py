@@ -36,6 +36,7 @@ _DATA_DIR = os.environ.get("NODEPULSE_DATA_DIR", "/data")
 _MESSAGES_FILE = os.path.join(_DATA_DIR, "messages.json")
 _TRACEROUTES_FILE = os.path.join(_DATA_DIR, "traceroutes.json")
 _CHANNELS_FILE = os.path.join(_DATA_DIR, "channels.json")
+_NODES_FILE = os.path.join(_DATA_DIR, "nodes.json")
 logger = logging.getLogger(__name__)
 
 # A canonical Meshtastic node ID is a "!" followed by the node number in hex.
@@ -188,6 +189,20 @@ class MeshtasticConnection:
         self._channels_lock = threading.Lock()
         self._channels: List[Dict[str, Any]] = []
         self._load_channels()
+
+        # Persisted node list. The radio only keeps a bounded node DB (often
+        # ~250 entries); once it is full, the oldest heard nodes drop out of
+        # interface.nodes and would vanish from the UI. We persist every node
+        # we've ever seen and re-inject any that the radio no longer reports, so
+        # the full history survives both radio eviction and addon restarts.
+        # Re-injected nodes are flagged "stale": True so the UI can show them
+        # faded, and their last-known position is retained on the map.
+        self._nodes_lock = threading.Lock()
+        self._nodes: List[Dict[str, Any]] = []
+        self._load_nodes()
+
+        self._last_node_save = 0.0
+        self._pending_node_save = False
 
         # Destination node IDs of in-flight traceroute requests. The reply
         # packet only carries the origin (the responding node), not the original
@@ -998,6 +1013,8 @@ class MeshtasticConnection:
                         node["longitude"] = lng
                     if alt is not None:
                         node["altitude"] = alt
+                    if lat is not None or lng is not None:
+                        node["last_position_fix"] = int(time.time())
                     node["last_heard"] = int(time.time())
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("Error capturing position (ignored): %s", exc)
@@ -1161,16 +1178,34 @@ class MeshtasticConnection:
                     prev_lat = prev.get("latitude")
                     prev_lng = prev.get("longitude")
                     prev_alt = prev.get("altitude")
+                    prev_fix = prev.get("last_position_fix")
                     cached[node_id].update(entry)
-                    if prev_lat is not None:
+                    # Last-known-position retention: a node that loses GPS (or
+                    # stops reporting) sends position=None. Instead of dropping
+                    # the fix and making the marker vanish from the map, keep
+                    # the most recent good coordinates so the node stays put
+                    # until a newer fix (or a manual position request) arrives.
+                    # Priority: freshly-captured POSITION_APP reply > raw library
+                    # fix this cycle > previously retained last-known fix.
+                    if entry["latitude"] is not None:
+                        cached[node_id]["last_position_fix"] = int(time.time())
+                    elif prev_lat is not None:
                         cached[node_id]["latitude"] = prev_lat
-                    if prev_lng is not None:
+                        cached[node_id]["last_position_fix"] = prev_fix
+                    if entry["longitude"] is not None:
+                        cached[node_id]["last_position_fix"] = int(time.time())
+                    elif prev_lng is not None:
                         cached[node_id]["longitude"] = prev_lng
-                    if prev_alt is not None:
+                        cached[node_id]["last_position_fix"] = prev_fix
+                    if entry["altitude"] is not None:
+                        pass
+                    elif prev_alt is not None:
                         cached[node_id]["altitude"] = prev_alt
                     result.append(cached[node_id])
                 else:
                     entry["traceroute"] = None
+                    if entry["latitude"] is not None or entry["longitude"] is not None:
+                        entry["last_position_fix"] = int(time.time())
                     cached[node_id] = entry
                     result.append(entry)
 
@@ -1453,8 +1488,10 @@ class MeshtasticConnection:
                     existing["traceroute"] = captured_traceroute
                 if captured_lat is not None:
                     existing["latitude"] = captured_lat
+                    existing["last_position_fix"] = int(time.time())
                 if captured_lng is not None:
                     existing["longitude"] = captured_lng
+                    existing["last_position_fix"] = int(time.time())
                 if captured_alt is not None:
                     existing["altitude"] = captured_alt
             else:

@@ -184,12 +184,13 @@ class NodeTracker(CoordinatorEntity, TrackerEntity):
         if not node:
             return {}
         return {
-            "altitude":   node.get("altitude"),
-            "snr":        node.get("snr"),
-            "rssi":       node.get("rssi"),
-            "hops_away":  node.get("hops_away"),
-            "hw_model":   node.get("hw_model"),
-            "short_name": node.get("short_name"),
+            "altitude":          node.get("altitude"),
+            "snr":               node.get("snr"),
+            "rssi":              node.get("rssi"),
+            "hops_away":         node.get("hops_away"),
+            "hw_model":          node.get("hw_model"),
+            "short_name":        node.get("short_name"),
+            "last_position_fix": node.get("last_position_fix"),
         }
 
     @property
