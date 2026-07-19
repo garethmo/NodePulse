@@ -49,6 +49,10 @@ _NODE_ID_RE = re.compile(r"^![0-9a-fA-F]{1,8}$")
 # traceroute replies cannot spawn a save thread on every single capture.
 _TRACEROUTE_SAVE_DEBOUNCE = 1.0
 
+# Debounce for persisting the node list. Node updates arrive with every poll,
+# so we coalesce them into at most one disk write per window.
+_NODE_SAVE_DEBOUNCE = 5.0
+
 
 def _node_id_from_num(num: Any) -> Optional[str]:
     """Format a Meshtastic node number as a canonical "!hex" ID.
@@ -269,6 +273,26 @@ class MeshtasticConnection:
     async def get_nodes(self) -> List[Dict[str, Any]]:
         """Return the full list of nodes the local node is aware of."""
         return await asyncio.to_thread(self._get_nodes_sync)
+
+    async def clear_stale_nodes(self) -> int:
+        """Drop every node flagged ``stale`` (not currently heard by the radio).
+
+        The persistent node store keeps nodes that the radio's bounded DB has
+        evicted so they remain visible. This lets the user purge that history
+        on demand — e.g. after a mesh reshuffle — so only live-heard nodes
+        remain. Returns the number of nodes removed.
+        """
+        return await asyncio.to_thread(self._clear_stale_nodes_sync)
+
+    def _clear_stale_nodes_sync(self) -> int:
+        with self._nodes_lock:
+            before = len(self._nodes)
+            self._nodes = [n for n in self._nodes if not n.get("stale")]
+            removed = before - len(self._nodes)
+        if removed:
+            self._save_nodes()
+            logger.info("Cleared %s stale (cached) nodes from the store", removed)
+        return removed
 
     async def get_channels(self) -> List[Dict[str, Any]]:
         """Return the channel configuration from the connected node."""
@@ -850,6 +874,63 @@ class MeshtasticConnection:
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("Could not persist channels (ignored): %s", exc)
 
+    def _load_nodes(self) -> None:
+        """Restore the persisted node list so evicted nodes survive restarts.
+
+        The radio's node DB is bounded (~250 entries) and silently drops the
+        oldest heard nodes once full. We keep our own durable copy and
+        re-inject those nodes into the cache on startup, flagged ``stale`` so
+        the UI can distinguish radio-present nodes from restored ones.
+        """
+        try:
+            if not os.path.exists(_NODES_FILE):
+                return
+            with self._persist_lock:
+                with open(_NODES_FILE, "r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+            if isinstance(data, list):
+                with self._nodes_lock:
+                    for n in data:
+                        if isinstance(n, dict) and n.get("id"):
+                            n["stale"] = True
+                            self._nodes.append(n)
+                logger.info(
+                    "Restored %s persisted nodes from %s",
+                    len(self._nodes), _NODES_FILE,
+                )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Could not load persisted nodes (ignored): %s", exc)
+
+    def _save_nodes(self) -> None:
+        """Persist the full node list to disk so evicted nodes survive.
+
+        Offloaded to a daemon thread (like traceroutes) and debounced so a
+        burst of node updates cannot spawn a save per change; the latest state
+        within the debounce window is flushed shortly after the storm settles.
+        """
+        try:
+            now = time.time()
+            with self._nodes_lock:
+                if (
+                    _NODE_SAVE_DEBOUNCE > 0
+                    and now - self._last_node_save < _NODE_SAVE_DEBOUNCE
+                ):
+                    if not self._pending_node_save:
+                        self._pending_node_save = True
+                        threading.Timer(
+                            _NODE_SAVE_DEBOUNCE, self._save_nodes
+                        ).start()
+                    return
+                self._last_node_save = now
+                self._pending_node_save = False
+                snapshot = list(self._nodes)
+            t = threading.Thread(
+                target=self._write_json, args=(snapshot, _NODES_FILE), daemon=True
+            )
+            t.start()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Could not schedule node save (ignored): %s", exc)
+
     def _save_traceroutes(self) -> None:
         """Persist the current traceroute results to disk (best-effort).
 
@@ -1095,9 +1176,14 @@ class MeshtasticConnection:
         # blocked for the full duration of the merge.
         with self._lock:
             if not self._connected or self._interface is None:
-                return []
-            nodes_raw = dict(self._interface.nodes or {})
+                # Not connected (startup before first connect, or after a
+                # disconnect). Return the last known node list so the UI/HA
+                # keep showing nodes rather than going blank; these are the
+                # persisted nodes restored at startup.
+                with self._nodes_lock:
+                    return list(self._nodes)
         # _lock is now released — proceed with the merge.
+        nodes_raw = dict(self._interface.nodes or {})
 
         result = []
 
@@ -1216,7 +1302,30 @@ class MeshtasticConnection:
                 if tid in cached and rec:
                     cached[tid]["traceroute"] = rec
 
+            # Re-inject nodes the radio no longer reports (its bounded node DB
+            # evicts the oldest heard nodes once full). Any node we have
+            # persisted but which is absent from this poll is restored from our
+            # durable cache and flagged "stale" so the UI can show it faded and
+            # we retain its last-known position. Freshly-present nodes are never
+            # marked stale.
+            # fresh_ids is the set of node IDs the radio actually reported this
+            # poll (not the union with our cache), so an evicted-but-cached node
+            # is correctly re-injected exactly once.
+            fresh_ids = {_norm_id(k) for k in nodes_raw}
+            for node in list(self._nodes):
+                nid = node.get("id")
+                if not nid or nid in fresh_ids:
+                    continue
+                restored = dict(node)
+                restored["stale"] = True
+                cached[nid] = restored
+                result.append(restored)
+
             self._nodes = list(cached.values())
+
+        # Persist the merged list so evicted nodes survive restarts and the
+        # next reconnect. Best-effort and debounced/off-thread.
+        self._save_nodes()
 
         return result
 

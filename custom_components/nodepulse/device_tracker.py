@@ -191,6 +191,7 @@ class NodeTracker(CoordinatorEntity, TrackerEntity):
             "hw_model":          node.get("hw_model"),
             "short_name":        node.get("short_name"),
             "last_position_fix": node.get("last_position_fix"),
+            "stale":             node.get("stale"),
         }
 
     @property

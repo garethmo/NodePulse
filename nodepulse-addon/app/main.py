@@ -25,6 +25,7 @@ from .config import load_config, resolve_target
 from .connection import MeshtasticConnection
 from .routes import (
     handle_channels,
+    handle_clear_stale_nodes,
     handle_messages,
     handle_nodes,
     handle_request_position,
@@ -137,6 +138,7 @@ def build_app(config) -> web.Application:
     # --- REST API Routes ---
     app.router.add_get("/api/status", handle_status)
     app.router.add_get("/api/nodes", handle_nodes)
+    app.router.add_post("/api/nodes/clear-stale", handle_clear_stale_nodes)
     app.router.add_get("/api/channels", handle_channels)
     app.router.add_get("/api/messages", handle_messages)
     app.router.add_post("/api/send", handle_send)

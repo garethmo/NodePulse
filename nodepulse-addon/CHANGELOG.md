@@ -2,6 +2,14 @@
 
 All notable changes to NodePulse are documented here.
 
+## [0.2.30] - 2026-07-19
+### Added
+- **Map node filter** — Filter map markers by name/ID text, max hops away, last-heard time window, or cached-only (stale). Live "N shown" counter.
+
+## [0.2.29] - 2026-07-19
+### Added
+- **Persistent node store** — Every node seen is saved to `nodes.json`. Nodes the radio drops (its node DB is bounded, ~250 entries) are re-injected as `stale` so they remain visible with their last-known position. Survives restarts; debounced/off-thread writes.
+
 ## [0.2.28] - 2026-07-19
 ### Added
 - **Last-known-position retention** — Nodes that lose GPS or stop reporting (`position=None`) keep their previous good latitude/longitude/altitude so the map marker doesn't disappear. A `last_position_fix` timestamp is recorded whenever a valid fix is seen (periodic packet or "Req. Position" reply).

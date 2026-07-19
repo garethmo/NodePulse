@@ -133,6 +133,57 @@ export class MapManager {
     this._tracesVisible = true;     // discovered traceroute paths
     this._namesVisible = true;      // permanent node-name labels
     this._centeredOnSelf = false;    // one-time auto-centre on the connected node
+    // The last full node list we received (unfiltered). Markers are drawn from
+    // the subset that passes the active filter (see _filterNodes).
+    this._allNodes = [];
+    // Active map filter. Keys: text (name substring), maxHops (int|null),
+    // heardWithin (seconds|null — only show nodes heard within this window),
+    // staleOnly (bool — only show cached/stale nodes).
+    this._filter = { text: '', maxHops: null, heardWithin: null, staleOnly: false };
+  }
+
+  /**
+   * Filter nodes down to those matching the active map filter.
+   * Pure function over a node list; used by updateNodes() before drawing.
+   */
+  _filterNodes(nodes) {
+    const f = this._filter;
+    const text = (f.text || '').trim().toLowerCase();
+    const now = Date.now();
+    return nodes.filter((n) => {
+      if (text) {
+        const hay = `${n.short_name || ''} ${n.long_name || ''} ${n.id || ''}`.toLowerCase();
+        if (!hay.includes(text)) return false;
+      }
+      if (f.maxHops != null) {
+        if (n.hops_away == null || n.hops_away > f.maxHops) return false;
+      }
+      if (f.heardWithin != null) {
+        if (!n.last_heard) return false;
+        const ageMs = now - n.last_heard * 1000;
+        if (ageMs > f.heardWithin * 1000) return false;
+      }
+      if (f.staleOnly && !n.stale) return false;
+      return true;
+    });
+  }
+
+  /**
+   * Set the active map filter and re-render immediately from the cached node
+   * list. Accepts a partial filter object; unspecified keys are left as-is.
+   *
+   * @param {Object} patch - e.g. { text: 'base', maxHops: 2, heardWithin: 3600 }
+   * @returns {number} count of nodes passing the new filter.
+   */
+  setFilter(patch) {
+    Object.assign(this._filter, patch);
+    this.updateNodes(this._allNodes);
+    return this._filterNodes(this._allNodes).length;
+  }
+
+  /** Current filter state (read-only snapshot). */
+  getFilter() {
+    return { ...this._filter };
   }
 
   /**
@@ -247,9 +298,16 @@ export class MapManager {
   updateNodes(nodes) {
     if (!this._map) return;
 
+    // Cache the full (unfiltered) list so filter changes can re-render without
+    // waiting for the next poll.
+    this._allNodes = nodes || [];
+
+    // Only draw markers for nodes that pass the active filter.
+    const filtered = this._filterNodes(this._allNodes);
+
     const seenIds = new Set();
 
-    for (const node of nodes) {
+    for (const node of filtered) {
       const { id, latitude, longitude } = node;
 
       // Skip nodes that have no GPS fix yet.

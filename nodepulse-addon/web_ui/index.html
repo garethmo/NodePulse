@@ -215,6 +215,33 @@
 
       <!-- ---- MAP VIEW ----------------------------------------------- -->
       <div id="view-map" class="view">
+        <div class="map-filter-bar">
+          <input type="text" id="map-filter-text" class="map-filter-input" placeholder="Search name or ID…" autocomplete="off" />
+          <label class="map-filter-field">
+            Max hops
+            <select id="map-filter-hops">
+              <option value="">Any</option>
+              <option value="0">0 (direct)</option>
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="3">3</option>
+              <option value="4">4</option>
+              <option value="5">5+</option>
+            </select>
+          </label>
+          <label class="map-filter-field">
+            Heard within
+            <select id="map-filter-heard">
+              <option value="">Any time</option>
+              <option value="900">15 min</option>
+              <option value="3600">1 hour</option>
+              <option value="21600">6 hours</option>
+              <option value="86400">24 hours</option>
+              <option value="stale">Cached only</option>
+            </select>
+          </label>
+          <span class="map-filter-count" id="map-filter-count"></span>
+        </div>
         <div id="full-map"></div>
       </div>
 
@@ -264,6 +291,13 @@
             <span class="settings-row-label">Ignored Nodes</span>
             <span class="settings-row-value" id="settings-ignored">—</span>
           </div>
+          <div class="settings-row settings-row-action">
+            <span class="settings-row-label">
+              Cached (stale) nodes
+              <span class="settings-row-hint">Nodes the radio dropped but we kept in history.</span>
+            </span>
+            <button class="action-btn" id="btn-clear-stale" data-action="clear-stale">Clear stale nodes</button>
+          </div>
         </div>
 
         <!-- ── Home Assistant ── -->
@@ -297,7 +331,7 @@
           <div class="settings-group-title">About</div>
           <div class="settings-row">
             <span class="settings-row-label">NodePulse Version</span>
-            <span class="settings-row-value">0.2.28</span>
+            <span class="settings-row-value">0.2.30</span>
           </div>
           <div class="settings-row">
             <span class="settings-row-label">UI Poll Interval</span>

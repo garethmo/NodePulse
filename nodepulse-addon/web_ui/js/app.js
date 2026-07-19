@@ -13,7 +13,7 @@
  * is easy to trace top-to-bottom.
  */
 
-import { fetchStatus, fetchNodes, fetchChannels, fetchMessages, sendMessage, requestTraceRoute, requestPosition, fetchTrackedNodes, trackNode } from './api.js';
+import { fetchStatus, fetchNodes, fetchChannels, fetchMessages, sendMessage, requestTraceRoute, requestPosition, fetchTrackedNodes, trackNode, clearStaleNodes } from './api.js';
 import { MapManager } from './map.js';
 import { ChartManager } from './charts.js';
 import { escapeHtml, haversineKm, formatDistance } from './util.js';
@@ -176,7 +176,7 @@ function renderNodeList(nodes) {
 
   for (const node of sorted) {
     const li = document.createElement('li');
-    li.className = `node-item ${snrToClass(node.snr)}`;
+    li.className = `node-item ${snrToClass(node.snr)}` + (node.stale ? ' node-item-stale' : '');
     if (node.id === state.selectedNodeId) li.classList.add('selected');
     li.dataset.nodeId = node.id;
 
@@ -185,6 +185,7 @@ function renderNodeList(nodes) {
     const rssiText = node.rssi != null ? `${node.rssi} dBm` : '';
     const hasGps   = node.latitude != null && node.longitude != null;
     const noGpsMark = hasGps ? '' : `<span class="node-list-unknown" title="No GPS fix">?</span>`;
+    const staleMark = node.stale ? ` <span class="node-list-cached" title="Not currently heard by the radio — restored from stored history">cached</span>` : '';
 
 
     li.innerHTML = `
@@ -195,7 +196,7 @@ function renderNodeList(nodes) {
         <div class="signal-bar"></div>
       </div>
           <div class="node-info">
-        <div class="node-name">${noGpsMark} ${escapeHtml(node.long_name || node.id)}</div>
+        <div class="node-name">${noGpsMark} ${escapeHtml(node.long_name || node.id)}${staleMark}</div>
         <div class="node-meta">${escapeHtml(node.short_name || '')} · ${escapeHtml(node.hw_model || '')}</div>
       </div>
       <div class="node-stats">
@@ -256,7 +257,7 @@ function renderNodesGrid(nodes) {
 
   for (const node of sorted) {
     const card = document.createElement('div');
-    card.className = 'node-card';
+    card.className = 'node-card' + (node.stale ? ' node-card-stale' : '');
 
     const snrText   = node.snr         != null ? `${node.snr.toFixed(1)} dB` : 'N/A';
     const rssiText  = node.rssi        != null ? `${node.rssi} dBm`          : 'Not provided';
@@ -265,6 +266,7 @@ function renderNodesGrid(nodes) {
     const heardText = formatRelativeTime(node.last_heard);
     const hasGps    = node.latitude != null && node.longitude != null;
     const noGpsMark = hasGps ? '' : `<span class="node-card-unknown" title="No GPS fix">?</span>`;
+    const staleMark = node.stale ? `<span class="node-card-cached" title="Not currently heard by the radio — restored from stored history (radio node DB is full)">cached</span>` : '';
 
     let distText = 'N/A';
     if (hasGps && selfHasGps && node.id !== state.selfId) {
@@ -301,7 +303,7 @@ function renderNodesGrid(nodes) {
     card.innerHTML = `
       <div class="node-card-header">
         <div>
-          <div class="node-card-name">${noGpsMark} ${escapeHtml(node.long_name || node.id)}</div>
+          <div class="node-card-name">${noGpsMark} ${escapeHtml(node.long_name || node.id)} ${staleMark}</div>
           <div class="node-card-id">${escapeHtml(node.id)}</div>
         </div>
         <span class="node-card-hw">${escapeHtml(node.hw_model || 'Unknown')}</span>
@@ -1025,7 +1027,8 @@ async function init() {
   wireToggle('nodepulse:toggletraces',    't', (m) => m.toggleTraces(), 'Traceroute paths');
   wireToggle('nodepulse:togglenames',     'n', (m) => m.toggleNames(), 'Node names');
 
-  // Set the initial active view.
+  // Map node filter (text / max hops / last-heard window) — apply to both maps.
+  wireMapFilters();
   switchView('dashboard');
 
   // Initial data load — show a spinner state while waiting.
@@ -1038,6 +1041,45 @@ async function init() {
   // stays centred on its default view (Durban, South Africa). Users can still
   // pan/zoom, and the fitToMarkers() helper remains available if needed.
   // The recursive pollData setTimeout handles subsequent polling.
+}
+
+// ============================================================================
+// Map Node Filter (text / max hops / last-heard window)
+// ============================================================================
+
+/**
+ * Wire the Map view filter controls to both map instances. Any change applies
+ * the filter immediately and updates the "N shown" counter. "Cached only"
+ * (staleOnly) and the heard-within window are mutually exclusive sources of
+ * the `staleOnly` flag, so selecting one resets the other.
+ */
+function wireMapFilters() {
+  const textEl   = document.getElementById('map-filter-text');
+  const hopsEl   = document.getElementById('map-filter-hops');
+  const heardEl  = document.getElementById('map-filter-heard');
+  const countEl  = document.getElementById('map-filter-count');
+  if (!textEl || !hopsEl || !heardEl || !countEl) return;
+
+  const apply = () => {
+    const heardVal = heardEl.value;
+    const patch = {
+      text: textEl.value,
+      maxHops: hopsEl.value === '' ? null : parseInt(hopsEl.value, 10),
+      // "stale" option => staleOnly; numeric => heardWithin seconds; "" => clear both.
+      heardWithin: heardVal === '' || heardVal === 'stale' ? null : parseInt(heardVal, 10),
+      staleOnly: heardVal === 'stale',
+    };
+    const shown = dashMap.setFilter(patch);
+    fullMap.setFilter(patch);
+    countEl.textContent = `${shown} shown`;
+  };
+
+  textEl.addEventListener('input', apply);
+  hopsEl.addEventListener('change', apply);
+  heardEl.addEventListener('change', apply);
+  // Keep the counter in sync on every poll (node set changes underneath filter).
+  const origUpdateNodes = fullMap.updateNodes.bind(fullMap);
+  fullMap.updateNodes = (nodes) => { origUpdateNodes(nodes); countEl.textContent = `${fullMap._filterNodes(fullMap._allNodes).length} shown`; };
 }
 
 // ============================================================================

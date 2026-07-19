@@ -120,3 +120,15 @@ export async function trackNode(nodeId, enabled) {
     body: JSON.stringify({ node_id: nodeId, enabled }),
   });
 }
+
+/**
+ * Remove every node flagged "stale" (not currently heard by the radio) from
+ * the persistent store. Returns { removed: <count> }.
+ */
+export async function clearStaleNodes() {
+  return _apiFetch('/nodes/clear-stale', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+}

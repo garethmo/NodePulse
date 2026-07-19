@@ -2,6 +2,14 @@
 
 All notable changes to NodePulse are documented here.
 
+## [0.2.30] - 2026-07-19
+### Added
+- **Map node filter** — The Map view now has a filter bar to search/shown nodes by **short name / long name / ID** (text), **max hops away** (0–5+), and **last heard** within a time window (15 min / 1 h / 6 h / 24 h) or **cached-only** (stale nodes). A live "N shown" counter updates on filter changes and on every poll. Applies to both the dashboard mini-map and the full map.
+
+## [0.2.29] - 2026-07-19
+### Added
+- **Persistent node store (survives the radio's 250-node DB limit)** — The addon now persists every node it has ever seen to `nodes.json` and re-injects any node the radio no longer reports (its bounded node DB evicts the oldest heard nodes once full). New nodes still appear immediately; evicted nodes are flagged `stale` (faded "cached" badge in the Web UI, `stale` attribute on the HA device tracker) and keep their last-known position on the map. History survives addon restarts.
+
 ## [0.2.28] - 2026-07-19
 ### Added
 - **Last-known-position retention** — When a node loses GPS or stops reporting, the radio sends `position=None` and the map marker would previously vanish. NodePulse now keeps the most recent good latitude/longitude/altitude (from the prior fix or a "Req. Position" reply) so the node stays on the map until a newer fix arrives. A new `last_position_fix` attribute (epoch seconds) is exposed on each mesh node device tracker so you can see how stale a fix is and drive automations on it.

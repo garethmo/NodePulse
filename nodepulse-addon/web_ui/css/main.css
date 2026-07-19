@@ -803,6 +803,53 @@ body::before {
 #view-map.active { display: flex; flex-direction: column; }
 #full-map { flex: 1; border-radius: var(--radius-lg); overflow: hidden; border: 1px solid var(--border-subtle); }
 
+/* --- Map Filter Bar ------------------------------------------------------- */
+.map-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+}
+.map-filter-input {
+  flex: 1 1 200px;
+  min-width: 160px;
+  padding: 8px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+.map-filter-input:focus { outline: none; border-color: var(--border-accent); }
+.map-filter-field {
+  display: inline-flex;
+  flex-direction: column;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  gap: 2px;
+}
+.map-filter-field select {
+  padding: 6px 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+.map-filter-count {
+  margin-left: auto;
+  font-size: 12px;
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--text-secondary);
+}
+
 /* --- Settings View -------------------------------------------------------- */
 #view-settings {
   padding: var(--space-xl);
@@ -930,6 +977,42 @@ body::before {
   font-size: 11px;
   font-weight: 700;
   line-height: 1;
+}
+
+.node-card-stale {
+  opacity: 0.6;
+  border-style: dashed;
+}
+.node-card-cached {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-warn, #ffc400);
+  background: rgba(255, 196, 0, 0.15);
+  border: 1px solid var(--color-warn, #ffc400);
+  vertical-align: middle;
+}
+
+.node-item-stale {
+  opacity: 0.6;
+}
+.node-list-cached {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 5px;
+  border-radius: var(--radius-sm);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-warn, #ffc400);
+  background: rgba(255, 196, 0, 0.15);
+  border: 1px solid var(--color-warn, #ffc400);
 }
 
 .node-list-unknown {

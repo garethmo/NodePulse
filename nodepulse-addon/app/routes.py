@@ -249,6 +249,24 @@ async def handle_nodes(request: web.Request) -> web.Response:
         return _error_response("Failed to retrieve nodes")
 
 
+async def handle_clear_stale_nodes(request: web.Request) -> web.Response:
+    """
+    Remove every node flagged ``stale`` (not currently heard by the radio).
+
+    The persistent store keeps radio-evicted nodes visible; this endpoint
+    lets the user purge that history on demand so only live-heard nodes
+    remain. Returns the count removed.
+    """
+    conn: MeshtasticConnection = request.app["connection"]
+    _apply_access_key(request)
+    try:
+        removed = await conn.clear_stale_nodes()
+        return _json_response({"removed": removed})
+    except Exception as exc:
+        logger.error("Error clearing stale nodes: %s", exc)
+        return _error_response("Failed to clear stale nodes")
+
+
 # ---------------------------------------------------------------------------
 # Route: GET /api/messages
 # ---------------------------------------------------------------------------
