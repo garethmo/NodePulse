@@ -34,6 +34,10 @@ NodePulse is a Home Assistant addon and custom integration that gives you deep v
 | ⚡ **Service Actions** | `nodepulse.send_message`, `nodepulse.request_position`, `nodepulse.trace_route` |
 | 🤖 **Device Triggers & Actions** | Automate on message received/sent (and `channel_message.received`); send message / request position / trace route per node device |
 | 📜 **Logbook** | Mesh messages recorded in the Home Assistant logbook timeline |
+| 🗂️ **Persistent Node Store** | Every node ever seen is saved and re-shown even after the radio drops it from its bounded (~250) node DB; evicted nodes appear faded ("cached") and keep their last-known GPS position |
+| 📍 **Last-Known-Position Retention** | Nodes that lose GPS or stop reporting keep their previous good fix on the map instead of vanishing; `last_position_fix` exposed per node |
+| 🔎 **Map Node Filter** | Filter the map by name/ID, max hops away, last-heard window, or cached-only — with a live node count |
+| 🧹 **Clear Stale Nodes** | One-click purge of cached (stale) nodes from the store via Settings |
 
 ---
 
@@ -49,13 +53,14 @@ block-beta
 
   space:3
 
-  Node["📡 Meshtastic\nNode (TCP :4403)"] space:1 block:addon:1
-    addonLabel["NodePulse Addon\n(Docker Container)"]
-    backend["app/main.py\naiohttp :8099"]
-    conn["connection.py\nTCP client + reconnect"]
-    routes["routes.py\nREST API"]
-    ui["web_ui/\nDashboard"]
-  end
+   Node["📡 Meshtastic\nNode (TCP :4403)"] space:1 block:addon:1
+     addonLabel["NodePulse Addon\n(Docker Container)"]
+     backend["app/main.py\naiohttp :8099"]
+     conn["connection.py\nTCP client + reconnect"]
+     store["nodes.json\npersistent node store\n(re-injects evicted nodes)"]
+     routes["routes.py\nREST API"]
+     ui["web_ui/\nDashboard + map filter"]
+   end
 
   space:3
 
@@ -67,16 +72,18 @@ block-beta
     dt["device_tracker.py"]
   end
 
-  Node -->|"TCP stream"| conn
-  conn --> routes
-  routes --> ui
-  routes -->|"REST /api/*"| coord
-  coord --> bs
-  coord --> sens
-  coord --> dt
+   Node -->|"TCP stream"| conn
+   conn --> store
+   store --> routes
+   conn --> routes
+   routes --> ui
+   routes -->|"REST /api/*"| coord
+   coord --> bs
+   coord --> sens
+   coord --> dt
 
-  style addon fill:#0f1629,stroke:#00d4aa,color:#e8eaf0
-  style integration fill:#0f1629,stroke:#4fc3f7,color:#e8eaf0
+   style addon fill:#0f1629,stroke:#00d4aa,color:#e8eaf0
+   style integration fill:#0f1629,stroke:#4fc3f7,color:#e8eaf0
 ```
 
 ### Poll Cycle — Data Flow
@@ -151,8 +158,38 @@ erDiagram
   HOPS_SENSOR       { string unit "hops" }
   LAST_HEARD_SENSOR { string device_class "timestamp" }
   BATTERY_SENSOR    { string unit "%" }
-  GPS_TRACKER       { string source_type "gps" }
+   GPS_TRACKER       { string source_type "gps" }
+   GPS_TRACKER       { string latitude "last known fix" }
+   GPS_TRACKER       { string longitude "last known fix" }
+   GPS_TRACKER       { int    last_position_fix "epoch s of last fix" }
+   GPS_TRACKER       { bool   stale "radio dropped node (cached)" }
 ```
+
+### Node Storage & the Radio's 250-Node Limit
+
+Meshtastic firmware keeps a **bounded node database (commonly ~250 entries)**. Once it is full, the oldest *heard* nodes are silently dropped from `interface.nodes`, so they would disappear from any monitoring tool — including NodePulse's node list, map, and HA entities.
+
+NodePulse works around this:
+
+- **Persistent store** — every node NodePulse has ever seen is written to `nodes.json` in the addon's data directory and survives addon restarts.
+- **Re-injection** — on each poll, any node the radio no longer reports is re-added from the store, flagged `stale` (shown faded with a `cached` badge in the Web UI, and a `stale` attribute on the HA device tracker), and keeps its **last-known position** on the map.
+- **New nodes** still appear immediately when first heard.
+- **Clear stale nodes** — the Settings → Mesh panel has a **Clear stale nodes** button to purge the cached history on demand (e.g. after a mesh reshuffle), leaving only currently-heard nodes.
+
+> This does **not** raise the radio's hard ~250 limit — it just ensures NodePulse remembers and re-displays nodes the radio forgets, so your visible count can exceed 250.
+
+### Map Filtering
+
+The full Map view has a filter bar to narrow the displayed nodes:
+
+| Control | Behaviour |
+|---|---|
+| Search box | Substring match on short name, long name, or node ID (case-insensitive) |
+| Max hops | Show only nodes with `hops_away ≤ N` (Any / 0 / 1 / 2 / 3 / 4 / 5+) |
+| Heard within | Only nodes heard within 15 min / 1 h / 6 h / 24 h, or **Cached only** (stale nodes) |
+| "N shown" | Live count of nodes passing the current filter; updates on filter changes and every poll |
+
+The filter applies to both the dashboard mini-map and the full map.
 
 ---
 
@@ -283,6 +320,7 @@ itself, not the addon container.
 
 - **Home Assistant version** — NodePulse targets current HA releases. Recent builds removed the deprecated `hass.helpers` shortcut and switched to the module-level `async_load_platform`, so make sure you are on **0.2.24 or later** if you hit `AttributeError: 'HomeAssistant' object has no attribute 'helpers'` during setup.
 - **Logbook errors** — If you see a `NameError: name 'entry' is not defined` in the logs, update to 0.2.24+, which fixes the mesh-message listener that writes logbook entries.
+- **Node history** — The addon persists nodes, channels, traceroutes, and messages under its data directory (default `/data` in HAOS; override with `NODEPULSE_DATA_DIR`). To start fresh, stop the addon and delete `nodes.json` (or use **Settings → Clear stale nodes** to drop only cached entries).
 
 ---
 
