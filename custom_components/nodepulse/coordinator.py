@@ -32,6 +32,12 @@ from .const import (
 
 logger = logging.getLogger(__name__)
 
+# If a single poll reports more than this many "new" messages, treat it as a
+# replay event (addon restart / dedup-set reset) and surface only the most
+# recent ones rather than flooding the logbook and device triggers. A normal
+# poll surfaces only a handful of genuinely new messages.
+_NEW_MESSAGE_REPLAY_THRESHOLD = 5
+
 
 class NodePulseCoordinator(DataUpdateCoordinator):
     """
@@ -125,6 +131,19 @@ class NodePulseCoordinator(DataUpdateCoordinator):
         self.tracked_nodes.discard(node_id)
         return True
 
+    @staticmethod
+    def _message_key(message: Dict[str, Any]) -> Any:
+        """Stable dedup key for a mesh message.
+
+        Prefers the addon-assigned ``id`` (which already encodes from/channel/
+        timestamp). Falls back to ``(id, text, timestamp)`` so two distinct
+        messages that happen to share text are never collapsed, and so a missing
+        id still yields a unique-enough key.
+        """
+        if message.get("id"):
+            return message["id"]
+        return (message.get("from_id"), message.get("text"), message.get("timestamp"))
+
     async def persist_tracked_nodes(self, hass: HomeAssistant) -> None:
         """Write the current tracked set back into the config entry options."""
         new_options = dict(self._config_entry.options)
@@ -132,6 +151,22 @@ class NodePulseCoordinator(DataUpdateCoordinator):
         hass.config_entries.async_update_entry(
             self._config_entry, options=new_options
         )
+
+    def _load_ignored_nodes(self) -> Set[str]:
+        """Return the set of node IDs to exclude from the integration.
+
+        Read fresh from config-entry options each cycle so an options-flow
+        change applies on the next poll without a coordinator reload. Stored as
+        a list of canonical ``!xxxxxxxx`` ids by the options flow.
+        """
+        raw = self._config_entry.options.get(CONF_IGNORED_NODES) or []
+        if isinstance(raw, str):
+            # Tolerate a raw string (e.g. older stored value) by normalising.
+            return {
+                ("!" + p.strip().lower().lstrip("!"))
+                for p in raw.split(",") if p.strip()
+            }
+        return set(raw)
 
     # ------------------------------------------------------------------
     # Action helpers — push commands to the mesh through the addon API.
@@ -231,6 +266,19 @@ class NodePulseCoordinator(DataUpdateCoordinator):
         except Exception as exc:
             raise UpdateFailed(f"Unexpected error fetching NodePulse data: {exc}") from exc
 
+        # Apply the integration-level ignored_nodes filter. The addon already
+        # filters on its own ignored_nodes config; this mirrors it on the HA
+        # side so toggling the integration option takes effect immediately
+        # without waiting for the addon config to change. Re-read from options
+        # each cycle so an options-flow change applies on the next poll.
+        ignored = self._load_ignored_nodes()
+        if ignored:
+            nodes = [n for n in nodes if n.get("id") not in ignored]
+            messages = [
+                m for m in messages
+                if m.get("from_id") not in ignored and m.get("to_id") not in ignored
+            ]
+
         logger.debug(
             "NodePulse data refreshed (host=%s, node_count=%s, message_count=%s)",
             self._host, len(nodes), len(messages) if messages else 0,
@@ -245,15 +293,33 @@ class NodePulseCoordinator(DataUpdateCoordinator):
         if self._messages_initialized:
             new_messages = [
                 m for m in messages
-                if (m.get("id") or m.get("text")) not in self._seen_message_ids
+                if self._message_key(m) not in self._seen_message_ids
             ]
         else:
-            # First poll: seed the seen set so we don't replay history, but
-            # don't surface anything as "new".
+            # First poll (or first poll after a coordinator (re)creation): seed
+            # the seen set so we don't replay history, but don't surface
+            # anything as "new".
             new_messages = []
             self._messages_initialized = True
+
+        # Replay guard: a normal poll surfaces only a handful of genuinely new
+        # messages. If a refresh suddenly reports a large fraction of the whole
+        # buffer as "new" (e.g. the addon restarted and re-emitted its persisted
+        # history, or the dedup set was reset), we must NOT flood the logbook /
+        # device triggers with the entire backlog. In that case we only surface
+        # the most recent few messages, which is all a user realistically wants
+        # to see after a restart.
+        if new_messages and len(new_messages) > _NEW_MESSAGE_REPLAY_THRESHOLD:
+            logger.warning(
+                "Suppressing message-replay flood: %s 'new' messages detected in "
+                "one poll (likely an addon restart or dedup reset). Surfacing only "
+                "the most recent %s.",
+                len(new_messages), _NEW_MESSAGE_REPLAY_THRESHOLD,
+            )
+            new_messages = new_messages[-_NEW_MESSAGE_REPLAY_THRESHOLD:]
+
         for m in messages:
-            self._seen_message_ids.add(m.get("id") or m.get("text"))
+            self._seen_message_ids.add(self._message_key(m))
         # Bound the seen set so it can't grow forever.
         if len(self._seen_message_ids) > 2000:
             self._seen_message_ids = set(list(self._seen_message_ids)[-1000:])

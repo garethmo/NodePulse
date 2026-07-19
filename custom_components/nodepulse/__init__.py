@@ -18,6 +18,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.discovery import async_load_platform
 
 from .const import (
     ATTR_CHANNEL,
@@ -134,12 +135,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # integration's per-channel notify targets).
     async def _load_notify_platforms():
         base = {"entry_id": entry.entry_id}
-        await hass.helpers.discovery.async_load_platform(
-            "notify", DOMAIN, base, {}
-        )
+        await async_load_platform(hass, "notify", DOMAIN, base, {})
         channels = (coordinator.data or {}).get("channels") or []
         for ch in channels:
-            await hass.helpers.discovery.async_load_platform(
+            await async_load_platform(
+                hass,
                 "notify",
                 DOMAIN,
                 {**base, "channel": ch},
@@ -156,7 +156,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # logbook entries.
     entry.async_on_unload(
         coordinator.async_add_listener(
-            lambda: _on_data_update(hass, coordinator)
+            lambda: _on_data_update(hass, coordinator, entry)
         )
     )
 
@@ -164,7 +164,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
-def _on_data_update(hass: HomeAssistant, coordinator: NodePulseCoordinator) -> None:
+def _on_data_update(hass: HomeAssistant, coordinator: NodePulseCoordinator, entry: ConfigEntry) -> None:
     """React to a coordinator refresh: surface new messages for triggers/logbook."""
     data = coordinator.data or {}
     new_messages = data.get("new_messages") or []
@@ -239,16 +239,16 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_unload_platforms(entry, ["notify"])
 
     if unloaded:
-        hass.data[DOMAIN].pop(entry.entry_id)
+        hass.data[DOMAIN].pop(entry.entry_id, None)
+
+    # When the last config entry is gone, remove the integration-level service
+    # actions registered in async_setup so they don't linger after removal.
+    if not hass.data.get(DOMAIN):
+        for svc in (SERVICE_SEND_MESSAGE, SERVICE_REQUEST_POSITION, SERVICE_TRACE_ROUTE):
+            if hass.services.has_service(DOMAIN, svc):
+                hass.services.async_remove(DOMAIN, svc)
+
     return unloaded
-
-
-async def async_unload(hass: HomeAssistant) -> bool:
-    """Unload the integration: remove service actions registered in async_setup."""
-    for svc in (SERVICE_SEND_MESSAGE, SERVICE_REQUEST_POSITION, SERVICE_TRACE_ROUTE):
-        if hass.services.has_service(DOMAIN, svc):
-            hass.services.async_remove(DOMAIN, svc)
-    return True
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:

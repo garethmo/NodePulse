@@ -35,6 +35,7 @@ import re
 _DATA_DIR = os.environ.get("NODEPULSE_DATA_DIR", "/data")
 _MESSAGES_FILE = os.path.join(_DATA_DIR, "messages.json")
 _TRACEROUTES_FILE = os.path.join(_DATA_DIR, "traceroutes.json")
+_CHANNELS_FILE = os.path.join(_DATA_DIR, "channels.json")
 logger = logging.getLogger(__name__)
 
 # A canonical Meshtastic node ID is a "!" followed by the node number in hex.
@@ -61,6 +62,19 @@ def _node_id_from_num(num: Any) -> Optional[str]:
         return "!" + format(int(num) & 0xFFFFFFFF, "08x")
     except (TypeError, ValueError):
         return None
+
+
+def _channel_role_name(value: int) -> str:
+    """Map a Meshtastic Channel.Role integer to its enum name (e.g. 'PRIMARY').
+
+    Imported lazily so the protobuf is only loaded when actually needed.
+    Falls back to the raw integer string if the enum can't be resolved.
+    """
+    try:
+        from meshtastic.protobuf.channel_pb2 import Channel
+        return Channel.Role.Name(value)
+    except Exception:
+        return str(value)
 
 # How long (seconds) to wait between reconnection attempts.
 # Using a capped exponential backoff to avoid hammering an offline node.
@@ -168,6 +182,13 @@ class MeshtasticConnection:
         self._nodes_lock = threading.Lock()
         self._nodes: List[Dict[str, Any]] = []
 
+        # Mutable cache of the channel configuration. Fetched during connection
+        # handshake so all channels are immediately available in the UI, even
+        # before any messages are sent on them.
+        self._channels_lock = threading.Lock()
+        self._channels: List[Dict[str, Any]] = []
+        self._load_channels()
+
         # Destination node IDs of in-flight traceroute requests. The reply
         # packet only carries the origin (the responding node), not the original
         # request target, so we remember the destinations to attribute the
@@ -238,6 +259,30 @@ class MeshtasticConnection:
         """Return the channel configuration from the connected node."""
         return await asyncio.to_thread(self._get_channels_sync)
 
+    async def refresh_channels(self) -> List[Dict[str, Any]]:
+        """Force a fresh channel read from the node and update the cache.
+
+        Used by the periodic background refresh and right after a (re)connection
+        so the Web UI's channel list/channel tabs stay in sync with the radio
+        without waiting for a config push.
+        """
+        return await asyncio.to_thread(self._refresh_channels_sync)
+
+    async def run_channel_refresh_loop(self, interval: float = 300.0) -> None:
+        """Background task: periodically refresh the channel list.
+
+        Channels rarely change, so a 5-minute cadence is plenty. Best-effort:
+        failures are logged but never terminate the loop.
+        """
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                if self._connected:
+                    await self.refresh_channels()
+                    logger.debug("Periodic channel refresh completed")
+            except Exception as exc:  # defensive: never crash the task
+                logger.debug("Periodic channel refresh failed (ignored): %s", exc)
+
     async def send_message(
         self, text: str, destination: Optional[str] = None, channel: int = 0
     ) -> bool:
@@ -269,7 +314,10 @@ class MeshtasticConnection:
         with self._lock:
             self._pending_traceroute_dests.append(destination)
         try:
-            loop = asyncio.get_event_loop()
+            # Use get_running_loop() (correct inside a coroutine). get_event_loop()
+            # is deprecated in 3.10+ and raises RuntimeError on 3.12+ when no
+            # loop is bound to the current context.
+            loop = asyncio.get_running_loop()
             loop.create_task(self._traceroute_dispatch(destination))
         except RuntimeError:
             # No running loop (e.g. offline test harness): fall back to a
@@ -367,6 +415,15 @@ class MeshtasticConnection:
                     )
             else:
                 # Healthy: report connected and poll again at the probe cadence.
+                if not self._connected:
+                    # Just transitioned from disconnected -> connected: refresh
+                    # channels immediately so the UI reflects the radio's current
+                    # channel config without waiting for a config push.
+                    try:
+                        self._refresh_channels_sync()
+                        logger.info("Refreshed channels after (re)connection")
+                    except Exception as exc:  # pragma: no cover - defensive
+                        logger.debug("Post-connect channel refresh failed (ignored): %s", exc)
                 self._connected = True
                 delay = _HEALTH_CHECK_INTERVAL
 
@@ -529,7 +586,7 @@ class MeshtasticConnection:
             except Exception as exc:  # pragma: no cover - defensive
                 logger.debug("fetchNodeDB() failed (ignored): %s", exc)
 
-        # 3) Probe our own node info — this forces the radio to respond with a
+        # 4) Probe our own node info — this forces the radio to respond with a
         #    NodeInfo packet, kick-starting the node-DB sync.
         for meth in ("getMyNodeInfo", "getNode"):
             fn = getattr(iface, meth, None)
@@ -629,7 +686,10 @@ class MeshtasticConnection:
             if from_num is not None and self._interface is not None:
                 node = self._interface.nodes.get(from_num)
                 if node:
-                    name = (node.get("user") or {}).get("longName")
+                    user = node.get("user") or {}
+                    # Prefer the short name in the chat window (compact), falling
+                    # back to the long name when no short name is set.
+                    name = user.get("shortName") or user.get("longName")
 
             channel = packet.get("channel", 0)
             # A packet is a DM if it is addressed to a specific node (not the
@@ -747,6 +807,33 @@ class MeshtasticConnection:
                 )
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("Could not load persisted traceroutes (ignored): %s", exc)
+
+    def _load_channels(self) -> None:
+        """Restore persisted channel configuration (best-effort)."""
+        try:
+            if not os.path.exists(_CHANNELS_FILE):
+                return
+            with self._persist_lock:
+                with open(_CHANNELS_FILE, "r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+            if isinstance(data, list):
+                with self._channels_lock:
+                    self._channels = data
+                logger.info("Restored %s channels from %s", len(self._channels), _CHANNELS_FILE)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Could not load persisted channels (ignored): %s", exc)
+
+    def _save_channels(self) -> None:
+        """Persist the current channel configuration to disk (best-effort)."""
+        try:
+            os.makedirs(_DATA_DIR, exist_ok=True)
+            with self._channels_lock:
+                snapshot = list(self._channels)
+            with self._persist_lock:
+                with open(_CHANNELS_FILE, "w", encoding="utf-8") as fh:
+                    json.dump(snapshot, fh)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Could not persist channels (ignored): %s", exc)
 
     def _save_traceroutes(self) -> None:
         """Persist the current traceroute results to disk (best-effort).
@@ -1030,10 +1117,17 @@ class MeshtasticConnection:
                 device_metrics = node_data.get("deviceMetrics", {})
                 environment = node_data.get("environmentMetrics", {}) or {}
 
+                # Extract short name, falling back to truncated long name if not provided
+                long_name = user.get("longName", "")
+                short_name = user.get("shortName", "")
+                if not short_name and long_name:
+                    # Truncate long name to first 8 chars as a fallback short name
+                    short_name = long_name[:8]
+
                 entry = {
                     "id": node_id,
-                    "long_name": user.get("longName", ""),
-                    "short_name": user.get("shortName", ""),
+                    "long_name": long_name,
+                    "short_name": short_name,
                     "hw_model": user.get("hwModel", ""),
                     "last_heard": node_data.get("lastHeard"),
                     "snr": node_data.get("snr"),
@@ -1091,48 +1185,124 @@ class MeshtasticConnection:
 
         return result
 
+    def _read_channels_from_interface(self) -> List[Dict[str, Any]]:
+        """Read the channel list straight from the connected node.
+
+        Returns every channel slot the radio knows about. In Meshtastic the
+        library populates ``interface.localNode.channels`` — a list of
+        ``Channel`` protobufs (one per slot, indexed 0..N) — during the initial
+        config handshake via ``localNode.setChannels(...)``. Each ``Channel``
+        carries ``index``, ``role`` (PRIMARY / SECONDARY / DISABLED) and a nested
+        ``settings`` with the human ``name``. We read from there.
+
+        We deliberately DON'T rely on ``interface.localConfig.channel_settings``:
+        the radio does not always push the channel settings into the local
+        config, so that field is frequently empty and would make the UI show
+        only the hardcoded "Primary" tab. We still accept it as a fallback for
+        older library versions that populate it.
+
+        Disabled slots are skipped (role == DISABLED) except slot 0, which is
+        always present as the PRIMARY channel even when unnamed.
+        """
+        iface = self._interface
+        if iface is None:
+            return []
+
+        # Preferred: the Channel list on the local node.
+        local_node = getattr(iface, "localNode", None)
+        channels = getattr(local_node, "channels", None) if local_node else None
+
+        # Fallback for library versions that only populate localConfig.
+        if not channels:
+            local_config = getattr(iface, "localConfig", None)
+            channels = getattr(local_config, "channel_settings", None) if local_config else None
+
+        if not channels:
+            return []
+
+        result: List[Dict[str, Any]] = []
+        for ch in channels:
+            idx = getattr(ch, "index", None)
+            if idx is None:
+                # localConfig.channel_settings is keyed by position; derive index.
+                idx = len(result)
+            role_raw = getattr(ch, "role", None)
+            # Role may be an enum, an enum name string, or an int.
+            if hasattr(role_raw, "name"):
+                role = role_raw.name
+            elif isinstance(role_raw, int):
+                try:
+                    role = channel_role_name(role_raw)
+                except Exception:
+                    role = str(role_raw)
+            else:
+                role = str(role_raw or "")
+            role_upper = (role or "").upper()
+
+            settings = getattr(ch, "settings", None)
+            name = getattr(settings, "name", "") if settings else ""
+            name = name or ""
+            # The primary channel (index 0) is usually unnamed in the radio;
+            # give it the conventional "Primary" label the UI expects.
+            if idx == 0 and not name:
+                name = "Primary"
+
+            # Skip disabled slots, but always keep the primary (index 0).
+            if role_upper == "DISABLED" and idx != 0:
+                continue
+
+            result.append({
+                "index": idx,
+                "name": name or f"Channel {idx}",
+                "role": role_upper,
+            })
+
+        # Guarantee slot 0 exists (PRIMARY) even if the radio omitted it.
+        if not any(c["index"] == 0 for c in result):
+            result.insert(0, {"index": 0, "name": "Primary", "role": "PRIMARY"})
+
+        logger.debug("Channel fetch: %d channels (source=%s)", len(result),
+                     "localNode.channels" if local_node and getattr(local_node, "channels", None) else "localConfig.channel_settings")
+        return result
+
     def _get_channels_sync(self) -> List[Dict[str, Any]]:
+        # Return cached channels if available.
+        if self._channels_lock.acquire(blocking=False):
+            try:
+                if self._channels:
+                    return self._channels
+            finally:
+                self._channels_lock.release()
+
+        # Fallback: fetch directly from interface if cache is empty.
         with self._lock:
             if not self._connected or self._interface is None:
                 return []
 
-            result = []
+            result = self._read_channels_from_interface()
 
-            # Prefer the canonical, full channel list from the node's local
-            # config (channel_settings is a repeated field indexed 0..N and
-            # always includes every provisioned channel, even ones the library
-            # might not surface via interface.channels). Fall back to
-            # interface.channels if localConfig isn't available.
-            local_config = getattr(self._interface, "localConfig", None)
-            channel_settings = getattr(local_config, "channel_settings", None)
+            # Cache the result for future calls.
+            with self._channels_lock:
+                self._channels = result
 
-            if channel_settings:
-                for idx, settings in enumerate(channel_settings):
-                    name = getattr(settings, "name", "") or ""
-                    role = str(getattr(settings, "role", ""))
-                    psk = getattr(settings, "psk", b"") or b""
-                    # Channel 0 (Primary) is always present. Other slots are only
-                    # meaningful if they carry a name or a real (non-zero) PSK —
-                    # an empty PSK marks an unconfigured/disabled placeholder.
-                    is_primary = idx == 0
-                    configured = bool(name) or len(psk) > 1
-                    if not is_primary and not configured:
-                        continue
-                    result.append({
-                        "index": idx,
-                        "name": name,
-                        "role": role,
-                    })
-            else:
-                channels = getattr(self._interface, "channels", {}) or {}
-                for idx, channel in channels.items():
-                    settings = getattr(channel, "settings", None)
-                    result.append({
-                        "index": idx,
-                        "name": getattr(settings, "name", "") if settings else "",
-                        "role": str(getattr(channel, "role", "")),
-                    })
             return result
+
+    def _refresh_channels_sync(self) -> List[Dict[str, Any]]:
+        """Read the channel list straight from the node and replace the cache.
+
+        Unlike ``_get_channels_sync`` (which returns the cache when non-empty),
+        this always re-reads from the interface so callers can force a refresh.
+        """
+        with self._lock:
+            if not self._connected or self._interface is None:
+                return list(self._channels)
+            result = self._read_channels_from_interface()
+
+        with self._channels_lock:
+            self._channels = result
+        # Persist so a restart restores the latest channel list.
+        self._schedule_save(self._channels, _CHANNELS_FILE)
+        return result
 
     def _send_message_sync(
         self, text: str, destination: Optional[str], channel: int

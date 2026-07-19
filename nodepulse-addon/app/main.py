@@ -69,6 +69,10 @@ async def _on_startup(app: web.Application) -> None:
     # the app so we can cancel it cleanly on shutdown.
     app["monitor_task"] = asyncio.create_task(conn.monitor_connection())
 
+    # Launch the periodic channel-refresh task so the UI's channel list stays
+    # in sync with the radio without waiting for a config push.
+    app["channel_refresh_task"] = asyncio.create_task(conn.run_channel_refresh_loop())
+
 
 async def _on_shutdown(app: web.Application) -> None:
     """
@@ -84,6 +88,14 @@ async def _on_shutdown(app: web.Application) -> None:
         monitor_task.cancel()
         try:
             await monitor_task
+        except asyncio.CancelledError:
+            pass  # expected on cancel
+
+    channel_refresh_task: asyncio.Task = app.get("channel_refresh_task")
+    if channel_refresh_task and not channel_refresh_task.done():
+        channel_refresh_task.cancel()
+        try:
+            await channel_refresh_task
         except asyncio.CancelledError:
             pass  # expected on cancel
 

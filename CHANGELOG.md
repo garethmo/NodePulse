@@ -2,6 +2,31 @@
 
 All notable changes to NodePulse are documented here.
 
+## [0.2.27] - 2026-07-19
+### Fixed
+- **All channels now show in the Web UI** — The addon read channels from `interface.localConfig.channel_settings`, which the radio frequently leaves empty, so the message dashboard only ever showed the "Primary" tab (until a message arrived on another channel, which created the tab via the message feed). Channels are now read from `interface.localNode.channels` (the `Channel` list the library populates for every slot during connect), filtering out disabled slots while always keeping the primary. Secondary channels (e.g. "LongFast") now appear immediately.
+
+## [0.2.26] - 2026-07-19
+### Fixed
+- **Track-in-HA toggle no longer 503s** — The Web UI's "Track in HA" toggle previously awaited a full coordinator refresh inside the addon-relayed HTTP request, which could exceed the ingress proxy timeout and return HTTP 503 even when the change succeeded. The refresh is now fire-and-forget; the request returns immediately.
+- **Message-replay flood guard** — After an addon restart (or a dedup-set reset) the integration could surface the entire message history as "new", flooding the logbook and device triggers. New messages are now keyed on a stable id/timestamp, and a poll that reports more than a handful of "new" messages is capped so only the most recent few are surfaced.
+- **`ignored_nodes` option now works** — The integration options-flow "Ignored Node IDs" setting was never applied on the HA side. It now stores normalised `!hex` ids and the coordinator filters those nodes (and their messages) on every poll, mirroring the addon's own filter.
+- **Async event-loop cleanup** — Replaced the deprecated `asyncio.get_event_loop()` (which raises on Python 3.12+) with `asyncio.get_running_loop()` in the addon's traceroute dispatch.
+- **Service cleanup on removal** — Integration-level service actions are now removed when the last config entry is unloaded, instead of leaking after the integration is removed.
+- **Shared JS helpers** — `escapeHtml` / `haversineKm` / `formatDistance` were de-duplicated into a single `web_ui/js/util.js` module used by both `app.js` and `map.js`.
+- Bumped quality scale to `silver` in the manifest.
+
+## [0.2.25] - 2026-07-19
+### Added
+- **Live channel refresh** — The addon now re-reads the node's channel configuration immediately after each (re)connection and on a 5-minute background loop, so the Web UI's channel list and conversation tabs stay in sync with the radio's actual channel settings without waiting for a config push.
+
+## [0.2.24] - 2026-07-17
+### Fixed
+- **Channel tabs now appear immediately** — The message dashboard only showed channel conversation tabs after a message arrived on each channel. Tabs are now seeded from the node's configured channel list on load, and show the real channel name (e.g. "LongFast") instead of a generic "Channel N" label.
+- **Short names in chat** — Received messages now show the sender's short name in the message window (addon records the short name; the UI also resolves it from the live node list, so even previously-saved messages display correctly).
+- **Logbook crash** — Fixed a `NameError: name 'entry' is not defined` that broke the mesh-message listener and logbook entries.
+- **Notify platform load crash** — Replaced the removed `hass.helpers.discovery.async_load_platform` call with the module-level `async_load_platform`, fixing `AttributeError` on newer Home Assistant versions.
+
 ## [0.2.23] - 2026-07-17
 ### Changed
 - Mobile-friendly addon UI: sidebar becomes a slide-in drawer with a hamburger toggle inside the HA mobile app, dashboard stacks into a scrollable single column with usable map/message heights, dynamic viewport height (`100dvh`) so it fits the ingress iframe, and safe-area insets for notched phones.

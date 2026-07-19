@@ -16,6 +16,7 @@
 import { fetchStatus, fetchNodes, fetchChannels, fetchMessages, sendMessage, requestTraceRoute, requestPosition, fetchTrackedNodes, trackNode } from './api.js';
 import { MapManager } from './map.js';
 import { ChartManager } from './charts.js';
+import { escapeHtml, haversineKm, formatDistance } from './util.js';
 
 // How often (ms) to poll the backend for fresh node/status/message data.
 // Matches the scan_interval default from config.json (30s) but we use a
@@ -105,22 +106,8 @@ function rssiToValueClass(rssi) {
   return 'poor';
 }
 
-// Great-circle distance (km) between two lat/lon points (haversine).
-function haversineKm(lat1, lon1, lat2, lon2) {
-  const R = 6371;
-  const toRad = (d) => (d * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a = Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
-function formatDistance(km) {
-  if (km == null || Number.isNaN(km)) return 'N/A';
-  if (km < 1) return `${Math.round(km * 1000)} m`;
-  return `${km.toFixed(2)} km`;
-}
+// Great-circle distance helpers (haversineKm, formatDistance) are imported
+// from ./util.js to avoid duplicating them in map.js and here.
 
 // Distance (km) from the self/local node to a given node, or null if either
 // side lacks a GPS fix. Used to sort the node list and grid by proximity.
@@ -445,6 +432,21 @@ function nodeName(nodeId) {
   return n ? (n.long_name || n.short_name || nodeId) : nodeId;
 }
 
+// Resolve a node's short name from the live node list — used for compact
+// sender labels in the message window. Falls back to null so callers can
+// chain to other name sources (e.g. the message's stored from_name).
+function shortNameFor(nodeId) {
+  if (!nodeId) return null;
+  // Normalise the id (strip a leading "!" and lowercase) so it matches the
+  // node list's id format even if the message packet formatted it differently.
+  const norm = String(nodeId).trim().toLowerCase().replace(/^!/, '');
+  const n = state.nodes.find(x => {
+    const id = String(x.id || '').trim().toLowerCase().replace(/^!/, '');
+    return id === norm;
+  });
+  return n && n.short_name ? n.short_name : null;
+}
+
 // Build the canonical conversation key + display name for a destination the
 // user is about to message. `destination` is a node ID (DM) or ""/null (the
 // active channel's broadcast).
@@ -454,7 +456,11 @@ function conversationForKey(key) {
     return { key, kind: 'dm', name: nodeName(nodeId), nodeId };
   }
   const ch = parseInt(key.slice(3), 10) || 0;
-  return { key, kind: 'channel', name: ch === 0 ? 'Primary' : `Channel ${ch}`, channel: ch };
+  // Use the channel's real name when known (from the node config), falling
+  // back to the generic Primary / Channel N labels.
+  const cfg = (state.channels || []).find(c => c && c.index === ch);
+  const name = cfg && cfg.name ? cfg.name : (ch === 0 ? 'Primary' : `Channel ${ch}`);
+  return { key, kind: 'channel', name, channel: ch };
 }
 
 function _ensureConversation(key) {
@@ -469,11 +475,16 @@ function renderConversationTabs() {
   const bar = document.getElementById('conversation-tabs');
   if (!bar) return;
 
-  // Always include the Primary channel; add any channel/DM seen in messages.
+  // Always include the Primary channel; add any channel/DM seen in messages,
+  // plus every configured channel from the node so the tabs appear immediately
+  // (not only after a message arrives on that channel).
   const keys = new Set(['ch:0']);
   for (const k of Object.keys(state.conversations)) keys.add(k);
   for (const k of Object.keys(state.messagesByConv)) {
     if (state.messagesByConv[k].length) keys.add(k);
+  }
+  for (const ch of (state.channels || [])) {
+    if (ch && ch.index != null) keys.add(`ch:${ch.index}`);
   }
 
   const ordered = [...keys].sort((a, b) => {
@@ -616,14 +627,24 @@ function renderMessageList() {
       }
     }
 
+    // Channel indicator - show channel name for DMs to indicate which channel was used
+    let channelHtml = '';
+    const conv = conversationForKey(state.activeConversation);
+    if (conv.kind === 'dm' && msg.channel != null) {
+      const ch = parseInt(msg.channel, 10) || 0;
+      const cfg = (state.channels || []).find(c => c && c.index === ch);
+      const chName = cfg && cfg.name ? cfg.name : (ch === 0 ? 'Primary' : `Ch ${ch}`);
+      channelHtml = `<span class="message-channel" title="Sent on channel ${ch}">${escapeHtml(chName)}</span>`;
+    }
+
     const sender = msg.outgoing
       ? 'Me'
-      : (msg.from_name || nodeName(msg.from_id) || 'Unknown');
+      : (shortNameFor(msg.from_id) || msg.from_name || nodeName(msg.from_id) || 'Unknown');
     bubble.innerHTML = `
       ${msg.outgoing ? '' : `<div class="message-sender">${escapeHtml(sender)}</div>`}
       <div class="message-text">${escapeHtml(msg.text)}</div>
       <div class="message-meta">
-        <span class="message-time">${time}</span>${statusHtml}
+        <span class="message-time">${time}</span>${channelHtml}${statusHtml}
       </div>`;
 
     // Click a failed message to retry sending it.
@@ -872,6 +893,9 @@ async function pollData() {
     const chans = Array.isArray(channelsResult.value) ? channelsResult.value : [];
     state.channels = chans;
     renderChannelSelect();
+    // Channel tabs must re-render once the channel list is known so they
+    // appear immediately (not only after a message arrives on each channel).
+    renderConversationTabs();
   } else {
     console.warn('Channels fetch failed:', channelsResult.reason);
   }
@@ -911,6 +935,9 @@ function renderIncomingMessages(messages) {
     // Only repaint the list if we're looking at the affected (or a) thread.
     renderMessageList();
   }
+  // Always refresh the tab bar so channel/DM tabs reflect the latest known
+  // conversations and channel list (e.g. after channels load post-messages).
+  renderConversationTabs();
 }
 
 // ============================================================================
@@ -1014,15 +1041,8 @@ async function init() {
 }
 
 // ============================================================================
-// Utility: HTML escape (shared with map.js concept — repeated here for module isolation)
+// Utility: HTML escape is imported from ./util.js (shared with map.js).
 // ============================================================================
-function escapeHtml(str) {
-  return String(str ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
 
 // Start the app when the DOM is ready.
 document.addEventListener('DOMContentLoaded', init);

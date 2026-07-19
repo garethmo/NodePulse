@@ -13,7 +13,7 @@ We also implement OptionsFlowHandler so the user can change the scan interval
 after initial setup without removing and re-adding the integration.
 """
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import aiohttp
 import voluptuous as vol
@@ -120,6 +120,25 @@ def _host_candidates(host: str) -> list:
     return candidates
 
 
+def _normalise_node_ids(raw: str) -> List[str]:
+    """Parse a comma-separated node-id string into a clean, canonical list.
+
+    Accepts ``!abc1234``, ``abc1234``, or mixed case; each entry is stripped,
+    lowercased, and given a leading ``!`` so the coordinator can match against
+    the addon's ``!xxxxxxxx`` node ids by direct membership. Blank/whitespace
+    entries are dropped.
+    """
+    out: List[str] = []
+    for part in (raw or "").split(","):
+        s = part.strip().lower()
+        if not s:
+            continue
+        s = s[1:] if s.startswith("!") else s
+        if s:
+            out.append("!" + s)
+    return out
+
+
 class NodePulseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle the NodePulse integration setup flow."""
 
@@ -181,7 +200,15 @@ class NodePulseOptionsFlow(config_entries.OptionsFlow):
         self, user_input: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            # Normalise the comma-separated ignored_nodes string into a clean
+            # list (stripped, canonical "!hex" form) so the coordinator can
+            # filter by direct membership rather than re-parsing a string.
+            raw_ignored = (user_input.get(CONF_IGNORED_NODES) or "").strip()
+            ignored = _normalise_node_ids(raw_ignored)
+            return self.async_create_entry(
+                title="",
+                data={**user_input, CONF_IGNORED_NODES: ignored},
+            )
 
         # Pre-populate the form with the current option values.
         current_ignored = ", ".join(

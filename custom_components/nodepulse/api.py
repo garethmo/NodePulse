@@ -58,7 +58,16 @@ class NodePulseTrackView(HomeAssistantView):
 
     url = "/api/nodepulse/track"
     name = "api:nodepulse_track"
-    requires_auth = False  # Only reachable from the HA host (addon container).
+    # SECURITY NOTE — requires_auth = False:
+    # These relay endpoints are only ever called by the NodePulse addon
+    # container over the supervisor network (homeassistant:8123 / localhost),
+    # never by untrusted browsers — the addon Web UI reaches them indirectly
+    # through the addon's own authenticated ingress proxy. We intentionally
+    # disable HA auth here because the addon container has no HA user/session
+    # to authenticate with, and the standard addon<->core relay pattern relies
+    # on the network boundary (addon <-> HA core only) for trust. Do NOT expose
+    # HA core's port 8123 to untrusted networks, or these endpoints become
+    # reachable without authentication.
 
     async def post(self, request: web.Request) -> web.Response:
         hass: HomeAssistant = request.app["hass"]
@@ -106,8 +115,16 @@ class NodePulseTrackView(HomeAssistantView):
                 # device trackers weren't created because GPS data wasn't available yet.
                 # Use async_refresh() (not async_config_entry_first_refresh()) because
                 # the entry is already LOADED here.
-                await coordinator.async_refresh()
-                logger.debug("Coordinator refresh completed after tracking change")
+                #
+                # IMPORTANT: fire-and-forget. This view is reached by the addon Web UI
+                # through the HA ingress proxy, which has a request timeout. A full
+                # refresh does 4 sequential GETs against the addon and can block for
+                # many seconds (e.g. while probing a dead working-host candidate),
+                # causing the proxy to return HTTP 503 even though the change already
+                # succeeded. We return 200 immediately and let the refresh run in the
+                # background — discovery picks up the new entities on the next poll.
+                hass.async_create_task(coordinator.async_refresh())
+                logger.debug("Scheduled background coordinator refresh after tracking change")
         except Exception as exc:  # defensive: never return a non-JSON error
             logger.exception(
                 "Track request failed while updating coordinator for %s: %s",
@@ -128,6 +145,7 @@ class NodePulseTrackedNodesView(HomeAssistantView):
 
     url = "/api/nodepulse/tracked-nodes"
     name = "api:nodepulse_tracked_nodes"
+    # See NodePulseTrackView for the security rationale behind requires_auth=False.
     requires_auth = False
 
     async def get(self, request: web.Request) -> web.Response:

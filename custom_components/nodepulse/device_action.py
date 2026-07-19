@@ -120,12 +120,3 @@ async def async_call_action_from_config(
 def async_validate_action_config(config: ConfigType) -> ConfigType:
     """Validate an action configuration against the schema."""
     return ACTION_SCHEMA(config)
-
-
-def _coordinator_for(hass: HomeAssistant) -> NodePulseCoordinator | None:
-    data = hass.data.get(DOMAIN)
-    if not data:
-        return None
-    for coordinator in data.values():
-        return coordinator
-    return None

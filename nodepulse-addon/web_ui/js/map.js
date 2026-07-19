@@ -9,6 +9,8 @@
  * without any API key requirement.
  */
 
+import { escapeHtml, haversineKm, formatDistance } from './util.js';
+
 // Tile layer URL — dark CartoDB "Dark Matter" tiles, no API key needed.
 const TILE_URL = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
 const TILE_ATTRIBUTION = '&copy; <a href="https://carto.com">CARTO</a>';
@@ -39,27 +41,6 @@ const SELF_ICON = L.divIcon({
   iconAnchor: [8, 8],
   popupAnchor: [0, -10],
 });
-
-/**
- * Great-circle distance between two lat/lon points in kilometres (haversine).
- */
-function haversineKm(lat1, lon1, lat2, lon2) {
-  const R = 6371;
-  const toRad = (d) => (d * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
-/** Human-friendly distance string from a kilometres value. */
-function formatDistance(km) {
-  if (km == null || Number.isNaN(km)) return '—';
-  if (km < 1) return `${Math.round(km * 1000)} m`;
-  return `${km.toFixed(2)} km`;
-}
 
 // Default map view — Durban, South Africa (the user's local mesh region).
 const DEFAULT_CENTER = [-29.8587, 31.0218];
@@ -151,6 +132,7 @@ export class MapManager {
     this._peerLinksVisible = true;  // node <-> node proximity links
     this._tracesVisible = true;     // discovered traceroute paths
     this._namesVisible = true;      // permanent node-name labels
+    this._centeredOnSelf = false;    // one-time auto-centre on the connected node
   }
 
   /**
@@ -212,7 +194,29 @@ export class MapManager {
    * node to every other GPS-fixed node, with a distance label.
    */
   setSelfNode(id) {
+    // Reset the one-time auto-centre flag when the self node changes so the
+    // map re-centres on the (new) connected node.
+    if (id !== this._selfId) this._centeredOnSelf = false;
     this._selfId = id;
+  }
+
+  /**
+   * Centre the map on the connected (self) node once it has a GPS fix.
+   * Called on the first data load so the user starts focused on their own
+   * gateway rather than a hardcoded default location. Subsequent updates keep
+   * the user's manual pan/zoom unless they haven't moved from the default.
+   */
+  centerOnSelf() {
+    if (!this._map || !this._selfId) return;
+    const marker = this._markers.get(this._selfId);
+    if (!marker) return;
+    const ll = marker.getLatLng();
+    if (!ll || (ll.lat === 0 && ll.lng === 0)) return;
+    // Only auto-centre once, so we don't yank the view away while the user is
+    // exploring. Reset _centeredOnSelf=false to re-trigger after a reload.
+    if (this._centeredOnSelf) return;
+    this._centeredOnSelf = true;
+    this._map.setView(ll, Math.max(this._map.getZoom() || 10, 12));
   }
 
   /**
@@ -298,6 +302,9 @@ export class MapManager {
 
     // Redraw the link lines from the self node to every other GPS-fixed node.
     this._updateLinks();
+
+    // Focus the map on the connected node once it has a GPS fix.
+    this.centerOnSelf();
   }
 
   /**
@@ -513,15 +520,4 @@ export class MapManager {
         </table>
       </div>`;
   }
-}
-
-/** Escape HTML special chars to prevent XSS in popup content. */
-function escapeHtml(str) {
-  // Coerce null/undefined to '' so we never render the literal string "null"
-  // in popup tables when a node property is missing.
-  return String(str ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
 }

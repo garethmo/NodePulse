@@ -25,11 +25,11 @@ NodePulse is a Home Assistant addon and custom integration that gives you deep v
 |---|---|
 | 🟢 **Connection Status** | Binary sensor — know immediately if your mesh link drops |
 | 📡 **Node Count** | Live count of all visible mesh nodes |
-| 📶 **Per-Node Metrics** | SNR, RSSI, hops away, battery level, last heard — one HA device per node |
+| 📶 **Per-Node Metrics** | SNR, hops away, battery level, last heard — one HA device per node (RSSI is reported by the firmware as "Not provided" where unavailable) |
 | 🗺️ **GPS Mapping** | Device trackers plotted on the native HA map card |
-| 💬 **Messaging** | Send broadcast or DM messages via the Web UI |
-| 🔍 **Traceroute** | Dispatch traceroutes to any node from the Web UI |
-| 🖥️ **Web UI Dashboard** | Full-featured dashboard served via HA Ingress (no port forwarding) |
+| 💬 **Messaging** | Send broadcast or DM messages via the Web UI; channel tabs appear immediately with real channel names, and the chat shows each sender's short name |
+| 🔍 **Traceroute** | Dispatch traceroutes to any node from the Web UI (fire-and-forget — results appear on the next poll) |
+| 🖥️ **Web UI Dashboard** | Full-featured dashboard served via HA Ingress, now mobile-friendly (slide-in nav drawer, responsive layout) |
 | 📨 **Notify Platform** | `notify.mesh_<entry>` entity — send mesh messages from any automation/script, plus one `notify.mesh_<entry>_channel_<name>` entity per configured channel |
 | ⚡ **Service Actions** | `nodepulse.send_message`, `nodepulse.request_position`, `nodepulse.trace_route` |
 | 🤖 **Device Triggers & Actions** | Automate on message received/sent (and `channel_message.received`); send message / request position / trace route per node device |
@@ -272,11 +272,17 @@ The integration runs **inside Home Assistant core** and must reach the addon
 over the supervisor network. `localhost:8099` from the integration means HA
 itself, not the addon container.
 
-1. The integration uses auto-discovery. You can leave the host field as the default value (`http://a0d7b954-nodepulse:8099`) or blank, and it will automatically try known local variations like `http://local_nodepulse_addon:8099`.
+1. The integration uses auto-discovery. You can leave the host field as the default value (`http://a0d7b954-nodepulse:8099`) or blank, and it will automatically try known supervisor DNS names (`addon_nodepulse`, `local-nodepulse`, `nodepulse`, etc.) plus the port variations.
 2. Do **not** use `http://localhost:8099` or the ingress `https://<ha>/api/hassio_ingress/...` URL — the integration is a Python client, not a browser, and cannot use the ingress proxy.
-3. Confirm the addon shows `connected: true` in its own log (Settings →
+3. During setup the integration probes every candidate and **persists the exact host that responded**, so the runtime coordinator always reconnects to the same reachable address (no more "No NodePulse addon host was reachable" errors). If you set up an older version, re-run the integration setup (or re-add the entry) to store the corrected host.
+4. Confirm the addon shows `connected: true` in its own log (Settings →
    Add-ons → NodePulse → Log) before adding the integration. The integration's
    connectivity test only passes when the addon is already linked to a node.
+
+### Compatibility notes
+
+- **Home Assistant version** — NodePulse targets current HA releases. Recent builds removed the deprecated `hass.helpers` shortcut and switched to the module-level `async_load_platform`, so make sure you are on **0.2.24 or later** if you hit `AttributeError: 'HomeAssistant' object has no attribute 'helpers'` during setup.
+- **Logbook errors** — If you see a `NameError: name 'entry' is not defined` in the logs, update to 0.2.24+, which fixes the mesh-message listener that writes logbook entries.
 
 ---
 

@@ -2,6 +2,23 @@
 
 All notable changes to NodePulse are documented here.
 
+## [0.2.27] - 2026-07-19
+### Fixed
+- Channel list now sourced from `interface.localNode.channels` instead of `interface.localConfig.channel_settings` (which is often empty). The Web UI's channel tabs now show every active channel (Primary + secondaries) on load instead of only the Primary tab until a message arrives on another channel.
+
+## [0.2.26] - 2026-07-19
+### Changed
+- Bumped in lockstep with the integration (0.2.26): the "Track in HA" relay now returns immediately and lets HA refresh in the background, and the addon's traceroute dispatch uses `asyncio.get_running_loop()` instead of the deprecated `get_event_loop()`.
+- Shared Web UI helpers (`escapeHtml` / `haversineKm` / `formatDistance`) moved into `web_ui/js/util.js` to remove duplication between `app.js` and `map.js`.
+
+## [0.2.25] - 2026-07-19
+### Added
+- Live channel refresh: re-reads the node's channel config immediately after each (re)connection and on a 5-minute background loop, keeping the Web UI channel list/tabs in sync with the radio.
+
+## [0.2.24] - 2026-07-17
+### Changed
+- Bumped in lockstep with the integration (0.2.24); includes the short-name-in-chat fix and the immediate channel-tab seeding on the message dashboard.
+
 ## [0.2.23] - 2026-07-17
 ### Changed
 - Mobile-friendly Web UI: slide-in navigation drawer, stacked responsive dashboard, and dynamic viewport height so the panel renders correctly inside the Home Assistant mobile app's ingress view.
