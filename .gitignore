@@ -29,3 +29,4 @@ Thumbs.db
 # Home Assistant specific
 *.pyc
 DEVELOPMENT_PLAN.md
+ROADMAP.md

@@ -37,6 +37,8 @@ _MESSAGES_FILE = os.path.join(_DATA_DIR, "messages.json")
 _TRACEROUTES_FILE = os.path.join(_DATA_DIR, "traceroutes.json")
 _CHANNELS_FILE = os.path.join(_DATA_DIR, "channels.json")
 _NODES_FILE = os.path.join(_DATA_DIR, "nodes.json")
+_TAGS_FILE = os.path.join(_DATA_DIR, "tags.json")
+_POSITION_HISTORY_FILE = os.path.join(_DATA_DIR, "position_history.json")
 logger = logging.getLogger(__name__)
 
 # A canonical Meshtastic node ID is a "!" followed by the node number in hex.
@@ -44,6 +46,9 @@ logger = logging.getLogger(__name__)
 # used to validate destinations supplied by the Web UI before we hand them to
 # the meshtastic library.
 _NODE_ID_RE = re.compile(r"^![0-9a-fA-F]{1,8}$")
+
+# Max position history entries to keep per node (oldest dropped when exceeded).
+_POS_HISTORY_MAX = 200
 
 # Minimum delay (seconds) between traceroute persistence flushes, so a burst of
 # traceroute replies cannot spawn a save thread on every single capture.
@@ -174,18 +179,16 @@ class MeshtasticConnection:
         # Restore any previously-persisted messages so history survives restarts.
         self._load_messages()
 
+        # Monotonic message counter for dedup-safe ID generation.
+        # Incremented under _msg_lock alongside the deque append; guaranteed
+        # unique even when two messages arrive on the same millisecond tick.
+        self._msg_counter = 0
+
         # Persisted traceroute results, keyed by node ID. Restored on startup so
         # discovered routes survive restarts; refreshed whenever a new traceroute
         # for that node completes.
         self._traceroutes: Dict[str, Dict[str, Any]] = {}
         self._load_traceroutes()
-
-        # Mutable cache of the last node list we read from the interface. The
-        # meshtastic library updates interface.nodes asynchronously (e.g. when a
-        # traceroute/position response arrives); keeping our own snapshot lets us
-        # merge those late updates so /api/nodes reflects them on the next poll.
-        self._nodes_lock = threading.Lock()
-        self._nodes: List[Dict[str, Any]] = []
 
         # Mutable cache of the channel configuration. Fetched during connection
         # handshake so all channels are immediately available in the UI, even
@@ -193,6 +196,17 @@ class MeshtasticConnection:
         self._channels_lock = threading.Lock()
         self._channels: List[Dict[str, Any]] = []
         self._load_channels()
+
+        # Persisted user-defined tags per node ID. Simple dict: node_id -> [tag strings].
+        self._tags_lock = threading.Lock()
+        self._tags: Dict[str, List[str]] = {}
+        self._load_tags()
+
+        # Position history per node: node_id -> [{lat, lng, alt, timestamp}, ...]
+        # Capped at _POS_HISTORY_MAX entries per node.
+        self._pos_hist_lock = threading.Lock()
+        self._pos_history: Dict[str, List[Dict[str, Any]]] = {}
+        self._load_position_history()
 
         # Persisted node list. The radio only keeps a bounded node DB (often
         # ~250 entries); once it is full, the oldest heard nodes drop out of
@@ -384,6 +398,18 @@ class MeshtasticConnection:
     async def get_messages(self) -> List[Dict[str, Any]]:
         """Return the most recent received text messages (oldest first)."""
         return await asyncio.to_thread(self._get_messages_sync)
+
+    async def get_tags(self) -> Dict[str, List[str]]:
+        """Return the full tags dict: node_id -> list of tag strings."""
+        return await asyncio.to_thread(self._get_tags_sync)
+
+    async def set_tags(self, node_id: str, tags: List[str]) -> Dict[str, List[str]]:
+        """Set the tags for a single node and persist. Returns the full tags dict."""
+        return await asyncio.to_thread(self._set_tags_sync, node_id, tags)
+
+    async def get_position_history(self, node_id: Optional[str] = None) -> Dict[str, List[Dict]]:
+        """Return position history. If node_id is given, return only that node's trail."""
+        return await asyncio.to_thread(self._get_position_history_sync, node_id)
 
     async def monitor_connection(self) -> None:
         """
@@ -625,7 +651,7 @@ class MeshtasticConnection:
             except Exception as exc:  # pragma: no cover - defensive
                 logger.debug("fetchNodeDB() failed (ignored): %s", exc)
 
-        # 4) Probe our own node info — this forces the radio to respond with a
+        # 3) Probe our own node info — this forces the radio to respond with a
         #    NodeInfo packet, kick-starting the node-DB sync.
         for meth in ("getMyNodeInfo", "getNode"):
             fn = getattr(iface, meth, None)
@@ -685,6 +711,11 @@ class MeshtasticConnection:
         try:
             decoded = packet.get("decoded", {}) or {}
             portnum = decoded.get("portnum")
+
+            # --- Neighbor info -------------------------------------------
+            if portnum == "NEIGHBORINFO_APP":
+                self._capture_neighborinfo(packet)
+                return
 
             # --- Traceroute replies -------------------------------------
             if portnum == "TRACEROUTE_APP":
@@ -746,7 +777,6 @@ class MeshtasticConnection:
                 conversation = f"ch:{channel}"
 
             entry = {
-                "id": f"{from_id or 'unknown'}-{channel}-{int(time.time() * 1000)}-{len(self._messages)}",
                 "from_id": from_id,
                 "to_id": to_id,
                 "from_name": name or from_id or "Unknown",
@@ -760,6 +790,8 @@ class MeshtasticConnection:
                 "timestamp": int(time.time()),
             }
             with self._msg_lock:
+                entry["id"] = f"{from_id or 'unknown'}-{channel}-{self._msg_counter}"
+                self._msg_counter += 1
                 self._messages.append(entry)
             # Persistence is offloaded to a short-lived daemon thread so we
             # never block the meshtastic receive thread (and never interleave
@@ -767,6 +799,105 @@ class MeshtasticConnection:
             self._schedule_save(self._messages, _MESSAGES_FILE)
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("Error handling received packet (ignored): %s", exc)
+
+    def _load_tags(self) -> None:
+        """Restore persisted node tags (best-effort)."""
+        try:
+            if not os.path.exists(_TAGS_FILE):
+                return
+            with self._persist_lock:
+                with open(_TAGS_FILE, "r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+            if isinstance(data, dict):
+                with self._tags_lock:
+                    self._tags = {str(k): v for k, v in data.items()}
+                logger.info("Restored %s tagged nodes from %s", len(self._tags), _TAGS_FILE)
+        except Exception as exc:
+            logger.debug("Could not load persisted tags (ignored): %s", exc)
+
+    def _save_tags(self) -> None:
+        """Persist the tags dict to disk (best-effort)."""
+        try:
+            os.makedirs(_DATA_DIR, exist_ok=True)
+            with self._tags_lock:
+                snapshot = dict(self._tags)
+            with self._persist_lock:
+                with open(_TAGS_FILE, "w", encoding="utf-8") as fh:
+                    json.dump(snapshot, fh)
+        except Exception as exc:
+            logger.debug("Could not persist tags (ignored): %s", exc)
+
+    def _get_tags_sync(self) -> Dict[str, List[str]]:
+        with self._tags_lock:
+            return dict(self._tags)
+
+    def _set_tags_sync(self, node_id: str, tags: List[str]) -> Dict[str, List[str]]:
+        if not isinstance(tags, list):
+            raise ValueError("tags must be a list of strings")
+        clean = [t.strip() for t in tags if t.strip()]
+        with self._tags_lock:
+            if clean:
+                self._tags[node_id] = clean
+            else:
+                self._tags.pop(node_id, None)
+            result = dict(self._tags)
+        self._save_tags()
+        return result
+
+    def _load_position_history(self) -> None:
+        """Restore persisted position history (best-effort)."""
+        try:
+            if not os.path.exists(_POSITION_HISTORY_FILE):
+                return
+            with self._persist_lock:
+                with open(_POSITION_HISTORY_FILE, "r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+            if isinstance(data, dict):
+                with self._pos_hist_lock:
+                    self._pos_history = {}
+                    for k, v in data.items():
+                        if isinstance(v, list):
+                            self._pos_history[str(k)] = v[-_POS_HISTORY_MAX:]
+                logger.info(
+                    "Restored position history for %s nodes from %s",
+                    len(self._pos_history), _POSITION_HISTORY_FILE,
+                )
+        except Exception as exc:
+            logger.debug("Could not load persisted position history (ignored): %s", exc)
+
+    def _save_position_history(self) -> None:
+        """Persist the position history dict to disk (best-effort)."""
+        try:
+            os.makedirs(_DATA_DIR, exist_ok=True)
+            with self._pos_hist_lock:
+                snapshot = dict(self._pos_history)
+            with self._persist_lock:
+                with open(_POSITION_HISTORY_FILE, "w", encoding="utf-8") as fh:
+                    json.dump(snapshot, fh)
+        except Exception as exc:
+            logger.debug("Could not persist position history (ignored): %s", exc)
+
+    def _record_position(self, node_id: str, lat: float, lng: float, alt: Optional[float] = None) -> None:
+        """Append a position fix to a node's trail, capping at _POS_HISTORY_MAX."""
+        if node_id is None or lat is None or lng is None:
+            return
+        entry = {"lat": lat, "lng": lng, "timestamp": int(time.time())}
+        if alt is not None:
+            entry["alt"] = alt
+        with self._pos_hist_lock:
+            trail = self._pos_history.get(node_id, [])
+            trail.append(entry)
+            # Keep only the most recent N entries.
+            if len(trail) > _POS_HISTORY_MAX:
+                trail = trail[-_POS_HISTORY_MAX:]
+            self._pos_history[node_id] = trail
+
+    def _get_position_history_sync(self, node_id: Optional[str] = None) -> Dict[str, List[Dict]]:
+        with self._pos_hist_lock:
+            if node_id:
+                trail = self._pos_history.get(node_id, [])
+                return {node_id: list(trail)}
+            return {k: list(v) for k, v in self._pos_history.items()}
 
     def _load_messages(self) -> None:
         """Restore the message buffer from disk so history survives restarts.
@@ -892,7 +1023,6 @@ class MeshtasticConnection:
                 with self._nodes_lock:
                     for n in data:
                         if isinstance(n, dict) and n.get("id"):
-                            n["stale"] = True
                             self._nodes.append(n)
                 logger.info(
                     "Restored %s persisted nodes from %s",
@@ -901,24 +1031,31 @@ class MeshtasticConnection:
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("Could not load persisted nodes (ignored): %s", exc)
 
-    def _save_nodes(self) -> None:
+    def _save_nodes(self, *, _is_scheduled: bool = False) -> None:
         """Persist the full node list to disk so evicted nodes survive.
 
         Offloaded to a daemon thread (like traceroutes) and debounced so a
         burst of node updates cannot spawn a save per change; the latest state
         within the debounce window is flushed shortly after the storm settles.
+
+        The ``_is_scheduled`` parameter is an internal sentinel: when True the
+        call comes from a previously-scheduled Timer — debouncing has already
+        elapsed so we flush immediately without re-debouncing.
         """
         try:
             now = time.time()
             with self._nodes_lock:
                 if (
-                    _NODE_SAVE_DEBOUNCE > 0
+                    not _is_scheduled
+                    and _NODE_SAVE_DEBOUNCE > 0
                     and now - self._last_node_save < _NODE_SAVE_DEBOUNCE
                 ):
                     if not self._pending_node_save:
                         self._pending_node_save = True
                         threading.Timer(
-                            _NODE_SAVE_DEBOUNCE, self._save_nodes
+                            _NODE_SAVE_DEBOUNCE,
+                            self._save_nodes,
+                            kwargs={"_is_scheduled": True},
                         ).start()
                     return
                 self._last_node_save = now
@@ -931,7 +1068,7 @@ class MeshtasticConnection:
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("Could not schedule node save (ignored): %s", exc)
 
-    def _save_traceroutes(self) -> None:
+    def _save_traceroutes(self, *, _is_scheduled: bool = False) -> None:
         """Persist the current traceroute results to disk (best-effort).
 
         Offloaded to a daemon thread so the meshtastic receive thread is never
@@ -939,6 +1076,10 @@ class MeshtasticConnection:
         burst of traceroute replies cannot spawn a save thread per capture;
         the most recent result within the debounce window is flushed shortly
         after the storm settles.
+
+        The ``_is_scheduled`` parameter is an internal sentinel: when True the
+        call comes from a previously-scheduled Timer — debouncing has already
+        elapsed so we flush immediately without re-debouncing.
         """
         try:
             now = time.time()
@@ -948,13 +1089,16 @@ class MeshtasticConnection:
                 # persisted once the burst settles. A negative delta disables
                 # debouncing entirely (save on every call).
                 if (
-                    _TRACEROUTE_SAVE_DEBOUNCE > 0
+                    not _is_scheduled
+                    and _TRACEROUTE_SAVE_DEBOUNCE > 0
                     and now - self._last_traceroute_save < _TRACEROUTE_SAVE_DEBOUNCE
                 ):
                     if not self._pending_traceroute_save:
                         self._pending_traceroute_save = True
                         threading.Timer(
-                            _TRACEROUTE_SAVE_DEBOUNCE, self._save_traceroutes
+                            _TRACEROUTE_SAVE_DEBOUNCE,
+                            self._save_traceroutes,
+                            kwargs={"_is_scheduled": True},
                         ).start()
                     return
                 self._last_traceroute_save = now
@@ -1083,6 +1227,13 @@ class MeshtasticConnection:
                 from_id, lat, lng, alt,
             )
 
+            # Record this fix in position history.
+            if lat is not None and lng is not None:
+                self._record_position(from_id, lat, lng, alt)
+                # Persist asynchronously on a daemon thread.
+                t = threading.Thread(target=self._save_position_history, daemon=True)
+                t.start()
+
             with self._nodes_lock:
                 node = next(
                     (n for n in self._nodes if n.get("id") == from_id), None
@@ -1099,6 +1250,52 @@ class MeshtasticConnection:
                     node["last_heard"] = int(time.time())
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("Error capturing position (ignored): %s", exc)
+
+    def _capture_neighborinfo(self, packet: Dict[str, Any]) -> None:
+        """
+        Capture a NEIGHBORINFO_APP packet and attach the neighbor list to
+        the broadcasting node in our cache so the UI can display per-peer SNR.
+
+        The meshtastic library does NOT store neighbor info anywhere we can
+        read, so we must capture it from the raw protobuf payload ourselves.
+        """
+        try:
+            from meshtastic.protobuf.mesh_pb2 import NeighborInfo
+            decoded = packet.get("decoded", {}) or {}
+            payload = decoded.get("payload")
+            if not payload:
+                return
+            ni = NeighborInfo()
+            ni.ParseFromString(payload)
+
+            node_id_num = ni.node_id or packet.get("from")
+            node_id = _node_id_from_num(node_id_num)
+            if not node_id:
+                return
+
+            neighbors = []
+            for nb in ni.neighbors:
+                nid = _node_id_from_num(nb.node_id)
+                if nid:
+                    neighbors.append({
+                        "id": nid,
+                        "snr": round(nb.snr, 1) if hasattr(nb, 'snr') else None,
+                    })
+
+            logger.debug(
+                "Neighbor info for %s: %d neighbors",
+                node_id, len(neighbors),
+            )
+
+            with self._nodes_lock:
+                node = next(
+                    (n for n in self._nodes if n.get("id") == node_id), None
+                )
+                if node is not None:
+                    node["neighbors"] = neighbors
+                    node["neighbor_info_updated"] = int(time.time())
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Error capturing neighbor info (ignored): %s", exc)
 
     def _get_messages_sync(self) -> List[Dict[str, Any]]:
         with self._msg_lock:
@@ -1323,6 +1520,18 @@ class MeshtasticConnection:
 
             self._nodes = list(cached.values())
 
+        # Inject extra fields from other caches into each node.
+        with self._tags_lock:
+            tags_snapshot = dict(self._tags)
+        with self._pos_hist_lock:
+            pos_hist_snapshot = {k: len(v) for k, v in self._pos_history.items()}
+        for node in result:
+            nid = node.get("id")
+            if nid and nid in tags_snapshot:
+                node["tags"] = tags_snapshot[nid]
+            if nid and nid in pos_hist_snapshot:
+                node["position_fix_count"] = pos_hist_snapshot[nid]
+
         # Persist the merged list so evicted nodes survive restarts and the
         # next reconnect. Best-effort and debounced/off-thread.
         self._save_nodes()
@@ -1451,63 +1660,68 @@ class MeshtasticConnection:
     def _send_message_sync(
         self, text: str, destination: Optional[str], channel: int
     ) -> bool:
+        # Take a snapshot of the interface under the lock, then release it
+        # BEFORE calling sendText. Holding _lock during sendText (which does
+        # blocking radio I/O) would stall every other thread (get_nodes, health
+        # probe, etc.) — mirroring the pattern used by _connect_sync,
+        # _request_traceroute_sync, and _request_position_sync.
         with self._lock:
             if not self._connected or self._interface is None:
                 logger.error("Cannot send message — not connected")
                 return False
-            # Resolve the local/self node id so outgoing messages can be tagged
-            # with the correct direction and conversation thread.
-            self_num = getattr(getattr(self._interface, "myInfo", None), "my_node_num", None)
+            iface = self._interface
+            self_num = getattr(getattr(iface, "myInfo", None), "my_node_num", None)
             self_id = ("!" + format(self_num, "08x")) if self_num is not None else None
 
-            to_num = None
-            if destination and destination != meshtastic.BROADCAST_ADDR:
-                try:
-                    to_num = int(destination.replace("!", ""), 16)
-                except (ValueError, AttributeError):
-                    to_num = None
-            to_id = ("!" + format(to_num, "08x")) if to_num is not None else None
-
-            is_dm = to_id is not None
-            if is_dm:
-                other = to_id if to_id != self_id else None
-                conversation = f"dm:{other or 'unknown'}"
-            else:
-                conversation = f"ch:{channel}"
-
+        to_num = None
+        if destination and destination != meshtastic.BROADCAST_ADDR:
             try:
-                # sendText handles both broadcast (destinationId=None or BROADCAST)
-                # and unicast DMs. The meshtastic library manages PKI encryption
-                # automatically for DMs when a shared key is configured on the channel.
-                self._interface.sendText(
-                    text,
-                    destinationId=destination or meshtastic.BROADCAST_ADDR,
-                    channelIndex=channel,
-                )
+                to_num = int(destination.replace("!", ""), 16)
+            except (ValueError, AttributeError):
+                to_num = None
+        to_id = ("!" + format(to_num, "08x")) if to_num is not None else None
 
-                entry = {
-                    "id": f"{self_id or 'unknown'}-{channel}-{int(time.time() * 1000)}-sent",
-                    "from_id": self_id,
-                    "to_id": to_id,
-                    "from_name": "You",
-                    "text": text,
-                    "channel": channel,
-                    "conversation": conversation,
-                    "is_dm": is_dm,
-                    "outgoing": True,
-                    "rx_snr": None,
-                    "rx_rssi": None,
-                    "timestamp": int(time.time()),
-                }
-                with self._msg_lock:
-                    self._messages.append(entry)
-                self._schedule_save(self._messages, _MESSAGES_FILE)
-                return True
-            except Exception as exc:
-                logger.error(
-                    "Failed to send message (destination=%s): %s", destination, exc
-                )
-                return False
+        is_dm = to_id is not None
+        if is_dm:
+            other = to_id if to_id != self_id else None
+            conversation = f"dm:{other or 'unknown'}"
+        else:
+            conversation = f"ch:{channel}"
+
+        try:
+            # sendText handles both broadcast (destinationId=None or BROADCAST)
+            # and unicast DMs. The meshtastic library manages PKI encryption
+            # automatically for DMs when a shared key is configured on the channel.
+            iface.sendText(
+                text,
+                destinationId=destination or meshtastic.BROADCAST_ADDR,
+                channelIndex=channel,
+            )
+
+            entry = {
+                "from_id": self_id,
+                "to_id": to_id,
+                "from_name": "You",
+                "text": text,
+                "channel": channel,
+                "conversation": conversation,
+                "is_dm": is_dm,
+                "outgoing": True,
+                "rx_snr": None,
+                "rx_rssi": None,
+                "timestamp": int(time.time()),
+            }
+            with self._msg_lock:
+                entry["id"] = f"{self_id or 'unknown'}-{channel}-{self._msg_counter}"
+                self._msg_counter += 1
+                self._messages.append(entry)
+            self._schedule_save(self._messages, _MESSAGES_FILE)
+            return True
+        except Exception as exc:
+            logger.error(
+                "Failed to send message (destination=%s): %s", destination, exc
+            )
+            return False
 
     def _request_traceroute_sync(self, destination: str) -> bool:
         # Take a snapshot of the interface under the lock, then release it
@@ -1574,12 +1788,52 @@ class MeshtasticConnection:
         traceroute/position response arrives. The next ``_get_nodes_sync`` call
         already re-merges everything, but calling this ensures the freshly
         returned data is reflected on the immediate next poll.
+
+        We selectively merge only our normalized flat fields — never do a
+        blind ``dict.update`` with the raw protobuf-derived node because it
+        carries untransformed nested keys (``user``, ``position``, etc.) that
+        would corrupt the flat cache.
         """
         if self._interface is None or not node_id:
             return
         lib_node = self._interface.nodes.get(node_id)
         if lib_node is None:
             return
+
+        user = lib_node.get("user", {})
+        position = lib_node.get("position", {})
+        device_metrics = lib_node.get("deviceMetrics", {})
+        environment = lib_node.get("environmentMetrics", {}) or {}
+
+        long_name = user.get("longName", "")
+        short_name = user.get("shortName", "")
+        if not short_name and long_name:
+            short_name = long_name[:8]
+
+        patch = {
+            "long_name": long_name,
+            "short_name": short_name,
+            "hw_model": user.get("hwModel", ""),
+            "last_heard": lib_node.get("lastHeard"),
+            "snr": lib_node.get("snr"),
+            "rssi": lib_node.get("rssi"),
+            "hops_away": lib_node.get("hopsAway"),
+            "is_licensed": user.get("isLicensed", False),
+            "latitude": position.get("latitude"),
+            "longitude": position.get("longitude"),
+            "altitude": position.get("altitude"),
+            "battery_level": device_metrics.get("batteryLevel"),
+            "voltage": device_metrics.get("voltage"),
+            "channel_utilization": device_metrics.get("channelUtilization"),
+            "air_util_tx": device_metrics.get("airUtilTx"),
+            "uptime": device_metrics.get("uptimeSeconds"),
+            "temperature": environment.get("temperature"),
+            "relative_humidity": environment.get("relativeHumidity"),
+            "barometric_pressure": environment.get("barometricPressure"),
+            "gas_resistance": environment.get("gasResistance"),
+            "role": MeshtasticConnection._normalize_role(user.get("role")),
+        }
+
         with self._nodes_lock:
             existing = next(
                 (n for n in self._nodes if n.get("id") == node_id), None
@@ -1587,21 +1841,23 @@ class MeshtasticConnection:
             if existing is not None:
                 # Preserve our own captured traceroute/position data, which the
                 # library's raw node dict does not carry (it only sets an
-                # internal ack flag). A blind update would clobber it.
+                # internal ack flag).
                 captured_traceroute = existing.get("traceroute")
                 captured_lat = existing.get("latitude")
                 captured_lng = existing.get("longitude")
                 captured_alt = existing.get("altitude")
-                existing.update(lib_node)
+                existing.update(patch)
                 if captured_traceroute is not None:
                     existing["traceroute"] = captured_traceroute
                 if captured_lat is not None:
                     existing["latitude"] = captured_lat
-                    existing["last_position_fix"] = int(time.time())
                 if captured_lng is not None:
                     existing["longitude"] = captured_lng
-                    existing["last_position_fix"] = int(time.time())
                 if captured_alt is not None:
                     existing["altitude"] = captured_alt
             else:
-                self._nodes.append(dict(lib_node))
+                entry = dict(patch)
+                entry["id"] = node_id
+                if patch.get("latitude") is not None or patch.get("longitude") is not None:
+                    entry["last_position_fix"] = int(time.time())
+                self._nodes.append(entry)

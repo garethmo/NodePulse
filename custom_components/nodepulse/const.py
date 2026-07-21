@@ -24,4 +24,14 @@ ATTR_TARGET  = "target"
 DEFAULT_SCAN_INTERVAL = 30  # seconds
 
 # Platform names forwarded by __init__.py
-PLATFORMS = ["binary_sensor", "sensor", "device_tracker"]
+PLATFORMS = ["binary_sensor", "sensor", "device_tracker", "geo_location"]
+
+# Data-field keys (addon JSON response)
+ATTR_NEIGHBORS          = "neighbors"
+ATTR_LINKS              = "links"
+ATTR_POSITION_FIXES     = "position_fixes"
+ATTR_TRACEROUTE         = "traceroute"
+ATTR_TAGS               = "tags"
+ATTR_POSITION_FIX_COUNT = "position_fix_count"
+ATTR_DISTANCE_KM        = "distance_km"
+ATTR_NEIGHBOR_COUNT     = "neighbor_count"

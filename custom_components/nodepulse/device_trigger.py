@@ -46,6 +46,7 @@ _TRIGGER_TYPES = {
     "message_received",
     "message_sent",
     "channel_message.received",
+    "traceroute_complete",
 }
 
 TRIGGER_SCHEMA = DEVICE_TRIGGER_BASE_SCHEMA.extend(
@@ -59,6 +60,9 @@ TRIGGER_SCHEMA = DEVICE_TRIGGER_BASE_SCHEMA.extend(
 # Event fired on the HA bus when a mesh message arrives/is sent. Device
 # automation uses this to match triggers to devices.
 EVENT_MESH_MESSAGE = f"{DOMAIN}_message"
+
+# Event fired when a new traceroute completes for a node.
+EVENT_TRACEROUTE_COMPLETE = f"{DOMAIN}_traceroute_complete"
 
 # Keys attached to the event payload.
 EVENT_NODE_ID = "node_id"
@@ -93,6 +97,12 @@ async def async_get_triggers(
             CONF_DOMAIN: DOMAIN,
             CONF_DEVICE_ID: device_id,
             CONF_TYPE: "channel_message.received",
+        },
+        {
+            CONF_PLATFORM: "device",
+            CONF_DOMAIN: DOMAIN,
+            CONF_DEVICE_ID: device_id,
+            CONF_TYPE: "traceroute_complete",
         },
     ]
 
@@ -139,6 +149,19 @@ def async_attach_trigger(
     want_channel = config.get("channel")
     want_dm = config.get("is_dm")
 
+    if trigger_type == "traceroute_complete":
+        @callback
+        def _match(event):
+            return event.data.get(EVENT_NODE_ID) == node_id
+
+        @callback
+        def _handle(event):
+            if not _match(event):
+                return
+            hass.async_create_task(action(event))
+
+        return hass.bus.async_listen(EVENT_TRACEROUTE_COMPLETE, _handle)
+
     if trigger_type == "channel_message.received":
         # Channel messages are received and never direct messages.
         direction = "received"
@@ -147,7 +170,7 @@ def async_attach_trigger(
         direction = "received" if trigger_type == "message_received" else "sent"
 
     @callback
-    def _match(event):
+    def _match_msg(event):
         payload = event.data
         if payload.get(EVENT_NODE_ID) != node_id:
             return False
@@ -160,12 +183,12 @@ def async_attach_trigger(
         return True
 
     @callback
-    def _handle(event):
-        if not _match(event):
+    def _handle_msg(event):
+        if not _match_msg(event):
             return
         hass.async_create_task(action(event))
 
-    return hass.bus.async_listen(EVENT_MESH_MESSAGE, _handle)
+    return hass.bus.async_listen(EVENT_MESH_MESSAGE, _handle_msg)
 
 
 @callback

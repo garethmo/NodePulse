@@ -82,7 +82,7 @@ async def _relay_to_integration(request: web.Request, method: str, path: str, js
     """
     global _working_ha_base
 
-    configured = request.app["config"].ha_base_url.rstrip("/")
+    configured = request.app["config"].ha_base_url
 
     # Build candidate list: try the cached (known-good) URL first so we skip
     # the waterfall on every call after the initial probe. Then the user-
@@ -454,6 +454,79 @@ async def handle_tracked_nodes(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 # Route: POST /api/track-node
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Route: GET /api/position-history
+# Route: GET /api/position-history/{node_id}
+# ---------------------------------------------------------------------------
+
+async def handle_position_history(request: web.Request) -> web.Response:
+    """Return position history for all nodes, or for a single node if node_id is
+    given in the path.
+
+    Position history is a dict of node_id -> [{lat, lng, alt?, timestamp}, ...],
+    capped at _POS_HISTORY_MAX entries per node. Used to draw GPS trails on the
+    map overlay.
+    """
+    conn: MeshtasticConnection = request.app["connection"]
+    node_id = request.match_info.get("node_id")
+    try:
+        data = await conn.get_position_history(node_id)
+        return _json_response(data)
+    except Exception as exc:
+        logger.error("Error fetching position history: %s", exc)
+        return _error_response("Failed to retrieve position history")
+
+
+# ---------------------------------------------------------------------------
+# Route: GET /api/tags
+# ---------------------------------------------------------------------------
+
+async def handle_tags(request: web.Request) -> web.Response:
+    """Return all user-defined node tags: {node_id: [tag, ...], ...}."""
+    conn: MeshtasticConnection = request.app["connection"]
+    try:
+        tags = await conn.get_tags()
+        return _json_response(tags)
+    except Exception as exc:
+        logger.error("Error fetching tags: %s", exc)
+        return _error_response("Failed to retrieve tags")
+
+
+# ---------------------------------------------------------------------------
+# Route: PUT /api/tags
+# ---------------------------------------------------------------------------
+
+async def handle_set_tags(request: web.Request) -> web.Response:
+    """
+    Set the tags for a single node. Returns the full updated tags dict.
+
+    Expected JSON body:
+        { "node_id": "!abcd1234", "tags": ["gateway", "roof"] }
+    """
+    conn: MeshtasticConnection = request.app["connection"]
+    try:
+        body: Dict[str, Any] = await request.json()
+    except Exception:
+        return _error_response("Request body must be valid JSON", status=400)
+
+    node_id = (body.get("node_id") or "").strip()
+    if not node_id or not _NODE_ID_RE.match(node_id):
+        return _error_response("'node_id' must be a valid node ID like '!abc12345'", status=400)
+
+    tags = body.get("tags")
+    if tags is None or not isinstance(tags, list):
+        return _error_response("'tags' must be a list of strings", status=400)
+
+    try:
+        result = await conn.set_tags(node_id, tags)
+        return _json_response(result)
+    except ValueError as exc:
+        return _error_response(str(exc), status=400)
+    except Exception as exc:
+        logger.error("Error setting tags (node=%s): %s", node_id, exc)
+        return _error_response("Failed to set tags")
+
 
 async def handle_track_node(request: web.Request) -> web.Response:
     """

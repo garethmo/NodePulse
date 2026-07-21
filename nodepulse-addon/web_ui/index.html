@@ -104,6 +104,7 @@
       <div id="header-status">
         <div class="status-dot" id="status-dot"></div>
         <span id="status-label">Connecting…</span>
+        <button id="theme-toggle" title="Toggle dark/light theme" type="button" style="margin-left:12px;background:transparent;border:1px solid var(--border-subtle);border-radius:var(--radius-sm);color:var(--text-secondary);cursor:pointer;padding:4px 8px;font-size:13px;line-height:1">🌙</button>
       </div>
     </header>
 
@@ -146,6 +147,7 @@
             <span class="card-title">Messages</span>
           </div>
           <div id="conversation-tabs" role="tablist" aria-label="Conversations"></div>
+          <div id="message-search-bar"><input id="message-search-input" type="search" placeholder="Search messages…" aria-label="Search messages" /></div>
           <div id="message-list"></div>
           <div id="message-compose">
             <div id="compose-top">
@@ -195,6 +197,22 @@
               <canvas id="chart-count"></canvas>
             </div>
           </div>
+          <div class="card chart-card">
+            <div class="card-header">
+              <span class="card-title">Channel Util</span>
+            </div>
+            <div class="chart-wrapper">
+              <canvas id="chart-chan-util"></canvas>
+            </div>
+          </div>
+          <div class="card chart-card">
+            <div class="card-header">
+              <span class="card-title">Airtime Util</span>
+            </div>
+            <div class="chart-wrapper">
+              <canvas id="chart-air-util"></canvas>
+            </div>
+          </div>
         </div>
       </div><!-- /view-dashboard -->
 
@@ -241,6 +259,8 @@
             </select>
           </label>
           <span class="map-filter-count" id="map-filter-count"></span>
+          <button type="button" class="map-export-btn" data-export="kml" title="Export visible nodes as KML">📥 KML</button>
+          <button type="button" class="map-export-btn" data-export="gpx" title="Export visible nodes as GPX">📥 GPX</button>
         </div>
         <div id="full-map"></div>
       </div>

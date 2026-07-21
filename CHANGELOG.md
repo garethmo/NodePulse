@@ -2,6 +2,22 @@
 
 All notable changes to NodePulse are documented here.
 
+## [0.2.31] - 2026-07-21
+### Added
+- **Dark/light theme toggle** — Persistent theme switch via header button, stored in `localStorage`. CSS variable overrides for light backgrounds, borders, and text.
+- **Collapsible map overlay controls** — Toggle bar collapse button with `localStorage` persistence; keyboard shortcut **C**.
+- **Message history search** — Free-text filter over message text and sender name per conversation thread.
+- **Node tagging / groups** — `tags.json` persistence on the server; `GET`/`PUT /api/tags` endpoints; comma-separated tag editor on each node card.
+- **Map KML/GPX export** — Export visible GPS-fixed nodes as KML or GPX from the Map view filter bar.
+- **Neighbor info panel** — `NEIGHBORINFO_APP` protobuf capture in the packet listener, stored per-node in the cache and rendered on node cards with per-peer SNR chips.
+- **Position history trails** — GPS fix history (up to 200 entries/node) stored server-side in `position_history.json`; `GET /api/position-history` endpoint; deep-orange polylines on both maps with **H** key toggle.
+- **Packet/airtime utilization trends** — Channel utilization and airtime utilization charts alongside existing SNR/RSSI/count charts, using a 120-point (~30 min) rolling window.
+
+### Changed
+- **CORS** — `PUT` method added to the allowed list for the tags endpoint.
+- **Charts** — `ChartManager.addPoint()` now accepts `chanUtil` and `airUtil` parameters; utilization data is sampled from the self/gateway node.
+- **Position capture** — `_capture_position` now records each fix into the position history ring buffer and triggers a background persistence write.
+
 ## [0.2.30] - 2026-07-19
 ### Added
 - **Map node filter** — The Map view now has a filter bar to search/shown nodes by **short name / long name / ID** (text), **max hops away** (0–5+), and **last heard** within a time window (15 min / 1 h / 6 h / 24 h) or **cached-only** (stale nodes). A live "N shown" counter updates on filter changes and on every poll. Applies to both the dashboard mini-map and the full map.

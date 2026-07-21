@@ -32,6 +32,7 @@ from .api import NodePulseTrackView, NodePulseTrackedNodesView
 
 from .device_trigger import (
     EVENT_MESH_MESSAGE,
+    EVENT_TRACEROUTE_COMPLETE,
     EVENT_CHANNEL,
     EVENT_DIRECTION,
     EVENT_FROM_ID,
@@ -165,8 +166,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 def _on_data_update(hass: HomeAssistant, coordinator: NodePulseCoordinator, entry: ConfigEntry) -> None:
-    """React to a coordinator refresh: surface new messages for triggers/logbook."""
+    """React to a coordinator refresh: surface new messages and events."""
     data = coordinator.data or {}
+
+    # Fire traceroute-complete events for newly discovered routes.
+    new_traceroutes: list = data.get("new_traceroutes") or []
+    for nid in new_traceroutes:
+        hass.bus.async_fire(
+            EVENT_TRACEROUTE_COMPLETE,
+            {EVENT_NODE_ID: nid},
+        )
+
     new_messages = data.get("new_messages") or []
     if not new_messages:
         return

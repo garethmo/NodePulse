@@ -37,7 +37,15 @@ NodePulse is a Home Assistant addon and custom integration that gives you deep v
 | 🗂️ **Persistent Node Store** | Every node ever seen is saved and re-shown even after the radio drops it from its bounded (~250) node DB; evicted nodes appear faded ("cached") and keep their last-known GPS position |
 | 📍 **Last-Known-Position Retention** | Nodes that lose GPS or stop reporting keep their previous good fix on the map instead of vanishing; `last_position_fix` exposed per node |
 | 🔎 **Map Node Filter** | Filter the map by name/ID, max hops away, last-heard window, or cached-only — with a live node count |
+| 🏷️ **Node Tagging** | Comma-separated tags per node stored server-side; visible on node cards |
 | 🧹 **Clear Stale Nodes** | One-click purge of cached (stale) nodes from the store via Settings |
+| 🌓 **Dark/Light Theme** | Persistent theme toggle in the header |
+| 📥 **Map Export (KML/GPX)** | Export visible GPS-fixed nodes as KML or GPX from the Map view |
+| 📡 **Neighbor Info** | Per-node SNRs from NEIGHBORINFO_APP packets displayed on node cards |
+| 🗺️ **Position History Trails** | GPS fix history (up to 200 fixes/node) persisted server-side, rendered as polylines on the map with toggle |
+| 📊 **Airtime Trends** | Channel utilization & airtime utilization charts with a 30-minute rolling window |
+| 🔍 **Message Search** | Free-text search across message history per conversation |
+| 🎛️ **Collapsible Map Controls** | Collapse/expand overlay toggle buttons on the map |
 
 ---
 
@@ -318,9 +326,11 @@ itself, not the addon container.
 
 ### Compatibility notes
 
-- **Home Assistant version** — NodePulse targets current HA releases. Recent builds removed the deprecated `hass.helpers` shortcut and switched to the module-level `async_load_platform`, so make sure you are on **0.2.24 or later** if you hit `AttributeError: 'HomeAssistant' object has no attribute 'helpers'` during setup.
-- **Logbook errors** — If you see a `NameError: name 'entry' is not defined` in the logs, update to 0.2.24+, which fixes the mesh-message listener that writes logbook entries.
-- **Node history** — The addon persists nodes, channels, traceroutes, and messages under its data directory (default `/data` in HAOS; override with `NODEPULSE_DATA_DIR`). To start fresh, stop the addon and delete `nodes.json` (or use **Settings → Clear stale nodes** to drop only cached entries).
+- **Home Assistant version** — NodePulse targets current HA releases. Recent builds removed the deprecated `hass.helpers` shortcut and switched to the module-level `async_load_platform`, so make sure you are on **0.2.31 or later** if you hit `AttributeError: 'HomeAssistant' object has no attribute 'helpers'` during setup.
+- **Logbook errors** — If you see a `NameError: name 'entry' is not defined` in the logs, update to 0.2.31+, which fixes the mesh-message listener that writes logbook entries.
+- **Node history** — The addon persists nodes, channels, traceroutes, tags, position history, and messages under its data directory (default `/data` in HAOS; override with `NODEPULSE_DATA_DIR`). To start fresh, stop the addon and delete `nodes.json` (or use **Settings → Clear stale nodes** to drop only cached entries).
+- **Position history** — GPS position fixes are recorded (up to 200 per node) and rendered as trails on the map. Persisted to `position_history.json`.
+- **Node tags** — User-defined tags (comma-separated) are stored per node in `tags.json` and survive restarts.
 
 ---
 

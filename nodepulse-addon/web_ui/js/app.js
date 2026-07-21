@@ -13,10 +13,10 @@
  * is easy to trace top-to-bottom.
  */
 
-import { fetchStatus, fetchNodes, fetchChannels, fetchMessages, sendMessage, requestTraceRoute, requestPosition, fetchTrackedNodes, trackNode, clearStaleNodes } from './api.js';
+import { fetchStatus, fetchNodes, fetchChannels, fetchMessages, sendMessage, requestTraceRoute, requestPosition, fetchTrackedNodes, trackNode, clearStaleNodes, fetchTags, setTags, fetchPositionHistory } from './api.js';
 import { MapManager } from './map.js';
 import { ChartManager } from './charts.js';
-import { escapeHtml, haversineKm, formatDistance } from './util.js';
+import { escapeHtml, haversineKm, formatDistance, buildKml, buildGpx, downloadFile } from './util.js';
 
 // How often (ms) to poll the backend for fresh node/status/message data.
 // Matches the scan_interval default from config.json (30s) but we use a
@@ -42,9 +42,11 @@ const state = {
   trackedNodes:   new Set(), // node IDs currently tracked as HA entities
   nodeFilter:     '',       // free-text filter for the Nodes tab
   activeConversation: 'ch:0', // currently-open thread (ch:<n> or dm:<nodeId>)
+  messageFilter:    '',       // free-text filter for message history
   conversations:  {},       // key -> { key, name, kind, unread }
   messagesByConv: {},       // key -> [message objects], persisted across polls
   channels:       [],       // configured mesh channels from the node
+  nodeTags:        {},       // node_id -> [tag strings], loaded from /api/tags
   // Counter incremented on each fast poll cycle. Used to throttle the slow
   // tracked-nodes refresh so it does not run on every 15s tick.
   _pollCount:     0,
@@ -218,7 +220,7 @@ function renderNodesGrid(nodes) {
 
   // Fast check: compute a fingerprint of the current state that affects the grid.
   // We include trackedNodes size and node IDs + last_heard + snr + distance (coords).
-  const fingerprint = nodes.map(n => `${n.id}:${n.last_heard}:${n.snr}:${n.latitude}:${n.longitude}:${n.traceroute?.timestamp}`).join('|') + '|' + state.trackedNodes.size + '|' + state.nodeFilter;
+  const fingerprint = state.nodeFilter + '|' + state.trackedNodes.size + '|' + JSON.stringify(state.nodeTags) + '|' + nodes.map(n => `${n.id}:${n.last_heard}:${n.snr}:${n.latitude}:${n.longitude}:${n.traceroute?.timestamp}:${(n.neighbors || []).length}:${n.neighbor_info_updated || ''}`).join('|');
   if (grid.dataset.fingerprint === fingerprint && grid.innerHTML !== '') return;
   grid.dataset.fingerprint = fingerprint;
 
@@ -300,6 +302,11 @@ function renderNodesGrid(nodes) {
         </div>`;
     }
 
+    const nodeTags = state.nodeTags[node.id] || [];
+    const tagsHtml = nodeTags.length
+      ? `<div class="node-card-tags">${nodeTags.map(t => `<span class="node-tag">${escapeHtml(t)}</span>`).join('')}</div>`
+      : '';
+
     card.innerHTML = `
       <div class="node-card-header">
         <div>
@@ -307,6 +314,10 @@ function renderNodesGrid(nodes) {
           <div class="node-card-id">${escapeHtml(node.id)}</div>
         </div>
         <span class="node-card-hw">${escapeHtml(node.hw_model || 'Unknown')}</span>
+      </div>
+      ${tagsHtml}
+      <div class="node-card-tag-edit">
+        <input type="text" class="tag-input" data-node="${escapeHtml(node.id)}" placeholder="Add tag…" value="${escapeHtml(nodeTags.join(', '))}" title="Comma-separated tags" />
       </div>
       <div class="node-metrics">
         <div class="metric-item">
@@ -347,6 +358,15 @@ function renderNodesGrid(nodes) {
         </div>
       </div>
       ${tracerouteHtml}
+      ${node.neighbors && node.neighbors.length > 0 ? `
+      <div class="node-card-neighbors">
+        <div class="metric-label">Neighbors (${node.neighbors.length})</div>
+        <div class="neighbor-list">${node.neighbors.map(nb => {
+          const n = state.nodes.find(x => x.id === nb.id);
+          const name = n ? (n.short_name || n.long_name || nb.id) : nb.id;
+          return `<span class="neighbor-item" title="${escapeHtml(nb.id)} · SNR ${nb.snr ?? 'N/A'} dB">${escapeHtml(name)} ${nb.snr != null ? `<span class="snr-chip ${snrToValueClass(nb.snr)}">${nb.snr.toFixed(1)}</span>` : ''}</span>`;
+        }).join('')}</div>
+      </div>` : ''}
       <div class="node-card-actions">
         <button class="action-btn" data-action="traceroute" data-node="${escapeHtml(node.id)}">Traceroute</button>
         <button class="action-btn" data-action="position"   data-node="${escapeHtml(node.id)}">Req. Position</button>
@@ -600,16 +620,37 @@ function storeMessage(msg) {
 function renderMessageList() {
   const list = document.getElementById('message-list');
   if (!list) return;
+
+  const thread = (state.messagesByConv[state.activeConversation] || []);
+
+  // Apply the message search filter.
+  const q = state.messageFilter.trim().toLowerCase();
+  const filtered = q
+    ? thread.filter(m =>
+        (m.text || '').toLowerCase().includes(q) ||
+        (m.from_name || '').toLowerCase().includes(q)
+      )
+    : thread;
+
+  // Compute a fingerprint of the thread — IDs + status strings — so we skip
+  // the full DOM rebuild when nothing changed. This prevents the scroll-jump-
+  // to-bottom on every 15s poll when no new messages arrived.
+  const fingerprint = state.activeConversation + '|' + q + '|' + filtered.map(m =>
+    `${m.id}:${m.status || ''}:${m.text}`
+  ).join('|');
+  if (list.dataset.fingerprint === fingerprint && list.innerHTML !== '') return;
+  list.dataset.fingerprint = fingerprint;
+
   list.innerHTML = '';
 
-  const thread = state.messagesByConv[state.activeConversation] || [];
-
-  if (thread.length === 0) {
-    list.innerHTML = `<div class="message-empty">No messages yet in this conversation.</div>`;
+  if (filtered.length === 0) {
+    list.innerHTML = q
+      ? `<div class="message-empty">No messages match "${escapeHtml(q)}".</div>`
+      : `<div class="message-empty">No messages yet in this conversation.</div>`;
     return;
   }
 
-  for (const msg of thread) {
+  for (const msg of filtered) {
     const bubble = document.createElement('div');
     const type = msg.outgoing ? 'outgoing' : 'incoming';
     bubble.className = `message-bubble ${type}`;
@@ -656,7 +697,14 @@ function renderMessageList() {
     }
     list.appendChild(bubble);
   }
-  list.scrollTop = list.scrollHeight;
+  // Only auto-scroll to bottom when the list was empty before (new messages),
+  // or when the user was already at the bottom. Otherwise preserve scroll
+  // position so the user can read history without being yanked down.
+  const wasAtBottom =
+    list.scrollHeight - list.scrollTop - list.clientHeight < 40;
+  if (wasAtBottom) {
+    list.scrollTop = list.scrollHeight;
+  }
 }
 
 // Retry a previously-failed outgoing message.
@@ -880,7 +928,11 @@ async function pollData() {
     // Push a chart point using the selected node's metrics, or the first node
     // in the list if no node is explicitly selected.
     const chartNode = state.nodes.find(n => n.id === state.selectedNodeId) ?? state.nodes[0];
-    charts.addPoint(chartNode?.snr ?? null, chartNode?.rssi ?? null, state.nodes.length);
+    // For utilization trends, read from the self node (the connected gateway).
+    const selfNode = state.nodes.find(n => n.id === state.selfId);
+    const chanUtil = selfNode?.channel_utilization ?? null;
+    const airUtil  = selfNode?.air_util_tx ?? null;
+    charts.addPoint(chartNode?.snr ?? null, chartNode?.rssi ?? null, state.nodes.length, chanUtil, airUtil);
   } else {
     console.warn('Nodes fetch failed:', nodesResult.reason);
   }
@@ -900,6 +952,25 @@ async function pollData() {
     renderConversationTabs();
   } else {
     console.warn('Channels fetch failed:', channelsResult.reason);
+  }
+
+  // Fetch tags on first poll only (they change rarely).
+  if (isFirstPoll) {
+    try {
+      state.nodeTags = await fetchTags();
+    } catch (err) {
+      console.warn('Tags fetch failed:', err);
+    }
+  }
+
+  // Fetch position history for map trails — first poll, then every 120s (8 cycles).
+  if (isFirstPoll || state._pollCount % 8 === 0) {
+    fetchPositionHistory().then(data => {
+      dashMap.updateTrails(data);
+      fullMap.updateTrails(data);
+    }).catch(err => {
+      console.warn('Position history fetch failed:', err);
+    });
   }
 
   // Slow path: relay to HA for tracked-node state. Run only on the first poll
@@ -937,9 +1008,6 @@ function renderIncomingMessages(messages) {
     // Only repaint the list if we're looking at the affected (or a) thread.
     renderMessageList();
   }
-  // Always refresh the tab bar so channel/DM tabs reflect the latest known
-  // conversations and channel list (e.g. after channels load post-messages).
-  renderConversationTabs();
 }
 
 // ============================================================================
@@ -971,6 +1039,21 @@ async function init() {
     backdrop.addEventListener('click', () => document.body.classList.remove('nav-open'));
   }
 
+  // Theme toggle: persist choice in localStorage.
+  const themeToggle = document.getElementById('theme-toggle');
+  if (themeToggle) {
+    const saved = localStorage.getItem('nodepulse-theme');
+    if (saved === 'light') {
+      document.body.classList.add('light-theme');
+      themeToggle.textContent = '☀️';
+    }
+    themeToggle.addEventListener('click', () => {
+      const isLight = document.body.classList.toggle('light-theme');
+      localStorage.setItem('nodepulse-theme', isLight ? 'light' : 'dark');
+      themeToggle.textContent = isLight ? '☀️' : '🌙';
+    });
+  }
+
   // Wire up the send button and Enter key shortcut in the message input.
   document.getElementById('send-btn').addEventListener('click', handleSend);
   const msgInput = document.getElementById('message-input');
@@ -991,9 +1074,33 @@ async function init() {
     });
   }
 
+  // Message search: re-render the list as the user types.
+  const msgSearch = document.getElementById('message-search-input');
+  if (msgSearch) {
+    msgSearch.addEventListener('input', (e) => {
+      state.messageFilter = e.target.value;
+      renderMessageList();
+    });
+  }
+
   // Event delegation on the nodes grid — attached once here so it is NOT
   // re-added on every 15s poll inside renderNodesGrid().
   document.getElementById('nodes-grid').addEventListener('click', handleNodeCardAction);
+
+  // Tag input change — debounced save via change event.
+  document.getElementById('nodes-grid').addEventListener('change', async (e) => {
+    const input = e.target.closest('.tag-input');
+    if (!input) return;
+    const nodeId = input.dataset.node;
+    const raw = input.value;
+    const tags = raw.split(',').map(s => s.trim()).filter(Boolean);
+    try {
+      state.nodeTags = await setTags(nodeId, tags);
+      renderNodesGrid(state.nodes);
+    } catch (err) {
+      showToast(`Failed to save tags: ${err.message}`, 'error');
+    }
+  });
 
   // Nodes-tab filter: re-render the grid from the current cached node list
   // without waiting for the next poll.
@@ -1026,6 +1133,7 @@ async function init() {
   wireToggle('nodepulse:togglepeerlinks', 'p', (m) => m.togglePeerLinks(), 'Peer proximity links');
   wireToggle('nodepulse:toggletraces',    't', (m) => m.toggleTraces(), 'Traceroute paths');
   wireToggle('nodepulse:togglenames',     'n', (m) => m.toggleNames(), 'Node names');
+  wireToggle('nodepulse:toggletrails',    'h', (m) => m.toggleTrails(), 'Position trails');
 
   // Map node filter (text / max hops / last-heard window) — apply to both maps.
   wireMapFilters();
@@ -1080,6 +1188,30 @@ function wireMapFilters() {
   // Keep the counter in sync on every poll (node set changes underneath filter).
   const origUpdateNodes = fullMap.updateNodes.bind(fullMap);
   fullMap.updateNodes = (nodes) => { origUpdateNodes(nodes); countEl.textContent = `${fullMap._filterNodes(fullMap._allNodes).length} shown`; };
+
+  // Export buttons — use the nodes from state and re-apply filter logic.
+  document.querySelectorAll('.map-export-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const fmt = btn.dataset.export; // 'kml' or 'gpx'
+      // Get the currently visible nodes from the full map's filtered result.
+      const visible = fullMap._filterNodes ? fullMap._filterNodes(fullMap._allNodes) : state.nodes;
+      const withGps = visible.filter(n => n.latitude != null && n.longitude != null);
+      if (withGps.length === 0) {
+        showToast('No nodes with GPS fix to export', 'error');
+        return;
+      }
+      let content, filename;
+      if (fmt === 'kml') {
+        content = buildKml(withGps, state.selfId);
+        filename = `nodepulse_nodes_${Date.now()}.kml`;
+      } else {
+        content = buildGpx(withGps, state.selfId);
+        filename = `nodepulse_nodes_${Date.now()}.gpx`;
+      }
+      downloadFile(content, filename);
+      showToast(`Exported ${withGps.length} nodes as ${fmt.toUpperCase()}`, 'success');
+    });
+  });
 }
 
 // ============================================================================

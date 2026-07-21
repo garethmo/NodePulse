@@ -125,10 +125,37 @@ export async function trackNode(nodeId, enabled) {
  * Remove every node flagged "stale" (not currently heard by the radio) from
  * the persistent store. Returns { removed: <count> }.
  */
+/**
+ * Fetch position history for all nodes, or for a specific node.
+ * Returns { node_id: [{ lat, lng, alt?, timestamp }, ...], ... }.
+ */
+export async function fetchPositionHistory(nodeId) {
+  const path = nodeId ? `/position-history/${encodeURIComponent(nodeId)}` : '/position-history';
+  return _apiFetch(path);
+}
+
 export async function clearStaleNodes() {
   return _apiFetch('/nodes/clear-stale', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({}),
+  });
+}
+
+/** Fetch all user-defined node tags: { node_id: [tag, ...], ... }. */
+export async function fetchTags() {
+  return _apiFetch('/tags');
+}
+
+/**
+ * Set tags for a single node. Returns the full updated tags dict.
+ * @param {string} nodeId - Node ID hex string (e.g. "!abcd1234").
+ * @param {string[]} tags - Array of tag strings.
+ */
+export async function setTags(nodeId, tags) {
+  return _apiFetch('/tags', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ node_id: nodeId, tags }),
   });
 }

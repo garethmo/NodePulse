@@ -122,6 +122,10 @@ async def async_setup_entry(
                 NodeAltitudeSensor(coordinator, entry, node_id),
                 NodeMessageReceivedSensor(coordinator, entry, node_id),
                 NodeMessageSentSensor(coordinator, entry, node_id),
+                NodeDistanceSensor(coordinator, entry, node_id),
+                NodeNeighborCountSensor(coordinator, entry, node_id),
+                NodePositionFixCountSensor(coordinator, entry, node_id),
+                NodeTagsSensor(coordinator, entry, node_id),
             ]
             registered_entities.extend(sensor_set)
             new_entities.extend(sensor_set)
@@ -543,6 +547,103 @@ class NodeMessageSentSensor(NodeMessageSensor):
     def __init__(self, coordinator, entry, node_id):
         super().__init__(coordinator, entry, node_id)
         self._attr_name = "Last Message Sent"
+
+
+class NodeDistanceSensor(_NodeSensorBase):
+    """Great-circle distance (km) from the self/gateway node."""
+
+    _metric_key = "distance_km"
+    _attr_device_class = SensorDeviceClass.DISTANCE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfLength.KILOMETERS
+
+    def __init__(self, coordinator, entry, node_id):
+        super().__init__(coordinator, entry, node_id)
+        self._attr_unique_id = f"{entry.entry_id}_{node_id}_distance"
+        self._attr_name = "Distance"
+
+    @property
+    def native_value(self):
+        node = self._get_node()
+        if not node or node.get("latitude") is None or node.get("longitude") is None:
+            return None
+        # Find the self node from coordinator data.
+        status = (self.coordinator.data or {}).get("status", {})
+        my_info = status.get("my_info") or {}
+        my_num = my_info.get("my_node_num")
+        if my_num is None:
+            return None
+        self_id = "!" + format(int(my_num), "08x")
+        nodes = (self.coordinator.data or {}).get("nodes", [])
+        self_node = next((n for n in nodes if n.get("id") == self_id), None)
+        if not self_node or self_node.get("latitude") is None or self_node.get("longitude") is None:
+            return None
+        from math import asin, cos, radians, sin, sqrt
+        R = 6371.0
+        lat1, lon1 = radians(self_node["latitude"]), radians(self_node["longitude"])
+        lat2, lon2 = radians(node["latitude"]), radians(node["longitude"])
+        dlat = lat2 - lat1
+        dlon = lon2 - lon1
+        a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
+        return round(R * 2 * asin(sqrt(a)), 2)
+
+
+class NodeNeighborCountSensor(_NodeSensorBase):
+    """Number of peers this node sees, from NEIGHBORINFO_APP data."""
+
+    _metric_key = "neighbor_count"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_icon = "mdi:account-multiple"
+
+    def __init__(self, coordinator, entry, node_id):
+        super().__init__(coordinator, entry, node_id)
+        self._attr_unique_id = f"{entry.entry_id}_{node_id}_neighbor_count"
+        self._attr_name = "Neighbor Count"
+
+    @property
+    def native_value(self):
+        node = self._get_node()
+        if not node:
+            return None
+        neighbors = node.get("neighbors")
+        if neighbors is None:
+            return None
+        return len(neighbors)
+
+
+class NodePositionFixCountSensor(_NodeSensorBase):
+    """Number of recorded GPS trail points for this node."""
+
+    _metric_key = "position_fix_count"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_icon = "mdi:map-marker-path"
+
+    def __init__(self, coordinator, entry, node_id):
+        super().__init__(coordinator, entry, node_id)
+        self._attr_unique_id = f"{entry.entry_id}_{node_id}_position_fix_count"
+        self._attr_name = "Position Fixes"
+
+
+class NodeTagsSensor(_NodeSensorBase):
+    """User-defined tags for this node (comma-separated), stored on the addon."""
+
+    _metric_key = "tags"
+    _attr_icon = "mdi:tag-text"
+
+    def __init__(self, coordinator, entry, node_id):
+        super().__init__(coordinator, entry, node_id)
+        self._attr_unique_id = f"{entry.entry_id}_{node_id}_tags"
+        self._attr_name = "Tags"
+
+    @property
+    def native_value(self):
+        node = self._get_node()
+        if not node:
+            return None
+        tags = node.get("tags")
+        if not tags or not isinstance(tags, list):
+            return None
+        return ", ".join(tags)
 
 
 # ---------------------------------------------------------------------------

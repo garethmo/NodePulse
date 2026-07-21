@@ -28,9 +28,12 @@ from .routes import (
     handle_clear_stale_nodes,
     handle_messages,
     handle_nodes,
+    handle_position_history,
     handle_request_position,
     handle_send,
+    handle_set_tags,
     handle_status,
+    handle_tags,
     handle_traceroute,
     handle_track_node,
     handle_tracked_nodes,
@@ -144,6 +147,10 @@ def build_app(config) -> web.Application:
     app.router.add_post("/api/send", handle_send)
     app.router.add_post("/api/traceRoute", handle_traceroute)
     app.router.add_post("/api/requestPosition", handle_request_position)
+    app.router.add_get("/api/tags", handle_tags)
+    app.router.add_put("/api/tags", handle_set_tags)
+    app.router.add_get("/api/position-history", handle_position_history)
+    app.router.add_get("/api/position-history/{node_id}", handle_position_history)
     app.router.add_get("/api/tracked-nodes", handle_tracked_nodes)
     app.router.add_post("/api/track-node", handle_track_node)
 
@@ -168,7 +175,7 @@ def build_app(config) -> web.Application:
             allow_credentials=False,
             expose_headers="*",
             allow_headers="*",
-            allow_methods=["GET", "POST", "OPTIONS"],
+            allow_methods=["GET", "POST", "PUT", "OPTIONS"],
         )
     })
     for route in list(app.router.routes()):

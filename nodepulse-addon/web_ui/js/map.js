@@ -50,6 +50,7 @@ const DEFAULT_ZOOM = 12;
 const COLOR_LINK_SELF   = '#00d4aa'; // self -> node connectors (teal)
 const COLOR_LINK_PEER   = '#ffb74d'; // node <-> node proximity (amber)
 const COLOR_TRACEROUTE  = '#4fc3f7'; // discovered traceroute paths (blue)
+const COLOR_TRAIL       = '#ff7043'; // position history trails (deep orange)
 
 /**
  * Create and return a Leaflet map bound to a DOM element ID.
@@ -71,34 +72,78 @@ function createMap(elementId) {
    // --- Map overlay toggle controls (top-right) ---------------------------
    // Each button toggles one overlay category and dispatches a custom event
    // that the owning MapManager listens for. The "S"/"P"/"T"/"N" keys mirror them.
-   const makeToggle = (eventName, title, glyph, initialOn) => {
-     const Ctrl = L.Control.extend({
-       options: { position: 'topright' },
-       onAdd() {
-         const btn = L.DomUtil.create('button', 'leaflet-control-maptoggle');
-         btn.type = 'button';
-         btn.title = title;
-         btn.textContent = glyph;
-         if (initialOn) btn.classList.add('active');
-         L.DomEvent.disableClickPropagation(btn);
-         L.DomEvent.on(btn, 'click', () => {
-           const evt = new CustomEvent(eventName);
-           map.getContainer().dispatchEvent(evt);
-         });
-         return btn;
-       },
-     });
-     map.addControl(new Ctrl());
-   };
+   // All toggles are stacked inside a single container for collective collapse.
+   const toggleBar = L.control({ position: 'topright' });
+   toggleBar.onAdd = () => {
+     const container = L.DomUtil.create('div', 'leaflet-control-togglebar');
+     container.style.display = 'flex';
+     container.style.flexDirection = 'column';
+     container.style.gap = '4px';
+     container.style.transition = 'opacity 0.15s';
 
-   // Self -> node connectors (teal)                  — key "S"
-   makeToggle('nodepulse:toggleselflinks', 'Toggle self→node links (S)',      '⟐', true);
-   // Node <-> node proximity links (amber)            — key "P"
-   makeToggle('nodepulse:togglepeerlinks', 'Toggle peer proximity links (P)', '⤬', true);
-   // Traceroute paths (blue)                          — key "T"
-   makeToggle('nodepulse:toggletraces',    'Toggle traceroute paths (T)',     '⤴', true);
-   // Node name labels                                 — key "N"
-   makeToggle('nodepulse:togglenames',     'Toggle node names (N)',           '🏷', true);
+     const collapseBtn = L.DomUtil.create('button', 'leaflet-control-maptoggle leaflet-control-collapse');
+     collapseBtn.type = 'button';
+     collapseBtn.title = 'Collapse overlay controls (C)';
+     collapseBtn.textContent = '−';
+     collapseBtn.style.marginBottom = '2px';
+     L.DomEvent.disableClickPropagation(collapseBtn);
+     L.DomEvent.on(collapseBtn, 'click', () => {
+       const collapsed = container.classList.toggle('collapsed');
+       const toggles = container.querySelectorAll('.leaflet-control-maptoggle:not(.leaflet-control-collapse)');
+       toggles.forEach(t => { t.style.display = collapsed ? 'none' : ''; });
+       collapseBtn.textContent = collapsed ? '+' : '−';
+       collapseBtn.title = collapsed ? 'Expand overlay controls (C)' : 'Collapse overlay controls (C)';
+     });
+     container.appendChild(collapseBtn);
+
+     const makeToggle = (eventName, title, glyph, initialOn) => {
+       const btn = L.DomUtil.create('button', 'leaflet-control-maptoggle');
+       btn.type = 'button';
+       btn.title = title;
+       btn.textContent = glyph;
+       if (initialOn) btn.classList.add('active');
+       L.DomEvent.disableClickPropagation(btn);
+       L.DomEvent.on(btn, 'click', () => {
+         const evt = new CustomEvent(eventName);
+         map.getContainer().dispatchEvent(evt);
+       });
+       container.appendChild(btn);
+     };
+
+     // Self -> node connectors (teal)                  — key "S"
+     makeToggle('nodepulse:toggleselflinks', 'Toggle self→node links (S)',      '⟐', true);
+     // Node <-> node proximity links (amber)            — key "P"
+     makeToggle('nodepulse:togglepeerlinks', 'Toggle peer proximity links (P)', '⤬', true);
+     // Traceroute paths (blue)                          — key "T"
+     makeToggle('nodepulse:toggletraces',    'Toggle traceroute paths (T)',     '⤴', true);
+      // Node name labels                                 — key "N"
+      makeToggle('nodepulse:togglenames',     'Toggle node names (N)',           '🏷', true);
+      // Position history trails                          — key "H"
+      makeToggle('nodepulse:toggletrails',    'Toggle position trails (H)',      '⏳', true);
+
+     // Restore saved collapsed state.
+     const saved = localStorage.getItem('nodepulse-map-controls-collapsed');
+     if (saved === 'true') {
+       container.classList.add('collapsed');
+       const toggles = container.querySelectorAll('.leaflet-control-maptoggle:not(.leaflet-control-collapse)');
+       toggles.forEach(t => { t.style.display = 'none'; });
+       collapseBtn.textContent = '+';
+       collapseBtn.title = 'Expand overlay controls (C)';
+     }
+
+     return container;
+   };
+   toggleBar.addTo(map);
+
+   // Keyboard shortcut "C" to toggle.
+   L.DomEvent.on(map.getContainer(), 'keydown', (e) => {
+     if (e.key === 'c' || e.key === 'C') {
+       const container = document.querySelector('.leaflet-control-togglebar');
+       if (container) {
+         container.querySelector('.leaflet-control-collapse')?.click();
+       }
+     }
+   });
 
    return map;
 }
@@ -126,11 +171,14 @@ export class MapManager {
     // Map<nodeId, L.Polyline> — multi-hop traceroute route paths discovered
     // between nodes (blue).
     this._routeLinks = new Map();
+    // Map<nodeId, L.Polyline> — position history trail for each node (deep orange).
+    this._trailLines = new Map();
     // Separate visibility flags for each overlay category so they can be
     // toggled independently from the map controls.
     this._selfLinksVisible = true;  // self -> node connectors
     this._peerLinksVisible = true;  // node <-> node proximity links
     this._tracesVisible = true;     // discovered traceroute paths
+    this._trailsVisible = true;     // position history trails
     this._namesVisible = true;      // permanent node-name labels
     this._centeredOnSelf = false;    // one-time auto-centre on the connected node
     // The last full node list we received (unfiltered). Markers are drawn from
@@ -238,6 +286,55 @@ export class MapManager {
       else marker.closeTooltip();
     }
     return this._namesVisible;
+  }
+
+  /**
+   * Toggle position history trail polylines. Returns the new visibility.
+   */
+  toggleTrails() {
+    this._trailsVisible = !this._trailsVisible;
+    for (const line of this._trailLines.values()) {
+      if (this._trailsVisible) line.addTo(this._map);
+      else this._map.removeLayer(line);
+    }
+    return this._trailsVisible;
+  }
+
+  /**
+   * Update position history trail polylines from the position-history API data.
+   * Draws one polyline per node that has 2+ GPS fixes.
+   *
+   * @param {Object} posHistory - { node_id: [{ lat, lng, timestamp }, ...], ... }
+   */
+  updateTrails(posHistory) {
+    if (!this._map) return;
+
+    // Remove old trails.
+    for (const line of this._trailLines.values()) {
+      try { line.remove(); } catch (_) {}
+    }
+    this._trailLines.clear();
+
+    if (!posHistory) return;
+
+    for (const [nodeId, fixes] of Object.entries(posHistory)) {
+      if (!Array.isArray(fixes) || fixes.length < 2) continue;
+      const coords = fixes
+        .filter(f => f.lat != null && f.lng != null)
+        .map(f => [f.lat, f.lng]);
+      if (coords.length < 2) continue;
+
+      const line = L.polyline(coords, {
+        color: COLOR_TRAIL,
+        weight: 2,
+        opacity: 0.5,
+      }).bindTooltip(`Trail — ${escapeHtml(nodeId)}`, {
+        sticky: true,
+        className: 'link-label',
+      });
+      if (this._trailsVisible) line.addTo(this._map);
+      this._trailLines.set(nodeId, line);
+    }
   }
 
   /**

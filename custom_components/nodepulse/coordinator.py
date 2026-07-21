@@ -104,6 +104,10 @@ class NodePulseCoordinator(DataUpdateCoordinator):
         # entire message history as "new" events on startup.
         self._messages_initialized: bool = False
 
+        # Previously seen traceroute timestamps per node. When a node's
+        # traceroute.timestamp increases, a traceroute_complete event is fired.
+        self._last_traceroute_ts: Dict[str, float] = {}
+
         super().__init__(
             hass,
             logger,
@@ -324,12 +328,25 @@ class NodePulseCoordinator(DataUpdateCoordinator):
         if len(self._seen_message_ids) > 2000:
             self._seen_message_ids = set(list(self._seen_message_ids)[-1000:])
 
+        # Detect newly completed traceroutes.
+        new_traceroutes = []
+        for node in nodes:
+            tr = node.get("traceroute")
+            if not tr or not isinstance(tr, dict):
+                continue
+            ts = tr.get("timestamp")
+            nid = node.get("id")
+            if ts and nid and ts != self._last_traceroute_ts.get(nid):
+                new_traceroutes.append(nid)
+                self._last_traceroute_ts[nid] = ts
+
         return {
             "status": status,
             "nodes": nodes,
             "messages": messages,
             "channels": channels or [],
             "new_messages": new_messages,
+            "new_traceroutes": new_traceroutes,
         }
 
 
