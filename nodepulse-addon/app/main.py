@@ -67,7 +67,7 @@ async def _on_startup(app: web.Application) -> None:
     """
     conn: MeshtasticConnection = app["connection"]
 
-    logger.info("NodePulse addon starting up")
+    logger.debug("NodePulse addon starting up")
 
     # Launch the background health monitor. We store the Task reference on
     # the app so we can cancel it cleanly on shutdown.
@@ -85,7 +85,7 @@ async def _on_shutdown(app: web.Application) -> None:
     Cancel the background monitor first so it doesn't attempt a reconnect
     while we are in the middle of closing the interface.
     """
-    logger.info("NodePulse addon shutting down")
+    logger.debug("NodePulse addon shutting down")
 
     monitor_task: asyncio.Task = app.get("monitor_task")
     if monitor_task and not monitor_task.done():
@@ -105,7 +105,7 @@ async def _on_shutdown(app: web.Application) -> None:
 
     conn: MeshtasticConnection = app["connection"]
     await conn.disconnect()
-    logger.info("NodePulse addon shutdown complete")
+    logger.debug("NodePulse addon shutdown complete")
 
 
 def build_app(config) -> web.Application:
@@ -121,7 +121,7 @@ def build_app(config) -> web.Application:
     # without global variables. aiohttp's Application dict is the idiomatic
     # way to share dependencies in aiohttp.
     target_host, target_port, mode = resolve_target(config)
-    logger.info(
+    logger.debug(
         "NodePulse connection mode=%s, target=%s:%s",
         mode, target_host, target_port,
     )

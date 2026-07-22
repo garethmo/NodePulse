@@ -58,6 +58,10 @@ _TRACEROUTE_SAVE_DEBOUNCE = 1.0
 # so we coalesce them into at most one disk write per window.
 _NODE_SAVE_DEBOUNCE = 5.0
 
+# Max number of persisted nodes to keep. The radio's node DB is bounded (~250),
+# but we accumulate evicted nodes over time. Cap to avoid unbounded growth.
+_MAX_PERSISTED_NODES = 500
+
 
 def _node_id_from_num(num: Any) -> Optional[str]:
     """Format a Meshtastic node number as a canonical "!hex" ID.
@@ -305,7 +309,7 @@ class MeshtasticConnection:
             removed = before - len(self._nodes)
         if removed:
             self._save_nodes()
-            logger.info("Cleared %s stale (cached) nodes from the store", removed)
+            logger.debug("Cleared %s stale (cached) nodes from the store", removed)
         return removed
 
     async def get_channels(self) -> List[Dict[str, Any]]:
@@ -361,7 +365,7 @@ class MeshtasticConnection:
         exceed the addon ingress proxy timeout (which returns HTTP 503). The
         UI polls ``/api/nodes`` to see the discovered route once it arrives.
         """
-        logger.info("Requesting traceroute to %s", destination)
+        logger.debug("Requesting traceroute to %s", destination)
         # Record the in-flight destination now so the reply can be attributed
         # even if the firmware ack is slow to arrive.
         with self._lock:
@@ -384,7 +388,7 @@ class MeshtasticConnection:
             await asyncio.to_thread(self._request_traceroute_sync, destination)
             # Pull whatever route data we've captured into the cache.
             await asyncio.to_thread(self._refresh_node_from_interface, destination)
-            logger.info("Traceroute dispatch to %s completed", destination)
+            logger.debug("Traceroute dispatch to %s completed", destination)
         except Exception as exc:  # defensive: never crash the background task
             logger.error("Traceroute background dispatch failed (%s): %s", destination, exc)
 
@@ -438,7 +442,7 @@ class MeshtasticConnection:
                 # use INFO rather than WARNING to avoid alarming log noise at
                 # every normal startup.
                 if is_first_attempt:
-                    logger.info(
+                    logger.debug(
                         "Initiating first connection to Meshtastic node (host=%s, port=%s)",
                         self._host, self._port,
                     )
@@ -486,7 +490,7 @@ class MeshtasticConnection:
                     # channel config without waiting for a config push.
                     try:
                         self._refresh_channels_sync()
-                        logger.info("Refreshed channels after (re)connection")
+                        logger.debug("Refreshed channels after (re)connection")
                     except Exception as exc:  # pragma: no cover - defensive
                         logger.debug("Post-connect channel refresh failed (ignored): %s", exc)
                 self._connected = True
@@ -527,7 +531,7 @@ class MeshtasticConnection:
         # _lock itself for the brief state-mutation steps it needs.
         self._close_sync()
 
-        logger.info(
+        logger.debug(
             "Connecting to Meshtastic node (host=%s, port=%s)", self._host, self._port
         )
 
@@ -606,7 +610,7 @@ class MeshtasticConnection:
                 except Exception as exc:  # pragma: no cover - defensive
                     logger.warning("Could not subscribe to meshtastic receive events: %s", exc)
 
-        logger.info(
+        logger.debug(
             "Connected to Meshtastic node (host=%s, port=%s)", self._host, self._port
         )
 
@@ -811,7 +815,7 @@ class MeshtasticConnection:
             if isinstance(data, dict):
                 with self._tags_lock:
                     self._tags = {str(k): v for k, v in data.items()}
-                logger.info("Restored %s tagged nodes from %s", len(self._tags), _TAGS_FILE)
+                logger.debug("Restored %s tagged nodes from %s", len(self._tags), _TAGS_FILE)
         except Exception as exc:
             logger.debug("Could not load persisted tags (ignored): %s", exc)
 
@@ -858,7 +862,7 @@ class MeshtasticConnection:
                     for k, v in data.items():
                         if isinstance(v, list):
                             self._pos_history[str(k)] = v[-_POS_HISTORY_MAX:]
-                logger.info(
+                logger.debug(
                     "Restored position history for %s nodes from %s",
                     len(self._pos_history), _POSITION_HISTORY_FILE,
                 )
@@ -913,7 +917,7 @@ class MeshtasticConnection:
             if isinstance(data, list):
                 # Keep only the most recent `maxlen` entries.
                 self._messages = collections.deque(data[-self._messages.maxlen:], maxlen=self._messages.maxlen)
-                logger.info("Restored %s messages from %s", len(self._messages), _MESSAGES_FILE)
+                logger.debug("Restored %s messages from %s", len(self._messages), _MESSAGES_FILE)
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("Could not load persisted messages (ignored): %s", exc)
 
@@ -971,7 +975,7 @@ class MeshtasticConnection:
                     data = json.load(fh)
             if isinstance(data, dict):
                 self._traceroutes = {str(k): v for k, v in data.items()}
-                logger.info(
+                logger.debug(
                     "Restored %s traceroute results from %s",
                     len(self._traceroutes), _TRACEROUTES_FILE,
                 )
@@ -989,7 +993,7 @@ class MeshtasticConnection:
             if isinstance(data, list):
                 with self._channels_lock:
                     self._channels = data
-                logger.info("Restored %s channels from %s", len(self._channels), _CHANNELS_FILE)
+                logger.debug("Restored %s channels from %s", len(self._channels), _CHANNELS_FILE)
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("Could not load persisted channels (ignored): %s", exc)
 
@@ -1024,7 +1028,7 @@ class MeshtasticConnection:
                     for n in data:
                         if isinstance(n, dict) and n.get("id"):
                             self._nodes.append(n)
-                logger.info(
+                logger.debug(
                     "Restored %s persisted nodes from %s",
                     len(self._nodes), _NODES_FILE,
                 )
@@ -1060,7 +1064,13 @@ class MeshtasticConnection:
                     return
                 self._last_node_save = now
                 self._pending_node_save = False
-                snapshot = list(self._nodes)
+                # Cap persisted nodes: keep the most recently heard first.
+                nodes_sorted = sorted(
+                    self._nodes,
+                    key=lambda n: n.get("last_heard") or 0,
+                    reverse=True,
+                )
+                snapshot = nodes_sorted[:_MAX_PERSISTED_NODES]
             t = threading.Thread(
                 target=self._write_json, args=(snapshot, _NODES_FILE), daemon=True
             )
@@ -1164,7 +1174,7 @@ class MeshtasticConnection:
                 if self._pending_traceroute_dests:
                     target_id = self._pending_traceroute_dests.pop()
 
-            logger.info(
+            logger.debug(
                 "Captured traceroute for %s (target=%s): route=%s route_back=%s",
                 from_id, target_id, route, route_back,
             )
@@ -1222,7 +1232,7 @@ class MeshtasticConnection:
             lng = pos.longitude_i * 1e-7 if pos.longitude_i else None
             alt = pos.altitude if pos.altitude else None
 
-            logger.info(
+            logger.debug(
                 "Captured position for %s: lat=%s lng=%s alt=%s",
                 from_id, lat, lng, alt,
             )
@@ -1584,10 +1594,7 @@ class MeshtasticConnection:
             if hasattr(role_raw, "name"):
                 role = role_raw.name
             elif isinstance(role_raw, int):
-                try:
-                    role = channel_role_name(role_raw)
-                except Exception:
-                    role = str(role_raw)
+                role = _channel_role_name(role_raw)
             else:
                 role = str(role_raw or "")
             role_upper = (role or "").upper()

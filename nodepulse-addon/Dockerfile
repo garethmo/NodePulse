@@ -23,7 +23,7 @@ ENV BASHIO_LOG_LEVEL=debug
 
 # Copy the entire addon source into the container
 WORKDIR /app
-COPY . /app/
+COPY . /app
 
 # Run the addon as the container's main process (CMD). Combined with
 # `init: false` in config.json this is the canonical Home Assistant add-on

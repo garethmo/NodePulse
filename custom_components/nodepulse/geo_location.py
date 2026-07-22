@@ -18,7 +18,6 @@ from typing import Any, Dict, List, Optional
 
 from homeassistant.components.geo_location import GeolocationEvent
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfLength
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -67,12 +66,12 @@ async def async_setup_entry(
             lon = node.get("longitude")
             if lat is None or lon is None:
                 continue
-            if lat == 0 and lon == 0:
+            if abs(lat) < 1e-9 and abs(lon) < 1e-9:
                 continue
 
             registered_node_ids.add(node_id)
             new_entities.append(NodeGeoLocation(coordinator, entry, node_id))
-            logger.info("Registering geo_location for node (node_id=%s)", node_id)
+            logger.debug("Registering geo_location for node (node_id=%s)", node_id)
 
         if new_entities:
             async_add_entities(new_entities)

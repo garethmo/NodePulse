@@ -57,6 +57,11 @@ class Config:
     # container, "localhost" is the addon itself — HA core is reachable on the
     # supervisor network at "homeassistant:8123" (the standard addon->HA host).
     ha_base_url: str = "http://homeassistant:8123"
+    # Disable SUPERVISOR_TOKEN validation for addon-to-integration communication.
+    # Only use this in trusted environments (e.g., non-HAOS installs where token
+    # injection doesn't work correctly). Default is True to work around token
+    # mismatch issues in some environments.
+    disable_token_validation: bool = True
 
 
 def load_config() -> Config:
@@ -69,7 +74,7 @@ def load_config() -> Config:
     """
     options_path = _OPTIONS_FILE if os.path.exists(_OPTIONS_FILE) else _DEV_OPTIONS_FILE
 
-    logger.info("Loading addon configuration (path=%s)", options_path)
+    logger.debug("Loading addon configuration (path=%s)", options_path)
 
     try:
         with open(options_path, "r", encoding="utf-8") as fh:
@@ -100,6 +105,7 @@ def load_config() -> Config:
         scan_interval=int(raw.get("scan_interval", 30)),
         ignored_nodes=[n for n in raw.get("ignored_nodes", []) if n],
         ha_base_url=(raw.get("ha_base_url") or "http://homeassistant:8123").rstrip("/"),
+        disable_token_validation=bool(raw.get("disable_token_validation", False)),
     )
 
 

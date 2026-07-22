@@ -13,7 +13,7 @@ the mesh goes offline for more than N minutes).
 """
 import logging
 from time import time
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
@@ -72,7 +72,7 @@ async def async_setup_entry(
             registered_node_ids.add(node_id)
             registered_entities.append(NodeOnlineSensor(coordinator, entry, node_id))
             new_entities.append(registered_entities[-1])
-            logger.info("Registering per-node online binary sensor (node_id=%s)", node_id)
+            logger.debug("Registering per-node online binary sensor (node_id=%s)", node_id)
 
         if new_entities:
             async_add_entities(new_entities)

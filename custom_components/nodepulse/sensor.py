@@ -15,7 +15,7 @@ nodes we've already set up in a previous poll cycle.
 """
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -129,7 +129,7 @@ async def async_setup_entry(
             ]
             registered_entities.extend(sensor_set)
             new_entities.extend(sensor_set)
-            logger.info("Registering new node sensors (node_id=%s)", node_id)
+            logger.debug("Registering new node sensors (node_id=%s)", node_id)
 
         if new_entities:
             async_add_entities(new_entities)

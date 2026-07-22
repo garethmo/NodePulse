@@ -161,7 +161,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
     )
 
-    logger.info("NodePulse integration set up (entry_id=%s)", entry.entry_id)
+    logger.debug("NodePulse integration set up (entry_id=%s)", entry.entry_id)
     return True
 
 

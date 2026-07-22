@@ -141,9 +141,10 @@ def async_attach_trigger(
     trigger_info: Any = None,
 ) -> Any:
     """Attach a device trigger and return its detach callback."""
-    node_id = _async_get_node_id(hass, config[CONF_DEVICE_ID])
+    device_id = config[CONF_DEVICE_ID]
+    node_id = _async_get_node_id(hass, device_id)
     if node_id is None:
-        raise InvalidDeviceAutomationConfig(f"Unknown NodePulse device {config[CONF_DEVICE_ID]}")
+        raise InvalidDeviceAutomationConfig(f"Unknown NodePulse device {device_id}")
 
     trigger_type = config[CONF_TYPE]
     want_channel = config.get("channel")

@@ -14,7 +14,7 @@ we are receiving position data from the mesh. TrackerEntity is the correct
 choice for externally-reported GPS coordinates.
 """
 import logging
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 
 from homeassistant.components.device_tracker import SourceType
 from homeassistant.components.device_tracker.config_entry import TrackerEntity
@@ -80,12 +80,12 @@ async def async_setup_entry(
             lon = node.get("longitude")
             if lat is None or lon is None:
                 continue
-            if lat == 0 and lon == 0:
+            if abs(lat) < 1e-9 and abs(lon) < 1e-9:
                 continue
 
             registered_node_ids.add(node_id)
             new_trackers.append(NodeTracker(coordinator, entry, node_id))
-            logger.info("Registering device tracker for node (node_id=%s)", node_id)
+            logger.debug("Registering device tracker for node (node_id=%s)", node_id)
 
         if new_trackers:
             async_add_entities(new_trackers)

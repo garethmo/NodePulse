@@ -11,7 +11,8 @@ All responses use JSON. Error responses always include a human-readable
 """
 import json
 import logging
-from typing import Any, Dict, List
+import os
+from typing import Any, Dict
 
 import aiohttp
 import re
@@ -45,15 +46,24 @@ def _validate_destination(body: Dict[str, Any]):
 
 # Candidate base URLs to try when relaying to the integration. The addon runs
 # in its own Docker container, so "localhost" there is the addon itself, not
-# HA core. The supervisor network exposes HA core as "homeassistant". We try
-# the configured value first, then a sensible fallback chain so the relay
-# works without the user having to set ha_base_url correctly.
+# HA core. The supervisor network exposes HA core as "homeassistant" (standard
+# HAOS) or "supervisor" (legacy). We try the standard supervisor hostnames
+# FIRST, before the user-configured value, because a misconfigured ha_base_url
+# (e.g. an ingress URL) would fail with 401/403 and waste time.
 _HA_CANDIDATES = (
-    "http://homeassistant:8123",
-    "http://supervisor:8123",
-    "http://hassio:8123",
+    "http://homeassistant:8123",      # Standard HAOS supervisor hostname
+    "http://supervisor:8123",         # Legacy/alternative
+    "http://hassio:8123",             # Legacy
+)
+# Fallback candidates tried when none of the supervisor hostnames resolve
+# (custom Docker, non-HAOS installs, core-in-venv). Tried AFTER the supervisor
+# candidates fail but BEFORE the user-configured ha_base_url (which may be
+# misconfigured / ingress URL).
+_HA_FALLBACK_CANDIDATES = (
     "http://localhost:8123",
     "http://127.0.0.1:8123",
+    "http://172.17.0.1:8123",        # Docker gateway (bridge mode for HAOS)
+    "http://host.docker.internal:8123",
 )
 
 # Cache the last HA base URL that produced a successful relay response.
@@ -65,7 +75,7 @@ _working_ha_base: str | None = None
 
 # Per-candidate TCP connect timeout (seconds). Keep this short so a host
 # that is unreachable fails quickly and we move to the next candidate.
-_RELAY_TIMEOUT_S = 3
+_RELAY_TIMEOUT_S = 2
 
 
 async def _relay_to_integration(request: web.Request, method: str, path: str, json_body=None) -> dict:
@@ -82,17 +92,42 @@ async def _relay_to_integration(request: web.Request, method: str, path: str, js
     """
     global _working_ha_base
 
-    configured = request.app["config"].ha_base_url
+    configured = request.app["config"].ha_base_url.rstrip("/")
 
-    # Build candidate list: try the cached (known-good) URL first so we skip
-    # the waterfall on every call after the initial probe. Then the user-
-    # configured value (if different), then the hard-coded fallbacks.
+    # Build candidate list: try the hardcoded supervisor network hostnames FIRST
+    # (most reliable in HAOS), then fallback hostnames for non-HAOS setups,
+    # then the cached working URL, then the user-configured value (which might
+    # be an ingress URL or wrong). This avoids wasting time on a misconfigured
+    # ha_base_url that returns 401/403.
+    config = request.app["config"]
+    supervisor_token = os.environ.get("SUPERVISOR_TOKEN", "").strip()
+    # When the user has set disable_token_validation, the integration's
+    # _validate_token() checks for "expected" (SUPERVISOR_TOKEN on HA core).
+    # If HA core has SUPERVISOR_TOKEN set but the addon sends no auth header,
+    # _validate_token returns True. If disable_token_validation is False,
+    # we send the token; otherwise we omit the header entirely so the
+    # integration skips the token check.
+    send_token = (
+        not config.disable_token_validation
+        and bool(supervisor_token)
+    )
+
     seen: set[str] = set()
     candidates: list[str] = []
-    for url in filter(None, [_working_ha_base, configured, *_HA_CANDIDATES]):
+    for url in _HA_CANDIDATES:
         if url not in seen:
             seen.add(url)
             candidates.append(url)
+    if _working_ha_base and _working_ha_base not in seen:
+        seen.add(_working_ha_base)
+        candidates.append(_working_ha_base)
+    for url in _HA_FALLBACK_CANDIDATES:
+        if url not in seen:
+            seen.add(url)
+            candidates.append(url)
+    if configured and configured not in seen:
+        seen.add(configured)
+        candidates.append(configured)
 
     last_status = None
     last_body = None
@@ -102,9 +137,16 @@ async def _relay_to_integration(request: web.Request, method: str, path: str, js
         for base in candidates:
             url = f"{base}{path}"
             try:
-                kwargs: dict = {"timeout": aiohttp.ClientTimeout(total=_RELAY_TIMEOUT_S)}
+                kwargs: dict = {
+                    "timeout": aiohttp.ClientTimeout(total=_RELAY_TIMEOUT_S),
+                    "headers": {},
+                }
+                if send_token:
+                    kwargs["headers"]["Authorization"] = f"Bearer {supervisor_token}"
+                if config.disable_token_validation:
+                    kwargs["headers"]["X-NodePulse-Skip-Token"] = "true"
                 if method.upper() == "POST":
-                    kwargs["headers"] = {"Content-Type": "application/json"}
+                    kwargs["headers"]["Content-Type"] = "application/json"
                     kwargs["json"] = json_body
                 logger.debug("Relaying %s %s body=%s", method, url, json_body)
                 async with session.request(method, url, **kwargs) as resp:
@@ -120,7 +162,7 @@ async def _relay_to_integration(request: web.Request, method: str, path: str, js
                         # Cache this base so we go straight here next time.
                         if _working_ha_base != base:
                             _working_ha_base = base
-                            logger.info("HA relay: caching working base URL as %s", base)
+                            logger.debug("HA relay: caching working base URL as %s", base)
                         try:
                             return json.loads(raw)
                         except Exception as exc:
@@ -131,6 +173,16 @@ async def _relay_to_integration(request: web.Request, method: str, path: str, js
                             raise RuntimeError(
                                 f"Integration at {base} returned an unparseable response"
                             )
+                    # 401/403 means HA auth rejected us. Try the next candidate
+                    # with SUPERVISOR_TOKEN, except if all candidates failed auth.
+                    if resp.status in (401, 403):
+                        if base == _working_ha_base:
+                            _working_ha_base = None
+                        logger.debug(
+                            "Relay candidate %s returned %s (unauthorized) — trying next",
+                            base, resp.status,
+                        )
+                        continue
                     # A real response (even an error) means we found HA core;
                     # surface its error rather than trying other candidates.
                     try:
@@ -155,9 +207,23 @@ async def _relay_to_integration(request: web.Request, method: str, path: str, js
         "Could not reach NodePulse integration. last_url=%s last_status=%s last_body=%s",
         last_url, last_status, (last_body or "")[:500],
     )
+    if last_status in (401, 403):
+        raise RuntimeError(
+            f"NodePulse integration rejected the request (HTTP {last_status}). "
+            "This usually means the SUPERVISOR_TOKEN is missing or mismatched "
+            "between the addon container and HA core. On HAOS ensure the addon "
+            "is installed via the Supervisor add-on store. On custom Docker, "
+            "pass SUPERVISOR_TOKEN to both the HA core and addon containers. "
+            "Alternatively, set 'disable_token_validation' to true in the "
+            "addon config."
+        )
     raise RuntimeError(
         f"Could not reach the NodePulse integration. Tried: {', '.join(candidates)}. "
-        "Ensure the NodePulse integration is installed in HA and reachable from the addon."
+        "If you are on a non-HAOS install (custom Docker, venv, Supervised without "
+        "the addon store), set 'ha_base_url' in the addon config to the URL where "
+        "Home Assistant core is reachable from the addon container (e.g. "
+        "http://172.17.0.1:8123). Otherwise, ensure the NodePulse custom integration "
+        "is installed in HA and reachable from the addon."
     )
 
 

@@ -326,8 +326,8 @@ itself, not the addon container.
 
 ### Compatibility notes
 
-- **Home Assistant version** — NodePulse targets current HA releases. Recent builds removed the deprecated `hass.helpers` shortcut and switched to the module-level `async_load_platform`, so make sure you are on **0.2.31 or later** if you hit `AttributeError: 'HomeAssistant' object has no attribute 'helpers'` during setup.
-- **Logbook errors** — If you see a `NameError: name 'entry' is not defined` in the logs, update to 0.2.31+, which fixes the mesh-message listener that writes logbook entries.
+- **Home Assistant version** — NodePulse targets current HA releases. Recent builds removed the deprecated `hass.helpers` shortcut and switched to the module-level `async_load_platform`, so make sure you are on **0.2.32 or later** if you hit `AttributeError: 'HomeAssistant' object has no attribute 'helpers'` during setup.
+- **Logbook errors** — If you see a `NameError: name 'entry' is not defined` in the logs, update to 0.2.32+, which fixes the mesh-message listener that writes logbook entries.
 - **Node history** — The addon persists nodes, channels, traceroutes, tags, position history, and messages under its data directory (default `/data` in HAOS; override with `NODEPULSE_DATA_DIR`). To start fresh, stop the addon and delete `nodes.json` (or use **Settings → Clear stale nodes** to drop only cached entries).
 - **Position history** — GPS position fixes are recorded (up to 200 per node) and rendered as trails on the map. Persisted to `position_history.json`.
 - **Node tags** — User-defined tags (comma-separated) are stored per node in `tags.json` and survive restarts.

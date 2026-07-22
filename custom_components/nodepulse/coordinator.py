@@ -29,6 +29,7 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
 )
+from .host_candidates import host_candidates_for_addon
 
 logger = logging.getLogger(__name__)
 
@@ -263,7 +264,7 @@ class NodePulseCoordinator(DataUpdateCoordinator):
                 self._session, candidates, self._access_key
             )
             if working and working != self._working_host:
-                logger.info("NodePulse addon reached at %s — pinning as preferred host", working)
+                logger.debug("NodePulse addon reached at %s — pinning as preferred host", working)
                 self._working_host = working
         except aiohttp.ClientError as exc:
             raise UpdateFailed(f"Network error reaching addon at {self._host}: {exc}") from exc
@@ -404,40 +405,4 @@ async def _get_json(session: aiohttp.ClientSession, url: str, access_key: str | 
 
 
 def _host_candidates(host: str) -> list:
-    """
-    Build an ordered list of host URLs to try when reaching the addon.
-
-    Starts with the user-supplied value, then falls back through the standard
-    supervisor addon container DNS names. The addon slug is ``nodepulse`` and
-    supervisor prefixes addon container names with ``a0d7b954-``.
-    """
-    candidates = []
-    if host:
-        candidates.append(host.rstrip("/"))
-    slug = "nodepulse"
-    slug2 = "nodepulse_addon"
-    for base in (
-        f"http://a0d7b954-{slug}",
-        f"http://a0d7b954-{slug}:8099",
-        f"http://a0d7b954-{slug2}",
-        f"http://a0d7b954-{slug2}:8099",
-        f"http://addon_{slug}",
-        f"http://addon_{slug}:8099",
-        f"http://local-{slug}",
-        f"http://local-{slug}:8099",
-        f"http://local_{slug}",
-        f"http://local_{slug}:8099",
-        f"http://local-{slug2}",
-        f"http://local-{slug2}:8099",
-        f"http://local_{slug2}",
-        f"http://local_{slug2}:8099",
-        f"http://local-{slug2.replace('_', '-')}",
-        f"http://local-{slug2.replace('_', '-')}:8099",
-        f"http://{slug}",
-        f"http://{slug}:8099",
-        f"http://{slug2}",
-        f"http://{slug2}:8099",
-    ):
-        if base not in candidates:
-            candidates.append(base)
-    return candidates
+    return host_candidates_for_addon(host)

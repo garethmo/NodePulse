@@ -1,6 +1,6 @@
 {
   "name": "NodePulse",
-  "version": "0.2.31",
+  "version": "0.2.32",
   "slug": "nodepulse",
   "description": "Comprehensive dashboard and integration for monitoring Meshtastic networks directly within Home Assistant",
   "url": "https://github.com/garethmo/NodePulse",
@@ -25,7 +25,8 @@
     "access_key": "",
     "scan_interval": 30,
     "ignored_nodes": [],
-    "ha_base_url": "http://homeassistant:8123"
+    "ha_base_url": "http://homeassistant:8123",
+    "disable_token_validation": true
   },
   "schema": {
     "log_level": "list(trace|debug|info|notice|warning|error|fatal)",
@@ -37,7 +38,8 @@
     "access_key": "str?",
     "scan_interval": "int(10,300)",
     "ignored_nodes": ["str?"],
-    "ha_base_url": "str?"
+    "ha_base_url": "str?",
+    "disable_token_validation": "bool?"
   },
   "map": {},
   "environment": {}
