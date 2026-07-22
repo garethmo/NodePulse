@@ -825,9 +825,7 @@ class MeshtasticConnection:
             os.makedirs(_DATA_DIR, exist_ok=True)
             with self._tags_lock:
                 snapshot = dict(self._tags)
-            with self._persist_lock:
-                with open(_TAGS_FILE, "w", encoding="utf-8") as fh:
-                    json.dump(snapshot, fh)
+            self._write_json(snapshot, _TAGS_FILE)
         except Exception as exc:
             logger.debug("Could not persist tags (ignored): %s", exc)
 
@@ -875,9 +873,7 @@ class MeshtasticConnection:
             os.makedirs(_DATA_DIR, exist_ok=True)
             with self._pos_hist_lock:
                 snapshot = dict(self._pos_history)
-            with self._persist_lock:
-                with open(_POSITION_HISTORY_FILE, "w", encoding="utf-8") as fh:
-                    json.dump(snapshot, fh)
+            self._write_json(snapshot, _POSITION_HISTORY_FILE)
         except Exception as exc:
             logger.debug("Could not persist position history (ignored): %s", exc)
 
@@ -930,9 +926,7 @@ class MeshtasticConnection:
             # against concurrent reads/writes to the same file.
             with self._msg_lock:
                 snapshot = list(self._messages)
-            with self._persist_lock:
-                with open(_MESSAGES_FILE, "w", encoding="utf-8") as fh:
-                    json.dump(snapshot, fh)
+            self._write_json(snapshot, _MESSAGES_FILE)
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("Could not persist messages (ignored): %s", exc)
 
@@ -959,9 +953,13 @@ class MeshtasticConnection:
         """Write `snapshot` as JSON to `path` (runs on a worker thread)."""
         try:
             os.makedirs(_DATA_DIR, exist_ok=True)
+            tmp_path = path + ".tmp"
             with self._persist_lock:
-                with open(path, "w", encoding="utf-8") as fh:
+                with open(tmp_path, "w", encoding="utf-8") as fh:
                     json.dump(snapshot, fh)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(tmp_path, path)
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("Persist write failed (ignored): %s", exc)
 
@@ -1003,9 +1001,7 @@ class MeshtasticConnection:
             os.makedirs(_DATA_DIR, exist_ok=True)
             with self._channels_lock:
                 snapshot = list(self._channels)
-            with self._persist_lock:
-                with open(_CHANNELS_FILE, "w", encoding="utf-8") as fh:
-                    json.dump(snapshot, fh)
+            self._write_json(snapshot, _CHANNELS_FILE)
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("Could not persist channels (ignored): %s", exc)
 
@@ -1170,7 +1166,7 @@ class MeshtasticConnection:
             # traceroute requests each attribute to their own target rather than
             # clobbering a single shared slot.
             target_id = from_id
-            with self._nodes_lock:
+            with self._lock:
                 if self._pending_traceroute_dests:
                     target_id = self._pending_traceroute_dests.pop()
 
@@ -1222,7 +1218,7 @@ class MeshtasticConnection:
             # we didn't ask; updating our cache on those would make a node appear
             # to have responded to a request it didn't. If there's no matching
             # pending request, ignore the packet.
-            with self._nodes_lock:
+            with self._lock:
                 if from_id not in self._pending_position_dests:
                     return
                 self._pending_position_dests.discard(from_id)
@@ -1701,7 +1697,7 @@ class MeshtasticConnection:
             # automatically for DMs when a shared key is configured on the channel.
             iface.sendText(
                 text,
-                destinationId=destination or meshtastic.BROADCAST_ADDR,
+                destinationId=to_num if to_num is not None else meshtastic.BROADCAST_ADDR,
                 channelIndex=channel,
             )
 
@@ -1741,6 +1737,13 @@ class MeshtasticConnection:
                 return False
             iface = self._interface
 
+        dest_num = None
+        if destination:
+            try:
+                dest_num = int(destination.replace("!", ""), 16)
+            except (ValueError, AttributeError):
+                dest_num = destination
+
         try:
             # hopLimit is a REQUIRED positional argument in meshtastic 2.7.x —
             # passing None raises TypeError. A hopLimit of 0 would prevent the
@@ -1755,7 +1758,7 @@ class MeshtasticConnection:
             # merge it into our node cache. The destination is already queued in
             # request_traceroute; the cache refresh is done by the background
             # dispatch task so this call stays non-blocking.
-            iface.sendTraceRoute(destination, 10)
+            iface.sendTraceRoute(dest_num if dest_num is not None else destination, 10)
             return True
         except Exception as exc:
             logger.error(
@@ -1772,13 +1775,21 @@ class MeshtasticConnection:
                 return False
             iface = self._interface
 
+        dest_num = None
+        if destination:
+            try:
+                dest_num = int(destination.replace("!", ""), 16)
+            except (ValueError, AttributeError):
+                dest_num = destination
+
         try:
             # Request a position with wantResponse=True. The node replies with
             # a POSITION_APP packet which the library funnels through
             # onResponsePosition -> _onPositionReceive, updating its node DB.
             # We then copy that fresh fix into our own nodes dict below.
-            iface.sendPosition(destinationId=destination, wantResponse=True)
-            self._pending_position_dests.add(destination)
+            iface.sendPosition(destinationId=dest_num if dest_num is not None else destination, wantResponse=True)
+            with self._lock:
+                self._pending_position_dests.add(destination)
             return True
         except Exception as exc:
             logger.error(

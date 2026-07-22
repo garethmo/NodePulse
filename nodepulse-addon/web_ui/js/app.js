@@ -903,7 +903,6 @@ async function pollData() {
 
   if (statusResult.status === 'fulfilled') {
     state.status = statusResult.value;
-    renderStatusBar(state.status);
   } else {
     console.warn('Status fetch failed:', statusResult.reason);
   }
@@ -936,6 +935,9 @@ async function pollData() {
   } else {
     console.warn('Nodes fetch failed:', nodesResult.reason);
   }
+
+  // Update status bar and node count badge now that both status and nodes are loaded
+  renderStatusBar(state.status);
 
   if (messagesResult.status === 'fulfilled') {
     renderIncomingMessages(messagesResult.value);

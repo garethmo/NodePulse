@@ -111,9 +111,9 @@ function createMap(elementId) {
      };
 
      // Self -> node connectors (teal)                  — key "S"
-     makeToggle('nodepulse:toggleselflinks', 'Toggle self→node links (S)',      '⟐', true);
+     makeToggle('nodepulse:toggleselflinks', 'Toggle self→node links (S)',      '⟐', false);
      // Node <-> node proximity links (amber)            — key "P"
-     makeToggle('nodepulse:togglepeerlinks', 'Toggle peer proximity links (P)', '⤬', true);
+     makeToggle('nodepulse:togglepeerlinks', 'Toggle peer proximity links (P)', '⤬', false);
      // Traceroute paths (blue)                          — key "T"
      makeToggle('nodepulse:toggletraces',    'Toggle traceroute paths (T)',     '⤴', true);
       // Node name labels                                 — key "N"
@@ -175,8 +175,8 @@ export class MapManager {
     this._trailLines = new Map();
     // Separate visibility flags for each overlay category so they can be
     // toggled independently from the map controls.
-    this._selfLinksVisible = true;  // self -> node connectors
-    this._peerLinksVisible = true;  // node <-> node proximity links
+    this._selfLinksVisible = false; // self -> node connectors
+    this._peerLinksVisible = false; // node <-> node proximity links
     this._tracesVisible = true;     // discovered traceroute paths
     this._trailsVisible = true;     // position history trails
     this._namesVisible = true;      // permanent node-name labels

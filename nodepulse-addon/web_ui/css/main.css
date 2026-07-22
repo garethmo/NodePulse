@@ -1300,9 +1300,9 @@ body.nav-open #sidebar-backdrop { display: block; }
   #node-list-card  { order: 3; min-height: 320px; }
   #charts-row      { min-height: 220px; }
 
-  /* Node cards: two-up grid so the list stays compact on phones. */
+  /* Node cards: stack in a single column on phones to prevent squishing and overlap. */
   #nodes-grid {
-    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    grid-template-columns: 1fr;
   }
 
   .settings-grid {
