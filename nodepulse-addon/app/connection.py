@@ -62,6 +62,21 @@ _NODE_SAVE_DEBOUNCE = 5.0
 # but we accumulate evicted nodes over time. Cap to avoid unbounded growth.
 _MAX_PERSISTED_NODES = 500
 
+# --- ACK status constants ---------------------------------------------------
+# Seconds after which an outgoing DM that received no ROUTING_APP reply is
+# considered failed and its ack_status flipped to "failed".
+_ACK_TIMEOUT_S = 30.0
+
+# --- Packet inspector / sniffer constants -----------------------------------
+# Maximum number of packets kept in the in-memory capture ring buffer.
+_PACKET_LOG_MAX = 500
+
+# --- Signal quality thresholds (SNR in dB) ----------------------------------
+_SNR_EXCELLENT = 5.0
+_SNR_GOOD = 0.0
+_SNR_FAIR = -10.0
+# Below _SNR_FAIR → "poor"
+
 
 def _node_id_from_num(num: Any) -> Optional[str]:
     """Format a Meshtastic node number as a canonical "!hex" ID.
@@ -245,6 +260,27 @@ class MeshtasticConnection:
         self._last_traceroute_save = 0.0
         self._pending_traceroute_save = False
 
+        # --- Feature: Message ACK status ------------------------------------
+        # Maps outgoing packet_id (int) → internal message entry id (str).
+        # When a ROUTING_APP ack arrives we look up the entry and flip its
+        # ack_status from "sending" to "delivered" or "failed".
+        # Bounded by expiry sweep — entries older than _ACK_TIMEOUT_S are
+        # evicted and their messages marked "failed".
+        self._pending_acks: Dict[int, str] = {}
+        self._pending_ack_times: Dict[int, float] = {}
+
+        # --- Feature: Signal quality trend ----------------------------------
+        # Rolling window of the last 10 rxSnr readings per node. In-memory only
+        # (no persistence needed — repopulates within a few poll cycles).
+        self._snr_lock = threading.Lock()
+        self._snr_history: Dict[str, collections.deque] = {}
+
+        # --- Feature: Packet inspector / sniffer ----------------------------
+        # Shared ring buffer of all inbound decoded packets (newest first).
+        # Capped at _PACKET_LOG_MAX. In-memory only; not persisted.
+        self._packet_log_lock = threading.Lock()
+        self._packet_log: collections.deque = collections.deque(maxlen=_PACKET_LOG_MAX)
+
     # ------------------------------------------------------------------
     # Public async API
     # ------------------------------------------------------------------
@@ -414,6 +450,23 @@ class MeshtasticConnection:
     async def get_position_history(self, node_id: Optional[str] = None) -> Dict[str, List[Dict]]:
         """Return position history. If node_id is given, return only that node's trail."""
         return await asyncio.to_thread(self._get_position_history_sync, node_id)
+
+    async def get_packet_log(self, limit: int = 200) -> List[Dict[str, Any]]:
+        """Return the most recent captured packets (newest first, up to limit)."""
+        return await asyncio.to_thread(self._get_packet_log_sync, limit)
+
+    async def get_sniffer_stats(self) -> Dict[str, Any]:
+        """Return live sniffer statistics computed over the last 60 seconds."""
+        return await asyncio.to_thread(self._get_sniffer_stats_sync)
+
+    async def expire_pending_acks(self) -> None:
+        """Sweep timed-out pending ACKs and mark their messages failed.
+
+        Called periodically (every 10 s) by a background task so messages
+        that never receive a ROUTING_APP reply within _ACK_TIMEOUT_S are
+        correctly marked as failed instead of staying stuck at 'sending'.
+        """
+        await asyncio.to_thread(self._expire_pending_acks_sync)
 
     async def monitor_connection(self) -> None:
         """
@@ -705,35 +758,49 @@ class MeshtasticConnection:
         """
         Pubsub listener for inbound Meshtastic packets.
 
+        Every packet is appended to the shared inspector/sniffer ring buffer
+        and its SNR is recorded for signal-quality trending.
         Text messages are captured into the ring buffer for the Web UI feed.
         Traceroute replies (TRACEROUTE_APP) are captured into the per-node
-        cache so the UI can show the discovered route + per-hop SNR — the
-        meshtastic library only sets an internal acknowledgment flag and does
-        NOT persist the route anywhere we can read. Runs on the meshtastic
-        library's background thread, so shared state access is locked.
+        cache. ROUTING_APP ACKs update outgoing message delivery status.
+        Runs on the meshtastic library's background thread, so shared state
+        access is locked.
         """
         try:
             decoded = packet.get("decoded", {}) or {}
             portnum = decoded.get("portnum")
 
-            # --- Neighbor info -------------------------------------------
+            # Record every packet in the shared inspector/sniffer buffer.
+            self._capture_packet_log(packet)
+
+            # Update per-node SNR history for signal-quality trending.
+            from_num = packet.get("from")
+            from_id_snr = _node_id_from_num(from_num)
+            rx_snr = packet.get("rxSnr")
+            if from_id_snr and rx_snr is not None:
+                with self._snr_lock:
+                    if from_id_snr not in self._snr_history:
+                        self._snr_history[from_id_snr] = collections.deque(maxlen=10)
+                    self._snr_history[from_id_snr].append(float(rx_snr))
+
+            # --- Neighbour info -------------------------------------------
             if portnum == "NEIGHBORINFO_APP":
                 self._capture_neighborinfo(packet)
                 return
 
-            # --- Traceroute replies -------------------------------------
+            # --- Traceroute replies ---------------------------------------
             if portnum == "TRACEROUTE_APP":
                 self._capture_traceroute(packet)
                 return
 
-            # --- Position replies ---------------------------------------
-            # A position request (sendPosition wantResponse=True) makes the
-            # destination node reply with its own POSITION_APP packet. The
-            # meshtastic library only sets an internal ack flag and does NOT
-            # write the fix into interface.nodes, so we must capture it here
-            # and merge it into our own node cache ourselves.
+            # --- Position replies -----------------------------------------
             if portnum == "POSITION_APP":
                 self._capture_position(packet)
+                return
+
+            # --- Routing ACKs (delivery confirmation) --------------------
+            if portnum == "ROUTING_APP":
+                self._capture_routing_ack(packet)
                 return
 
             # --- Text messages ------------------------------------------
@@ -803,6 +870,195 @@ class MeshtasticConnection:
             self._schedule_save(self._messages, _MESSAGES_FILE)
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("Error handling received packet (ignored): %s", exc)
+
+    # ----------------------------------------------------------------
+    # Packet inspector / sniffer helpers
+    # ----------------------------------------------------------------
+
+    def _capture_packet_log(self, packet: Dict[str, Any]) -> None:
+        """Append a sanitised summary of every received packet to the ring buffer.
+
+        Called at the top of _on_mesh_receive for every inbound packet so both
+        the packet inspector (Feature 4) and the LoRa sniffer stats (Feature 5)
+        share a single capture point. Runs on the meshtastic receive thread so
+        the lock must be acquired briefly.
+        """
+        try:
+            decoded = packet.get("decoded", {}) or {}
+            entry = {
+                "id":        packet.get("id"),
+                "from_id":   _node_id_from_num(packet.get("from")),
+                "to_id":     _node_id_from_num(packet.get("to")),
+                "portnum":   decoded.get("portnum") or "UNKNOWN",
+                "channel":   packet.get("channel", 0),
+                "rx_snr":    packet.get("rxSnr"),
+                "rx_rssi":   packet.get("rxRssi"),
+                "hop_limit": packet.get("hopLimit"),
+                "hop_start": packet.get("hopStart"),
+                "want_ack":  bool(packet.get("wantAck")),
+                "via_mqtt":  bool(packet.get("viaMqtt")),
+                "decoded_ok": bool(decoded.get("portnum")),
+                "timestamp": int(time.time()),
+                # Full decoded payload serialised to a JSON-safe dict. Bytes
+                # objects (raw payloads) are hex-encoded; enums are stringified.
+                "decoded": self._safe_json_value(decoded),
+            }
+            with self._packet_log_lock:
+                self._packet_log.appendleft(entry)  # newest first
+        except Exception as exc:  # defensive — never crash the receive thread
+            logger.debug("Error capturing packet to log (ignored): %s", exc)
+
+    def _safe_json_value(self, obj: Any) -> Any:
+        """Recursively convert an arbitrary value to a JSON-serialisable form.
+
+        The meshtastic library returns decoded packet dicts that may contain
+        bytes (raw payload), protobuf enum objects, or nested dicts. This
+        function recursively sanitises them so json.dumps() won't raise.
+        """
+        if isinstance(obj, dict):
+            return {k: self._safe_json_value(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [self._safe_json_value(i) for i in obj]
+        if isinstance(obj, bytes):
+            return obj.hex()
+        if isinstance(obj, (int, float, str, bool, type(None))):
+            return obj
+        # Protobuf enum objects and other types: stringify.
+        return str(obj)
+
+    # ----------------------------------------------------------------
+    # Routing ACK helpers (message delivery status)
+    # ----------------------------------------------------------------
+
+    def _capture_routing_ack(self, packet: Dict[str, Any]) -> None:
+        """Handle a ROUTING_APP packet — update outgoing message ACK status.
+
+        Meshtastic firmware sends a ROUTING_APP packet after delivering a DM.
+        The packet carries a ``requestId`` matching the packet ID returned by
+        ``sendText``, and an ``errorReason`` of NONE (success) or a non-zero
+        code (failure). We match it against _pending_acks and flip the
+        corresponding message entry's ack_status.
+        """
+        try:
+            decoded = packet.get("decoded", {}) or {}
+            routing = decoded.get("routing") or {}
+            # requestId may sit at the top level or inside the routing sub-dict,
+            # depending on the meshtastic library version.
+            request_id = routing.get("requestId") or packet.get("requestId")
+            if not request_id:
+                return
+            try:
+                request_id = int(request_id)
+            except (TypeError, ValueError):
+                return
+
+            error_reason = routing.get("errorReason", "NONE")
+            status = "delivered" if error_reason in ("NONE", 0, "", None) else "failed"
+
+            with self._msg_lock:
+                msg_id = self._pending_acks.pop(request_id, None)
+                self._pending_ack_times.pop(request_id, None)
+                if msg_id is None:
+                    return
+                for msg in self._messages:
+                    if msg.get("id") == msg_id:
+                        msg["ack_status"] = status
+                        msg["ack_at"] = int(time.time())
+                        break
+            self._schedule_save(self._messages, _MESSAGES_FILE)
+            logger.debug("ACK received for msg_id=%s: status=%s", msg_id, status)
+        except Exception as exc:  # defensive
+            logger.debug("Error handling routing ACK (ignored): %s", exc)
+
+    def _expire_pending_acks_sync(self) -> None:
+        """Mark timed-out outgoing messages as failed.
+
+        Any pending ACK older than _ACK_TIMEOUT_S that has not yet received a
+        ROUTING_APP reply is considered failed. Called from a periodic background
+        task via expire_pending_acks().
+        """
+        now = time.time()
+        timed_out = [
+            pid for pid, sent_at in list(self._pending_ack_times.items())
+            if now - sent_at > _ACK_TIMEOUT_S
+        ]
+        if not timed_out:
+            return
+        with self._msg_lock:
+            for pid in timed_out:
+                msg_id = self._pending_acks.pop(pid, None)
+                self._pending_ack_times.pop(pid, None)
+                if msg_id is None:
+                    continue
+                for msg in self._messages:
+                    if msg.get("id") == msg_id and msg.get("ack_status") == "sending":
+                        msg["ack_status"] = "failed"
+                        msg["ack_at"] = int(time.time())
+                        break
+        self._schedule_save(self._messages, _MESSAGES_FILE)
+        logger.debug("Expired %s timed-out pending ACKs", len(timed_out))
+
+    # ----------------------------------------------------------------
+    # Signal quality helpers
+    # ----------------------------------------------------------------
+
+    def _signal_quality(self, node_id: str) -> str:
+        """Compute a signal quality label from the rolling SNR history.
+
+        Uses a window of up to 10 recent SNR readings. Returns 'no_signal' if
+        no readings exist for the node (e.g. stale/offline nodes).
+        """
+        with self._snr_lock:
+            history = self._snr_history.get(node_id)
+            if not history:
+                return "no_signal"
+            avg = sum(history) / len(history)
+        if avg >= _SNR_EXCELLENT:
+            return "excellent"
+        if avg >= _SNR_GOOD:
+            return "good"
+        if avg >= _SNR_FAIR:
+            return "fair"
+        return "poor"
+
+    def _snr_avg(self, node_id: str) -> Optional[float]:
+        """Return the rolling SNR average (1 d.p.) or None if no history exists."""
+        with self._snr_lock:
+            history = self._snr_history.get(node_id)
+            if not history:
+                return None
+            return round(sum(history) / len(history), 1)
+
+    # ----------------------------------------------------------------
+    # Packet log / sniffer accessors
+    # ----------------------------------------------------------------
+
+    def _get_packet_log_sync(self, limit: int) -> List[Dict[str, Any]]:
+        """Return the most recent `limit` entries from the packet ring buffer."""
+        import itertools
+        with self._packet_log_lock:
+            return list(itertools.islice(self._packet_log, limit))
+
+    def _get_sniffer_stats_sync(self) -> Dict[str, Any]:
+        """Compute sniffer statistics over the last 60 seconds from the packet log."""
+        now = time.time()
+        window = 60.0
+        with self._packet_log_lock:
+            recent = [p for p in self._packet_log if (now - p["timestamp"]) <= window]
+            total = len(self._packet_log)
+        portnum_counts: Dict[str, int] = {}
+        unique_nodes: set = set()
+        for p in recent:
+            portnum = p.get("portnum", "UNKNOWN")
+            portnum_counts[portnum] = portnum_counts.get(portnum, 0) + 1
+            if p.get("from_id"):
+                unique_nodes.add(p["from_id"])
+        return {
+            "packets_per_minute": len(recent),
+            "unique_nodes": len(unique_nodes),
+            "portnum_distribution": portnum_counts,
+            "total_captured": total,
+        }
 
     def _load_tags(self) -> None:
         """Restore persisted node tags (best-effort)."""
@@ -1541,6 +1797,11 @@ class MeshtasticConnection:
                 node["tags"] = tags_snapshot[nid]
             if nid and nid in pos_hist_snapshot:
                 node["position_fix_count"] = pos_hist_snapshot[nid]
+            # Signal quality trend: computed from the rolling SNR window.
+            # Stale nodes have no recent SNR samples and will show "no_signal".
+            if nid:
+                node["signal_quality"] = self._signal_quality(nid)
+                node["snr_avg"] = self._snr_avg(nid)
 
         # Persist the merged list so evicted nodes survive restarts and the
         # next reconnect. Best-effort and debounced/off-thread.
@@ -1699,11 +1960,30 @@ class MeshtasticConnection:
             # sendText handles both broadcast (destinationId=None or BROADCAST)
             # and unicast DMs. The meshtastic library manages PKI encryption
             # automatically for DMs when a shared key is configured on the channel.
-            iface.sendText(
+            # sendText returns the outgoing packet object whose `.id` is the
+            # packet ID the firmware uses in the ROUTING_APP ACK reply.
+            sent_packet = iface.sendText(
                 text,
                 destinationId=to_num if to_num is not None else meshtastic.BROADCAST_ADDR,
                 channelIndex=channel,
             )
+
+            # Extract the packet ID so we can match the ROUTING_APP ACK.
+            packet_id: Optional[int] = None
+            if sent_packet is not None:
+                try:
+                    packet_id = int(
+                        sent_packet.id
+                        if hasattr(sent_packet, "id")
+                        else sent_packet.get("id", None)
+                    )
+                except (TypeError, ValueError, AttributeError):
+                    packet_id = None
+
+            # Broadcast messages never receive a ROUTING_APP reply from
+            # the firmware, so we mark them delivered immediately.
+            # DMs get "sending" and flip on ROUTING_APP receipt (or timeout).
+            initial_ack = "delivered" if not is_dm else "sending"
 
             entry = {
                 "from_id": self_id,
@@ -1717,11 +1997,18 @@ class MeshtasticConnection:
                 "rx_snr": None,
                 "rx_rssi": None,
                 "timestamp": int(time.time()),
+                "ack_status": initial_ack,
+                "ack_at": int(time.time()) if initial_ack == "delivered" else None,
+                "packet_id": packet_id,
             }
             with self._msg_lock:
                 entry["id"] = f"{self_id or 'unknown'}-{channel}-{self._msg_counter}"
                 self._msg_counter += 1
                 self._messages.append(entry)
+                # Register pending ACK only for DMs with a valid packet ID.
+                if is_dm and packet_id is not None:
+                    self._pending_acks[packet_id] = entry["id"]
+                    self._pending_ack_times[packet_id] = time.time()
             self._schedule_save(self._messages, _MESSAGES_FILE)
             return True
         except Exception as exc:

@@ -15,6 +15,7 @@ nodes we've already set up in a previous poll cycle.
 """
 import logging
 from datetime import datetime, timezone
+from math import asin, cos, radians, sin, sqrt
 from typing import Any, Dict, List, Optional
 
 from homeassistant.components.sensor import (
@@ -88,7 +89,10 @@ async def async_setup_entry(
                 nid not in coordinator.tracked_nodes or nid not in visible_ids
             ):
                 registered_entities.remove(entity)
-                registered_node_ids.discard(entity.unique_id)
+                # Discard by node_id (not unique_id) — the set is keyed on node_id.
+                # Using unique_id here would leave a stale entry that prevents
+                # re-tracking the node after it has been un-tracked.
+                registered_node_ids.discard(nid)
                 hass.async_create_task(entity.async_remove(force_remove=True))
 
         new_entities = []
@@ -125,6 +129,7 @@ async def async_setup_entry(
                 NodeNeighborCountSensor(coordinator, entry, node_id),
                 NodePositionFixCountSensor(coordinator, entry, node_id),
                 NodeTagsSensor(coordinator, entry, node_id),
+                NodeSignalQualitySensor(coordinator, entry, node_id),
             ]
 
             for sensor in sensor_set:
@@ -500,11 +505,6 @@ class NodeMessageSensor(_NodeSensorBase):
         node_id = self._norm_node_id(self._node_id)
         self_id = self._self_node_id()
 
-        logger.debug(
-            "NodeMessageSensor filtering: node_id=%s, self_id=%s, total_messages=%s",
-            node_id, self_id, len(messages)
-        )
-
         out = []
         for m in messages:
             from_id = self._norm_node_id(m.get("from_id"))
@@ -514,25 +514,17 @@ class NodeMessageSensor(_NodeSensorBase):
             # Recompute direction from the tracked node id so it's robust even when the
             # addon's captured ``outgoing`` flag was unreliable.
             is_outgoing = (from_id == node_id) if node_id else bool(m.get("outgoing"))
-            logger.debug(
-                "Message check: from_id=%s, to_id=%s, is_outgoing=%s, self._outgoing=%s, match=%s",
-                from_id, to_id, is_outgoing, self._outgoing, is_outgoing == self._outgoing
-            )
             if is_outgoing == self._outgoing:
                 out.append(m)
         return out
 
     @property
-    def native_value(self) -> str:
+    def native_value(self) -> Optional[str]:
         """Return the most recent message text for this direction."""
         node_messages = self._node_messages()
-        logger.debug(
-            "NodeMessageSensor (node_id=%s, outgoing=%s): filtered count=%s",
-            self._node_id, self._outgoing, len(node_messages)
-        )
         if not node_messages:
             return None
-        # Messages are returned oldest first, so get the last one
+        # Messages are returned oldest first; take the last (most recent) one.
         return node_messages[-1].get("text")
 
 
@@ -585,7 +577,6 @@ class NodeDistanceSensor(_NodeSensorBase):
         self_node = next((n for n in nodes if n.get("id") == self_id), None)
         if not self_node or self_node.get("latitude") is None or self_node.get("longitude") is None:
             return None
-        from math import asin, cos, radians, sin, sqrt
         R = 6371.0
         lat1, lon1 = radians(self_node["latitude"]), radians(self_node["longitude"])
         lat2, lon2 = radians(node["latitude"]), radians(node["longitude"])
@@ -651,6 +642,18 @@ class NodeTagsSensor(_NodeSensorBase):
         if not tags or not isinstance(tags, list):
             return None
         return ", ".join(tags)
+
+
+class NodeSignalQualitySensor(_NodeSensorBase):
+    """Rolling signal quality rating: excellent / good / fair / poor / no_signal."""
+
+    _metric_key = "signal_quality"
+    _attr_icon = "mdi:signal"
+
+    def __init__(self, coordinator, entry, node_id):
+        super().__init__(coordinator, entry, node_id)
+        self._attr_unique_id = f"{entry.entry_id}_{node_id}_signal_quality"
+        self._attr_name = "Signal Quality"
 
 
 # ---------------------------------------------------------------------------

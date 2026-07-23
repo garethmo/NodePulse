@@ -79,6 +79,14 @@
         Topology
       </div>
 
+      <div class="nav-item" data-view="packets" role="button" tabindex="0">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
+          <polyline points="22,6 12,13 2,6"/>
+        </svg>
+        Packets
+      </div>
+
       <div class="nav-item" data-view="settings" role="button" tabindex="0">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
           <circle cx="12" cy="12" r="3"/>
@@ -110,12 +118,15 @@
           <button class="tab-btn active" data-view="dashboard">Dashboard</button>
           <button class="tab-btn" data-view="nodes">Nodes</button>
           <button class="tab-btn" data-view="map">Map</button>
+          <button class="tab-btn" data-view="topology">Topology</button>
+          <button class="tab-btn" data-view="packets">Packets</button>
           <button class="tab-btn" data-view="settings">Settings</button>
         </div>
       </div>
       <div id="header-status">
         <div class="status-dot" id="status-dot"></div>
         <span id="status-label">Connecting…</span>
+        <button id="bell-btn" title="Enable browser notifications" type="button" style="margin-left:12px;background:transparent;border:1px solid var(--border-subtle);border-radius:var(--radius-sm);color:var(--text-secondary);cursor:pointer;padding:4px 8px;font-size:16px;line-height:1">🔔</button>
         <button id="theme-toggle" title="Toggle dark/light theme" type="button" style="margin-left:12px;background:transparent;border:1px solid var(--border-subtle);border-radius:var(--radius-sm);color:var(--text-secondary);cursor:pointer;padding:4px 8px;font-size:13px;line-height:1">🌙</button>
       </div>
     </header>
@@ -346,6 +357,50 @@
         </div>
         <!-- Graph canvas -->
         <div id="topology-container"></div>
+      </div>
+
+      <!-- ---- PACKETS VIEW ------------------------------------------- -->
+      <div id="view-packets" class="view">
+        <div class="card" style="border:none;padding:0">
+          <div class="card-header" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+            <h1 style="font-size:20px;font-weight:700;margin:0">Packet Inspector</h1>
+            <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+              <input type="text" id="pkt-filter-port" placeholder="Filter portnum…" style="min-width:120px;padding:6px 10px;border:1px solid var(--border-subtle);border-radius:var(--radius-sm);background:var(--card-bg);color:var(--text-primary);font-size:13px" />
+              <input type="text" id="pkt-filter-node" placeholder="Filter node ID…" style="min-width:120px;padding:6px 10px;border:1px solid var(--border-subtle);border-radius:var(--radius-sm);background:var(--card-bg);color:var(--text-primary);font-size:13px" />
+              <button id="pkt-clear" style="padding:6px 12px;border:1px solid var(--border-subtle);border-radius:var(--radius-sm);background:var(--card-bg);color:var(--text-primary);cursor:pointer;font-size:13px">Clear</button>
+              <button id="pkt-export-json" style="padding:6px 12px;border:1px solid var(--border-subtle);border-radius:var(--radius-sm);background:var(--card-bg);color:var(--text-primary);cursor:pointer;font-size:13px">Export JSON</button>
+              <button id="pkt-export-csv" style="padding:6px 12px;border:1px solid var(--border-subtle);border-radius:var(--radius-sm);background:var(--card-bg);color:var(--text-primary);cursor:pointer;font-size:13px">Export CSV</button>
+              <button id="sniffer-toggle" style="padding:6px 12px;border:1px solid var(--border-subtle);border-radius:var(--radius-sm);background:var(--card-bg);color:var(--text-primary);cursor:pointer;font-size:13px">📊 Stats</button>
+            </div>
+          </div>
+          <!-- Sniffer stats panel -->
+          <div id="sniffer-panel" class="hidden" style="padding:16px;background:var(--card-bg);border-bottom:1px solid var(--border-subtle)">
+            <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:center">
+              <div><strong>Packets/min:</strong> <span id="sniffer-ppm">0</span></div>
+              <div><strong>Unique nodes:</strong> <span id="sniffer-nodes">0</span></div>
+              <div><strong>Total captured:</strong> <span id="sniffer-total">0</span></div>
+            </div>
+            <div id="sniffer-dist-bars" style="margin-top:12px;display:flex;flex-direction:column;gap:4px"></div>
+          </div>
+          <!-- Packet table -->
+          <div style="overflow-x:auto">
+            <table style="width:100%;border-collapse:collapse;font-size:13px">
+              <thead>
+                <tr style="background:var(--bg-subtle);text-align:left">
+                  <th style="padding:8px 12px;border-bottom:1px solid var(--border-subtle)">Time</th>
+                  <th style="padding:8px 12px;border-bottom:1px solid var(--border-subtle)">Portnum</th>
+                  <th style="padding:8px 12px;border-bottom:1px solid var(--border-subtle)">From</th>
+                  <th style="padding:8px 12px;border-bottom:1px solid var(--border-subtle)">To</th>
+                  <th style="padding:8px 12px;border-bottom:1px solid var(--border-subtle)">Ch</th>
+                  <th style="padding:8px 12px;border-bottom:1px solid var(--border-subtle)">SNR</th>
+                  <th style="padding:8px 12px;border-bottom:1px solid var(--border-subtle)">Hops</th>
+                  <th style="padding:8px 12px;border-bottom:1px solid var(--border-subtle)">ACK</th>
+                </tr>
+              </thead>
+              <tbody id="packet-table-body"></tbody>
+            </table>
+          </div>
+        </div>
       </div>
 
       <!-- ---- SETTINGS VIEW ------------------------------------------ -->

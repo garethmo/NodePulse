@@ -35,8 +35,10 @@ async def async_setup_entry(
 ) -> None:
     """Dynamic geo_location discovery — same pattern as sensor.py."""
     coordinator: NodePulseCoordinator = hass.data[DOMAIN][entry.entry_id]
-    coordinator.registered_geo_ids: set = getattr(coordinator, "registered_geo_ids", set())
-    coordinator.registered_geo_entities: list = getattr(coordinator, "registered_geo_entities", [])
+    # Reset discovery bookkeeping on each setup (also runs after a reload), so
+    # entities are re-created rather than skipped by a stale set.
+    coordinator.registered_geo_ids = set()
+    coordinator.registered_geo_entities = []
     registered_node_ids = coordinator.registered_geo_ids
     registered_entities = coordinator.registered_geo_entities
 
@@ -91,6 +93,10 @@ class NodeGeoLocation(CoordinatorEntity, GeolocationEvent):
     _attr_name = "Map Location"
     _attr_icon = "mdi:map-marker-radius"
     _attr_source_type = "gps"
+    # Required by GeolocationEvent.source (@cached_property → self._attr_source).
+    # Must be set at class level; omitting it causes an AttributeError on every
+    # state write because the cached_property resolver raises before HA can catch it.
+    _attr_source = "nodepulse"
 
     def __init__(
         self,

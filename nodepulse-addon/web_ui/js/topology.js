@@ -133,12 +133,15 @@ export class TopologyManager {
         timestep: 0.4,
         stabilization: { iterations: 200, fit: true },
       },
-      interaction: {
-        hover: true,
-        tooltipDelay: 150,
-        navigationButtons: false,
-        keyboard: { enabled: true, bindToWindow: false },
-      },
+ interaction: {
+ hover: true,
+ tooltipDelay: 150,
+ dragNodes: true,     // Allow dragging nodes with the mouse
+ dragView: true,       // Allow panning the view with the mouse
+ zoomView: true,       // Allow zooming with mouse wheel or pinch
+ navigationButtons: false,
+ keyboard: { enabled: true, bindToWindow: false },
+ },
       layout: {
         improvedLayout: true,
       },

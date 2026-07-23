@@ -96,6 +96,12 @@ class NodePulseCoordinator(DataUpdateCoordinator):
         self.registered_sensor_entities: List[Any] = []
         self.registered_tracker_ids: Set[str] = set()
         self.registered_tracker_entities: List[Any] = []
+        # Declared here (not monkey-patched in platform setup) so static
+        # analysis can see the full coordinator state.
+        self.registered_binary_ids: Set[str] = set()
+        self.registered_binary_entities: List[Any] = []
+        self.registered_geo_ids: Set[str] = set()
+        self.registered_geo_entities: List[Any] = []
 
         # Message IDs already handed to the logbook / device-trigger systems,
         # so each arriving message is processed exactly once. Bounded so it

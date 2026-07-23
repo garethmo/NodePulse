@@ -21,6 +21,7 @@
   --bg-card-hover:     #1a2440;
   --bg-input:          #0d1523;
   --bg-highlight:      rgba(0, 212, 170, 0.06);
+  --bg-subtle:         rgba(255, 255, 255, 0.03);
 
   /* Borders */
   --border-subtle:     rgba(255, 255, 255, 0.06);
@@ -49,9 +50,9 @@
   --space-xl:   32px;
 
   /* Border radius */
-  --radius-sm:  6px;
-  --radius-md:  10px;
-  --radius-lg:  16px;
+  --radius-sm:  4px;
+  --radius-md:  8px;
+  --radius-lg:  12px;
   --radius-xl:  24px;
 
   /* Transitions */
@@ -114,6 +115,9 @@ body::before {
   pointer-events: none;
   z-index: 0;
 }
+
+/* Utility: hidden (used across all viewports for toggle panels like sniffer stats) */
+.hidden { display: none !important; }
 
 /* --- App Shell Layout ----------------------------------------------------- */
 #app {
@@ -1541,6 +1545,45 @@ body.nav-open #sidebar-backdrop { display: block; }
 
   #messaging-card  { order: 1; min-height: 420px; }
   #map-card        { order: 2; min-height: 60vh; }
+
+  .hidden { display: none !important; }
+
+  /* Packet inspector styles */
+  .packet-row { cursor: pointer; }
+  .packet-row:hover { background: var(--bg-highlight); }
+  .packet-detail { background: var(--bg-subtle); }
+  .packet-detail pre.json-dump {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.78rem;
+    color: var(--text-primary);
+    white-space: pre-wrap;
+    background: var(--card-bg);
+    padding: 8px;
+    border-radius: var(--radius-sm);
+    margin: 0;
+  }
+  .portnum-badge { font-weight: 600; font-size: 0.8rem; }
+  .mono { font-family: 'JetBrains Mono', monospace; }
+  .pkt-name { color: var(--text-muted); font-size: 0.75rem; font-family: var(--font-family); }
+
+  /* Signal quality badge */
+  .quality-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: var(--radius-sm);
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+
+  /* Bell notification button */
+  #bell-btn.active { color: var(--text-teal); border-color: var(--border-accent); }
+
+  /* Message ACK status badges */
+  .msg-status { font-size: 0.7rem; margin-left: 4px; opacity: 0.8; }
+  .ack-sending { color: var(--text-muted); }
+  .ack-delivered { color: var(--text-success); }
+  .ack-failed { color: var(--text-danger); }
   #node-list-card  { order: 3; min-height: 320px; }
   #charts-row      { min-height: 220px; }
 

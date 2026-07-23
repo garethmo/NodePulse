@@ -13,7 +13,7 @@
  * is easy to trace top-to-bottom.
  */
 
-import { fetchStatus, fetchNodes, fetchChannels, fetchMessages, sendMessage, requestTraceRoute, requestPosition, fetchTrackedNodes, trackNode, clearStaleNodes, fetchTags, setTags, fetchPositionHistory } from './api.js';
+import { fetchStatus, fetchNodes, fetchChannels, fetchMessages, sendMessage, requestTraceRoute, requestPosition, fetchTrackedNodes, trackNode, clearStaleNodes, fetchTags, setTags, fetchPositionHistory, fetchPackets, fetchSnifferStats } from './api.js';
 import { MapManager } from './map.js';
 import { ChartManager } from './charts.js';
 import { TopologyManager } from './topology.js';
@@ -49,6 +49,16 @@ const state = {
   channels:       [],       // configured mesh channels from the node
   nodeTags:        {},       // node_id -> [tag strings], loaded from /api/tags
   // Counter incremented on each fast poll cycle. Used to throttle the slow
+  // Packet inspector / sniffer state
+  packetLog:          [],
+  snifferStats:       null,
+  packetFilter:       '',
+  packetNodeFilter:   '',
+
+  // Notification state (Feature 2)
+  _lastSeenMsgId:     localStorage.getItem('np_last_msg_id') || null,
+  _notifPermission:   localStorage.getItem('np_notifications') || 'default',
+
   // tracked-nodes refresh so it does not run on every 15s tick.
   _pollCount:     0,
 };
@@ -308,6 +318,13 @@ function renderNodesGrid(nodes) {
         </div>`;
     }
 
+    const qualityLabel = { excellent: 'EXCELLENT', good: 'GOOD', fair: 'FAIR', poor: 'POOR', no_signal: 'NO SIGNAL' };
+    const qualityColor = { excellent: '#00e5ff', good: '#69f0ae', fair: '#ffeb3b', poor: '#ff5252', no_signal: '#9e9e9e' };
+    const quality = node.signal_quality || 'no_signal';
+    const qColor  = qualityColor[quality] || '#9e9e9e';
+    const qBadge  = `<span class="quality-badge" style="background:${qColor}18;color:${qColor};border:1px solid ${qColor}50">${qualityLabel[quality] || 'NO SIGNAL'}</span>`;
+    const snrAvgText = node.snr_avg != null ? `${node.snr_avg} dB avg` : '';
+
     const nodeTags = state.nodeTags[node.id] || [];
     const tagsHtml = nodeTags.length
       ? `<div class="node-card-tags">${nodeTags.map(t => `<span class="node-tag">${escapeHtml(t)}</span>`).join('')}</div>`
@@ -319,7 +336,10 @@ function renderNodesGrid(nodes) {
           <div class="node-card-name">${noGpsMark} ${escapeHtml(node.long_name || node.id)} ${staleMark}</div>
           <div class="node-card-id">${escapeHtml(node.id)}</div>
         </div>
-        <span class="node-card-hw">${escapeHtml(node.hw_model || 'Unknown')}</span>
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
+          <span class="node-card-hw">${escapeHtml(node.hw_model || 'Unknown')}</span>
+          ${qBadge}${snrAvgText ? `<span style="font-size:0.68rem;color:var(--text-muted)">${snrAvgText}</span>` : ''}
+        </div>
       </div>
       ${tagsHtml}
       <div class="node-card-tag-edit">
@@ -642,7 +662,7 @@ function renderMessageList() {
   // the full DOM rebuild when nothing changed. This prevents the scroll-jump-
   // to-bottom on every 15s poll when no new messages arrived.
   const fingerprint = state.activeConversation + '|' + q + '|' + filtered.map(m =>
-    `${m.id}:${m.status || ''}:${m.text}`
+    `${m.id}:${m.ack_status || m.status || ''}:${m.text}`
   ).join('|');
   if (list.dataset.fingerprint === fingerprint && list.innerHTML !== '') return;
   list.dataset.fingerprint = fingerprint;
@@ -663,15 +683,18 @@ function renderMessageList() {
     const time = new Date((msg.timestamp || Date.now() / 1000) * 1000)
       .toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 
-    // Delivery status indicator for outgoing messages.
+    // Delivery / ACK status indicator. Uses server ack_status field if present,
+    // falling back to the optimistic local status field.
     let statusHtml = '';
     if (msg.outgoing) {
-      if (msg.status === 'sending') {
-        statusHtml = `<span class="msg-status sending" title="Sending…">🕓</span>`;
-      } else if (msg.status === 'sent') {
-        statusHtml = `<span class="msg-status sent" title="Delivered to node">✓</span>`;
-      } else if (msg.status === 'failed') {
-        statusHtml = `<span class="msg-status failed" title="Send failed — click to retry">⚠ Failed</span>`;
+      const ack = msg.ack_status || msg.status;
+      if (ack === 'sending') {
+        statusHtml = `<span class="msg-status ack-sending" title="Waiting for delivery confirmation">⏳</span>`;
+      } else if (ack === 'delivered' || ack === 'sent') {
+        const label = msg.is_dm ? 'Delivered (ACK received)' : 'Sent to mesh';
+        statusHtml = `<span class="msg-status ack-delivered" title="${label}">✅</span>`;
+      } else if (ack === 'failed') {
+        statusHtml = `<span class="msg-status ack-failed" title="Delivery failed — click to retry">❌</span>`;
         bubble.classList.add('failed');
       }
     }
@@ -820,6 +843,8 @@ function switchView(viewName) {
     } else if (viewName === 'topology') {
       topology.init();
       topology.updateData(state);
+    } else if (viewName === 'packets') {
+      pollPackets();
     }
   });
 }
@@ -1012,6 +1037,8 @@ async function pollData() {
     refreshTrackedNodes();
   }
 
+  if (state.currentView === 'packets') pollPackets();
+
   // Schedule the next poll safely (no overlapping executions if a fetch stalls).
   setTimeout(pollData, POLL_INTERVAL_MS);
 }
@@ -1024,17 +1051,76 @@ async function pollData() {
 function renderIncomingMessages(messages) {
   if (!Array.isArray(messages)) return;
   let changed = false;
+
   for (const msg of messages) {
-    if (!msg.id || state.seenMessageIds.has(msg.id)) continue;
+    if (!msg.id) continue;
+
+    // Patch ACK status on already-seen outgoing messages (server resolved it).
+    if (state.seenMessageIds.has(msg.id)) {
+      const key = msg.conversation || (msg.is_dm ? `dm:${msg.from_id}` : `ch:${msg.channel ?? 0}`);
+      const thread = state.messagesByConv[key];
+      if (thread) {
+        const stored = thread.find(m => m.id === msg.id);
+        if (stored && msg.ack_status && stored.ack_status !== msg.ack_status) {
+          stored.ack_status = msg.ack_status;
+          stored.ack_at    = msg.ack_at;
+          changed = true;
+        }
+      }
+      continue;
+    }
+
     state.seenMessageIds.add(msg.id);
     storeMessage(msg);
     changed = true;
+
+    if (!msg.outgoing) _fireNewMessageNotification(msg);
   }
+
   if (changed) {
     renderConversationTabs();
-    // Only repaint the list if we're looking at the affected (or a) thread.
     renderMessageList();
   }
+}
+
+// ============================================================================
+// Browser Notifications (Feature 2)
+// ============================================================================
+
+function _fireNewMessageNotification(msg) {
+  if (!('Notification' in window)) return;
+  if (Notification.permission !== 'granted') return;
+  if (document.visibilityState === 'visible') return;
+  const title = `NodePulse — ${msg.from_name || msg.from_id || 'Unknown'}`;
+  const body  = (msg.text || '').length > 100 ? msg.text.slice(0, 97) + '…' : msg.text;
+  try {
+    const n = new Notification(title, { body, icon: '/assets/icon.png', tag: msg.id });
+    n.onclick = () => { window.focus(); n.close(); };
+  } catch (_) { /* Not supported in this context */ }
+}
+
+async function requestNotificationPermission() {
+  if (!('Notification' in window)) {
+    showToast('Browser notifications not supported in this context.', 'error');
+    return;
+  }
+  const result = await Notification.requestPermission();
+  state._notifPermission = result;
+  localStorage.setItem('np_notifications', result);
+  _updateBellButton();
+  if (result === 'granted') showToast('Notifications enabled ✓', 'success');
+  else if (result === 'denied') showToast('Notifications blocked — check browser settings.', 'error');
+}
+
+function _updateBellButton() {
+  const btn = document.getElementById('bell-btn');
+  if (!btn) return;
+  const perm = ('Notification' in window) ? Notification.permission : 'unsupported';
+  btn.textContent = perm === 'denied' ? '🔕' : '🔔';
+  btn.title = perm === 'granted'  ? 'Notifications ON — click to manage'
+            : perm === 'denied'   ? 'Notifications BLOCKED by browser'
+            : 'Enable notifications';
+  btn.classList.toggle('active', perm === 'granted');
 }
 
 // ============================================================================
@@ -1231,6 +1317,23 @@ async function init() {
     searchEl.addEventListener('input', () => topology.setSearchTerm(searchEl.value));
   }
 
+  // Bell notification button (Feature 2).
+  const bellBtn = document.getElementById('bell-btn');
+  if (bellBtn) bellBtn.addEventListener('click', requestNotificationPermission);
+  _updateBellButton();
+
+  // Packet inspector controls.
+  const pktPortFilter = document.getElementById('pkt-filter-port');
+  if (pktPortFilter) pktPortFilter.addEventListener('input', e => { state.packetFilter = e.target.value; renderPacketTable(); });
+  const pktNodeFilter = document.getElementById('pkt-filter-node');
+  if (pktNodeFilter) pktNodeFilter.addEventListener('input', e => { state.packetNodeFilter = e.target.value; renderPacketTable(); });
+  document.getElementById('pkt-clear')?.addEventListener('click', () => { state.packetLog=[]; renderPacketTable(); });
+  document.getElementById('pkt-export-json')?.addEventListener('click', exportPacketsJSON);
+  document.getElementById('pkt-export-csv')?.addEventListener('click', exportPacketsCSV);
+  const snifferToggle = document.getElementById('sniffer-toggle');
+  const snifferPanel  = document.getElementById('sniffer-panel');
+  if (snifferToggle && snifferPanel) snifferToggle.addEventListener('click', () => snifferPanel.classList.toggle('hidden'));
+
   switchView('dashboard');
 
   // Initial data load — show a spinner state while waiting.
@@ -1326,4 +1429,107 @@ function wireMapFilters() {
 // ============================================================================
 
 // Start the app when the DOM is ready.
+// ============================================================================
+// Packet Inspector & LoRa Sniffer (Features 4 & 5)
+// ============================================================================
+
+const PORTNUM_COLORS = {
+  TEXT_MESSAGE_APP: '#00e5ff', TELEMETRY_APP: '#69f0ae', POSITION_APP: '#ffeb3b',
+  NODEINFO_APP: '#ce93d8',     NEIGHBORINFO_APP: '#80cbc4', TRACEROUTE_APP: '#ff8a65',
+  ROUTING_APP: '#90caf9',      ADMIN_APP: '#ef9a9a',       UNKNOWN: '#9e9e9e',
+};
+function _portnumColor(p) { return PORTNUM_COLORS[p] || '#9e9e9e'; }
+function _fmtPacketTime(ts) {
+  if (!ts) return '—';
+  return new Date(ts * 1000).toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+}
+
+function renderPacketTable() {
+  const tbody = document.getElementById('packet-table-body');
+  if (!tbody) return;
+  const pf = state.packetFilter.toLowerCase();
+  const nf = state.packetNodeFilter.toLowerCase();
+  const packets = state.packetLog.filter(p => {
+    if (pf && !(p.portnum || '').toLowerCase().includes(pf)) return false;
+    if (nf) { const f=(p.from_id||'').toLowerCase(),t=(p.to_id||'').toLowerCase(); if(!f.includes(nf)&&!t.includes(nf)) return false; }
+    return true;
+  });
+  tbody.innerHTML = '';
+  for (const pkt of packets) {
+    const color = _portnumColor(pkt.portnum);
+    const tr = document.createElement('tr');
+    tr.className = 'packet-row';
+    tr.innerHTML = `
+      <td class="packet-time">${_fmtPacketTime(pkt.timestamp)}</td>
+      <td><span class="portnum-badge" style="color:${color}">${escapeHtml(pkt.portnum||'UNKNOWN')}</span></td>
+      <td class="mono pkt-id">${escapeHtml(pkt.from_id||'—')}${shortNameFor(pkt.from_id) ? ' <span class="pkt-name">'+escapeHtml(shortNameFor(pkt.from_id))+'</span>' : ''}</td>
+      <td class="mono pkt-id">${escapeHtml(pkt.to_id  ||'—')}</td>
+      <td>${pkt.channel??'—'}</td>
+      <td>${pkt.rx_snr!=null?pkt.rx_snr.toFixed(1):'—'}</td>
+      <td>${pkt.hop_limit!=null?`${pkt.hop_limit}/${pkt.hop_start??'?'}`:'—'}</td>
+      <td>${pkt.want_ack?'✓':''}</td>`;
+    const detail = document.createElement('tr');
+    detail.className = 'packet-detail hidden';
+    const pre = document.createElement('pre'); pre.className = 'json-dump';
+    try { pre.textContent = JSON.stringify(pkt.decoded, null, 2); } catch { pre.textContent = '(unparseable)'; }
+    const dtd = document.createElement('td'); dtd.colSpan = 8; dtd.appendChild(pre);
+    detail.appendChild(dtd);
+    tr.addEventListener('click', () => detail.classList.toggle('hidden'));
+    tbody.appendChild(tr); tbody.appendChild(detail);
+  }
+  if (!packets.length) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td colspan="8" style="text-align:center;color:var(--text-muted);padding:24px">${state.packetLog.length===0?'No packets captured yet — waiting for mesh traffic.':'No packets match the current filter.'}</td>`;
+    tbody.appendChild(tr);
+  }
+}
+
+function renderSnifferStats(stats) {
+  if (!stats) return;
+  const sid = id => document.getElementById(id);
+  if (sid('sniffer-ppm'))   sid('sniffer-ppm').textContent   = stats.packets_per_minute ?? 0;
+  if (sid('sniffer-nodes')) sid('sniffer-nodes').textContent = stats.unique_nodes       ?? 0;
+  if (sid('sniffer-total')) sid('sniffer-total').textContent = stats.total_captured     ?? 0;
+  const dist = stats.portnum_distribution || {};
+  const bars = sid('sniffer-dist-bars');
+  if (!bars) return;
+  const total = Object.values(dist).reduce((a,b)=>a+b,0)||1;
+  const sorted = Object.entries(dist).sort((a,b)=>b[1]-a[1]).slice(0,8);
+  bars.innerHTML = sorted.map(([portnum,count]) => {
+    const pct = Math.round((count/total)*100);
+    const color = _portnumColor(portnum);
+    return `<div class="sniffer-bar-row">
+      <span class="sniffer-portnum" style="color:${color}">${escapeHtml(portnum)}</span>
+      <div class="sniffer-bar-track"><div class="sniffer-bar-fill" style="width:${pct}%;background:${color}40;border-right:2px solid ${color}"></div></div>
+      <span class="sniffer-pct">${pct}%</span>
+    </div>`;
+  }).join('');
+}
+
+function exportPacketsJSON() {
+  const blob = new Blob([JSON.stringify(state.packetLog,null,2)],{type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href=url; a.download='nodepulse_packets.json'; a.click(); URL.revokeObjectURL(url);
+}
+
+function exportPacketsCSV() {
+  const cols = ['timestamp','from_id','to_id','portnum','channel','rx_snr','rx_rssi','hop_limit','want_ack','via_mqtt','decoded_ok'];
+  const rows = state.packetLog.map(p=>cols.map(c=>JSON.stringify(p[c]??'')).join(','));
+  const csv = [cols.join(','),...rows].join('\n');
+  const blob = new Blob([csv],{type:'text/csv'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href=url; a.download='nodepulse_packets.csv'; a.click(); URL.revokeObjectURL(url);
+}
+
+async function pollPackets() {
+  if (state.currentView !== 'packets') return;
+  try {
+    const [pkts, stats] = await Promise.all([fetchPackets(200), fetchSnifferStats()]);
+    state.packetLog    = pkts   || [];
+    state.snifferStats = stats  || null;
+    renderPacketTable();
+    renderSnifferStats(state.snifferStats);
+  } catch (err) { console.warn('Packet poll failed:', err); }
+}
+
 document.addEventListener('DOMContentLoaded', init);

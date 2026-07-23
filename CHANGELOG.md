@@ -2,6 +2,21 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.0.0] - 2026-07-23
+### Added
+- **Major Release** — NodePulse reaches 1.0! Stable release with full feature parity.
+- **Packet Inspector** — Real-time packet capture ring buffer showing every inbound Meshtastic packet with portnum, source/destination (with short names), channel, SNR, hop count, ACK status, and expandable JSON detail. Filter by portnum or node ID, export to JSON/CSV, and view live sniffer stats (packets/min, unique nodes, portnum distribution).
+- **Dynamic Topology Toolbar** — Interactive toggles for node names, traceroute edges, neighbor edges, physics simulation, plus node search with real-time highlight filtering and a "Reset" layout button.
+- **Coverage Heatmap Loading Indicator** — Toast notification "Loading heatmap data…" while initial position history fetches.
+- **Heatmap Canvas Optimization** — Patched leaflet-heat's simpleheat with `willReadFrequently: true` canvas hint, silencing Chrome DevTools warnings and improving redraw performance.
+- **Zero-Size Canvas Crash Guard** — Defensive monkeypatch and size checks prevent `IndexSizeError` when map container hasn't laid out yet.
+- **Heatmap Refresh Cadence** — Position history now fetched every poll (15s) when heatmap is visible; reverts to 8-poll cadence when hidden.
+- **Heatmap Toggle UX** — Enabling heatmap (🌡 button or **M** key) immediately triggers a fresh fetch.
+- **Redundant Redraw Elimination** — `updateTrails` compares serialized heatmap points; skips expensive `setLatLngs()` if unchanged.
+
+### Changed
+- **Quality Scale Promoted** — Integration manifest quality scale promoted to `silver`.
+
 ## [0.2.38] - 2026-07-23
 ### Fixed
 - **Raw HTML in topology node hover tooltips** — Escaped HTML entities in node tooltip text when hovering over nodes in the topology graph. Ensures special characters (`<`, `>`, `&`, etc) are rendered as text rather than parsed as HTML in tooltips.

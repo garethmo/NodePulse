@@ -28,10 +28,12 @@ from .routes import (
     handle_clear_stale_nodes,
     handle_messages,
     handle_nodes,
+    handle_packets,
     handle_position_history,
     handle_request_position,
     handle_send,
     handle_set_tags,
+    handle_sniffer_stats,
     handle_status,
     handle_tags,
     handle_traceroute,
@@ -77,6 +79,18 @@ async def _on_startup(app: web.Application) -> None:
     # in sync with the radio without waiting for a config push.
     app["channel_refresh_task"] = asyncio.create_task(conn.run_channel_refresh_loop())
 
+    # Launch the ACK expiry sweep. Runs every 10 s and marks DM messages
+    # whose ROUTING_APP reply never arrived within _ACK_TIMEOUT_S as failed.
+    async def _run_ack_expiry_loop() -> None:
+        while True:
+            await asyncio.sleep(10)
+            try:
+                await conn.expire_pending_acks()
+            except Exception as exc:  # defensive: never crash the task
+                logger.debug("ACK expiry sweep error (ignored): %s", exc)
+
+    app["ack_expiry_task"] = asyncio.create_task(_run_ack_expiry_loop())
+
 
 async def _on_shutdown(app: web.Application) -> None:
     """
@@ -100,6 +114,14 @@ async def _on_shutdown(app: web.Application) -> None:
         channel_refresh_task.cancel()
         try:
             await channel_refresh_task
+        except asyncio.CancelledError:
+            pass  # expected on cancel
+
+    ack_expiry_task: asyncio.Task = app.get("ack_expiry_task")
+    if ack_expiry_task and not ack_expiry_task.done():
+        ack_expiry_task.cancel()
+        try:
+            await ack_expiry_task
         except asyncio.CancelledError:
             pass  # expected on cancel
 
@@ -153,6 +175,8 @@ def build_app(config) -> web.Application:
     app.router.add_get("/api/position-history/{node_id}", handle_position_history)
     app.router.add_get("/api/tracked-nodes", handle_tracked_nodes)
     app.router.add_post("/api/track-node", handle_track_node)
+    app.router.add_get("/api/packets", handle_packets)
+    app.router.add_get("/api/sniffer/stats", handle_sniffer_stats)
 
     # --- Static Web UI ---
     # Serve the dashboard from the root path. Under HA Ingress the addon is

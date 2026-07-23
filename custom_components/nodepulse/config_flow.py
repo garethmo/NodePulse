@@ -30,12 +30,14 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
 )
+from .host_candidates import host_candidates_for_addon
 
 logger = logging.getLogger(__name__)
 
 # Validation schema for the initial setup step.
+# The suggested value uses the correct modern HAOS Supervisor DNS name.
 _STEP_USER_SCHEMA = vol.Schema({
-    vol.Required(CONF_HOST, description={"suggested_value": "http://a0d7b954-nodepulse:8099"}): str,
+    vol.Required(CONF_HOST, description={"suggested_value": "http://local-nodepulse"}): str,
     vol.Optional(CONF_ACCESS_KEY, default=""): str,
     vol.Optional(CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL): vol.All(int, vol.Range(min=10, max=300)),
 })
@@ -85,39 +87,8 @@ async def _validate_connection(session: aiohttp.ClientSession, host: str) -> str
 
 
 def _host_candidates(host: str) -> list:
-    """
-    Build an ordered list of host URLs to try when reaching the addon.
-
-    Starts with the user-supplied value, then falls back through the standard
-    supervisor addon container DNS names. The addon slug is ``nodepulse`` and
-    supervisor prefixes addon container names with ``a0d7b954-``.
-    """
-    candidates = []
-    if host:
-        candidates.append(host.rstrip("/"))
-    slug = "nodepulse"
-    slug2 = "nodepulse_addon"
-    for base in (
-        f"http://a0d7b954-{slug}",
-        f"http://a0d7b954-{slug}:8099",
-        f"http://addon_{slug}",
-        f"http://addon_{slug}:8099",
-        f"http://local-{slug}",
-        f"http://local-{slug}:8099",
-        f"http://local_{slug}",
-        f"http://local_{slug}:8099",
-        f"http://local-{slug2}",
-        f"http://local-{slug2}:8099",
-        f"http://local_{slug2}",
-        f"http://local_{slug2}:8099",
-        f"http://local-{slug2.replace('_', '-')}",
-        f"http://local-{slug2.replace('_', '-')}:8099",
-        f"http://{slug}",
-        f"http://{slug}:8099",
-    ):
-        if base not in candidates:
-            candidates.append(base)
-    return candidates
+    """Delegate to the shared host-candidate builder in host_candidates.py."""
+    return host_candidates_for_addon(host)
 
 
 def _normalise_node_ids(raw: str) -> List[str]:

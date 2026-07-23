@@ -115,9 +115,9 @@ class NodePulseTrackView(HomeAssistantView):
 
         coordinator = _coordinator_for(hass)
         if coordinator is None:
-            logger.error("Track request rejected: NodeNode integration not loaded")
+            logger.error("Track request rejected: NodePulse integration not loaded")
             return web.json_response(
-                {"error": "NodeNode integration not loaded"}, status=503
+                {"error": "NodePulse integration not loaded"}, status=503
             )
 
         try:

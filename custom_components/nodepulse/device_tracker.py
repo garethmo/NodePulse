@@ -152,22 +152,12 @@ class NodeTracker(CoordinatorEntity, TrackerEntity):
     @property
     def latitude(self) -> Optional[float]:
         node = self._get_node()
-        lat = node.get("latitude") if node else None
-        logger.debug(
-            "NodeTracker (node_id=%s): latitude=%s, node_data=%s",
-            self._node_id, lat, node
-        )
-        return lat
+        return node.get("latitude") if node else None
 
     @property
     def longitude(self) -> Optional[float]:
         node = self._get_node()
-        lon = node.get("longitude") if node else None
-        logger.debug(
-            "NodeTracker (node_id=%s): longitude=%s",
-            self._node_id, lon
-        )
-        return lon
+        return node.get("longitude") if node else None
 
     @property
     def location_accuracy(self) -> int:

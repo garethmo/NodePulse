@@ -159,3 +159,18 @@ export async function setTags(nodeId, tags) {
     body: JSON.stringify({ node_id: nodeId, tags }),
   });
 }
+
+/**
+ * Fetch the most recent captured packets from the packet inspector ring buffer.
+ * @param {number} limit - Max entries to return (default 200, max 500).
+ */
+export async function fetchPackets(limit = 200) {
+  return _apiFetch(`/packets?limit=${limit}`);
+}
+
+/**
+ * Fetch live LoRa sniffer statistics computed over the last 60 seconds.
+ */
+export async function fetchSnifferStats() {
+  return _apiFetch('/sniffer/stats');
+}

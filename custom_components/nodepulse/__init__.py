@@ -161,6 +161,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
     )
 
+    # Wire up options-change listener so updating scan_interval or ignored_nodes
+    # via the options flow triggers a reload without requiring a manual restart.
+    # (B5: this was defined but never registered, so options changes had no effect.)
+    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+
     logger.debug("NodePulse integration set up (entry_id=%s)", entry.entry_id)
     return True
 
@@ -245,10 +250,12 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry and clean up resources."""
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
-    # Unload the notify platform registered via discovery.
-    await hass.config_entries.async_unload_platforms(entry, ["notify"])
+    # Check the notify unload independently — its result must be AND-ed in so we
+    # don't remove the coordinator from hass.data if either platform failed to
+    # unload cleanly. (B4: previously the notify result was ignored.)
+    notify_unloaded = await hass.config_entries.async_unload_platforms(entry, ["notify"])
 
-    if unloaded:
+    if unloaded and notify_unloaded:
         hass.data[DOMAIN].pop(entry.entry_id, None)
 
     # When the last config entry is gone, remove the integration-level service

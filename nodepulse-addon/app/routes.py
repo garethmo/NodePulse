@@ -632,3 +632,60 @@ async def handle_track_node(request: web.Request) -> web.Response:
             node_id, exc,
         )
         return _error_response("Failed to reach NodePulse integration")
+
+
+# ---------------------------------------------------------------------------
+# Route: GET /api/packets
+# ---------------------------------------------------------------------------
+
+async def handle_packets(request: web.Request) -> web.Response:
+    """
+    Return the most recent captured packets from the packet inspector ring buffer.
+
+    Query parameters:
+        limit  — max entries to return (default 200, max 500)
+
+    The buffer is populated by every inbound Meshtastic packet received via the
+    pubsub listener. Entries are ordered newest first so the UI can slice the
+    most recent N without additional sorting.
+    """
+    conn: MeshtasticConnection = request.app["connection"]
+    try:
+        limit = min(int(request.rel_url.query.get("limit", 200)), 500)
+    except (ValueError, TypeError):
+        limit = 200
+    try:
+        packets = await conn.get_packet_log(limit)
+        return _json_response(packets)
+    except Exception as exc:
+        logger.error("Error fetching packet log: %s", exc)
+        return _error_response("Failed to retrieve packet log")
+
+
+# ---------------------------------------------------------------------------
+# Route: GET /api/sniffer/stats
+# ---------------------------------------------------------------------------
+
+async def handle_sniffer_stats(request: web.Request) -> web.Response:
+    """
+    Return live LoRa sniffer statistics computed over the last 60 seconds.
+
+    Response:
+        {
+            "packets_per_minute": 62,
+            "unique_nodes": 14,
+            "total_captured": 320,
+            "portnum_distribution": {
+                "TEXT_MESSAGE_APP": 38,
+                "TELEMETRY_APP": 22,
+                ...
+            }
+        }
+    """
+    conn: MeshtasticConnection = request.app["connection"]
+    try:
+        stats = await conn.get_sniffer_stats()
+        return _json_response(stats)
+    except Exception as exc:
+        logger.error("Error fetching sniffer stats: %s", exc)
+        return _error_response("Failed to retrieve sniffer stats")
