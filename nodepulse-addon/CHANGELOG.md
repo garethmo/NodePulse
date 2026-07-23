@@ -2,6 +2,33 @@
 
 All notable changes to NodePulse are documented here.
 
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.2.37] - 2026-07-23
+### Added
+- **Dynamic topology toolbar** — The Network Topology view now includes interactive toggles for node names, traceroute edges, neighbor edges, and physics simulation, plus a node search box with real-time highlight filtering and a "Reset" layout button.
+
+## [0.2.36] - 2026-07-23
+### Added
+- **Heatmap loading indicator** — When the coverage heatmap is enabled, a toast now appears showing "Loading heatmap data…" while the initial position history fetch completes, so users know the data is coming.
+- **`willReadFrequently` canvas hint** — Patched leaflet-heat's `simpleheat` to request `willReadFrequently: true` on the canvas context, silencing the Chrome DevTools warning and improving redraw performance for the heatmap layer.
+- **Zero-size canvas crash guard** — Added defensive monkeypatch and size checks so `getImageData` on a zero-dimension canvas no longer throws `IndexSizeError` when the map container hasn't laid out yet.
+
+### Changed
+- **Heatmap refresh cadence** — When the heatmap is visible, position history is now fetched **every poll** (15s) instead of every 8 polls (120s), so the signal-strength overlay stays fresh. When hidden, it reverts to the 8-poll cadence to save bandwidth.
+- **Heatmap toggle UX** — Enabling the heatmap (🌡 button or **M** key) immediately triggers a fresh position-history fetch so it appears within seconds instead of waiting up to 120s for the next scheduled refresh.
+- **Redundant redraw elimination** — `updateTrails` now compares the new heatmap points against the last-set points via serialization; if unchanged, the expensive `setLatLngs()` (which triggers a full canvas `getImageData` redraw) is skipped entirely.
+
+## [0.2.35] - 2026-07-22
+### Added
+- **Coverage Heatmap** — Added a visual heatmap layer to the map views showing signal strength (SNR) based on node position history and current live node positions. Includes a toggle button and a dynamic gradient legend.
+- **Network Topology Graph** — Added a new "Topology" tab that visualizes the mesh network using a force-directed graph. Uses traceroute and neighbor data to draw connecting edges. Edges are color-coded by signal strength (SNR). Nodes are styled based on their Role (Router/Repeater/Tracker/Client). Includes a toolbar with a legend and a "Fit" button to center the graph.
+
+## [0.2.34] - 2026-07-22
+### Fixed
+- **Integration 404 Error** — Fixed a `NameError` during the integration's async setup phase caused by dynamic sensor class instantiation. The integration now properly loads and registers its API endpoints, resolving the "Track-node relay rejected" 404 errors.
+
 ## [0.2.33] - 2026-07-22
 ### Changed
 - **Cleaner per-node sensors** — NodePulse now discovers sensors from a single `SENSOR_CLASSES` list keyed by `unique_id`, and only registers a sensor when it actually has a value. Hardware metrics a node doesn't report (e.g. temperature, humidity, gas resistance) no longer clutter the UI with "Unknown" entities. Entity removal bookkeeping is fixed to track the sensor's `unique_id` so stale entities are cleaned up correctly.

@@ -16,6 +16,7 @@
 import { fetchStatus, fetchNodes, fetchChannels, fetchMessages, sendMessage, requestTraceRoute, requestPosition, fetchTrackedNodes, trackNode, clearStaleNodes, fetchTags, setTags, fetchPositionHistory } from './api.js';
 import { MapManager } from './map.js';
 import { ChartManager } from './charts.js';
+import { TopologyManager } from './topology.js';
 import { escapeHtml, haversineKm, formatDistance, buildKml, buildGpx, downloadFile } from './util.js';
 
 // How often (ms) to poll the backend for fresh node/status/message data.
@@ -57,6 +58,7 @@ const state = {
 // ============================================================================
 const dashMap  = new MapManager('map');
 const fullMap  = new MapManager('full-map');
+const topology = new TopologyManager('topology-container');
 const charts   = new ChartManager();
 
 // ============================================================================
@@ -68,7 +70,8 @@ function showToast(message, type = 'info', durationMs = 3000) {
   toast.className = `toast ${type}`;
   toast.textContent = message;
   container.appendChild(toast);
-  setTimeout(() => toast.remove(), durationMs);
+  if (durationMs > 0) setTimeout(() => toast.remove(), durationMs);
+  return toast;
 }
 
 // ============================================================================
@@ -134,6 +137,10 @@ function sortByDistance(nodes) {
   });
 }
 
+function sortByLastHeard(nodes) {
+  return [...nodes].sort((a, b) => (b.last_heard ?? 0) - (a.last_heard ?? 0));
+}
+
 // ============================================================================
 // Rendering: Status Bar
 // ============================================================================
@@ -172,9 +179,8 @@ function renderNodeList(nodes) {
     return;
   }
 
-  // Sort by distance from the self node (nearest first); falls back to
-  // most-recently-heard when GPS data is unavailable.
-  const sorted = sortByDistance(nodes);
+  // Sort by last heard (most recent first).
+  const sorted = sortByLastHeard(nodes);
 
   for (const node of sorted) {
     const li = document.createElement('li');
@@ -259,7 +265,7 @@ function renderNodesGrid(nodes) {
 
   for (const node of sorted) {
     const card = document.createElement('div');
-    card.className = 'node-card' + (node.stale ? ' node-card-stale' : '');
+    card.className = 'node-card' + (node.stale ? ' node-card-stale' : '') + (node.role ? ' role-' + node.role.toLowerCase() : '');
 
     const snrText   = node.snr         != null ? `${node.snr.toFixed(1)} dB` : 'N/A';
     const rssiText  = node.rssi        != null ? `${node.rssi} dBm`          : 'Not provided';
@@ -796,16 +802,26 @@ function switchView(viewName) {
   const tabBtn = document.querySelector(`.tab-btn[data-view="${viewName}"]`);
   if (tabBtn) tabBtn.classList.add('active');
 
-  // Leaflet maps need invalidateSize() after becoming visible.
-  if (viewName === 'dashboard') {
-    dashMap.invalidateSize();
-  } else if (viewName === 'map') {
-    fullMap.init();
-    fullMap.updateNodes(state.nodes);
-    fullMap.invalidateSize();
-  } else if (viewName === 'settings') {
-    renderSettings();
-  }
+  // Defer the heavy per-view work (map initialisation, marker rendering,
+  // topology graph build, settings fetch) out of the click handler. The view
+  // panel is already shown synchronously above, so by the time rAF fires the
+  // container has a real size and Leaflet/vis-network can lay out correctly
+  // — this avoids the "Forced reflow" / long-click-handler violations.
+  requestAnimationFrame(() => {
+    // Leaflet maps need invalidateSize() after becoming visible.
+    if (viewName === 'dashboard') {
+      dashMap.invalidateSize();
+    } else if (viewName === 'map') {
+      fullMap.init();
+      fullMap.updateNodes(state.nodes);
+      fullMap.invalidateSize();
+    } else if (viewName === 'settings') {
+      renderSettings();
+    } else if (viewName === 'topology') {
+      topology.init();
+      topology.updateData(state);
+    }
+  });
 }
 
 // ============================================================================
@@ -892,6 +908,9 @@ async function refreshTrackedNodes() {
 async function pollData() {
   state._pollCount += 1;
 
+  const isFirstPoll = state._pollCount === 1;
+  const isDue = state._pollCount % TRACKED_NODES_POLL_EVERY_N === 0;
+
   // Fast path: status, nodes, messages, and channels are all served directly
   // by the addon's own backend — no external relay, reliably sub-second.
   const [statusResult, nodesResult, messagesResult, channelsResult] = await Promise.allSettled([
@@ -923,6 +942,12 @@ async function pollData() {
     renderNodeList(state.nodes);
     renderNodesGrid(state.nodes);
     dashMap.updateNodes(state.nodes);
+    
+    // Initialize topology graph if active, and update its data
+    if (state.currentView === 'topology') {
+      topology.init();
+      topology.updateData(state);
+    }
 
     // Push a chart point using the selected node's metrics, or the first node
     // in the list if no node is explicitly selected.
@@ -966,10 +991,12 @@ async function pollData() {
   }
 
   // Fetch position history for map trails — first poll, then every 120s (8 cycles).
-  if (isFirstPoll || state._pollCount % 8 === 0) {
+  // If the heatmap is currently visible, refresh every poll so it stays current.
+  const heatmapVisible = fullMap._heatmapVisible || dashMap._heatmapVisible;
+  if (isFirstPoll || state._pollCount % 8 === 0 || heatmapVisible) {
     fetchPositionHistory().then(data => {
-      dashMap.updateTrails(data);
-      fullMap.updateTrails(data);
+      dashMap.updateTrails(data, state.nodes);
+      fullMap.updateTrails(data, state.nodes);
     }).catch(err => {
       console.warn('Position history fetch failed:', err);
     });
@@ -979,8 +1006,6 @@ async function pollData() {
   // (so the checkboxes on the Nodes tab render correctly on initial load) and
   // then every TRACKED_NODES_POLL_EVERY_N cycles thereafter. This avoids
   // blocking the fast critical render on every tick.
-  const isFirstPoll = state._pollCount === 1;
-  const isDue = state._pollCount % TRACKED_NODES_POLL_EVERY_N === 0;
   if (isFirstPoll || isDue) {
     // Fire-and-forget: do NOT await — let it run concurrently so the rest of
     // the UI is already rendered before this potentially-slow call finishes.
@@ -1116,11 +1141,14 @@ async function init() {
 
   // Map overlay toggles: control buttons on each Leaflet map dispatch custom
   // events; the "L"/"T"/"N" keys are keyboard shortcuts for the same actions.
-  const wireToggle = (eventName, key, toggleFn, label) => {
+  // `after(visible)` is an optional callback fired after a toggle, useful for
+  // triggering a one-off data refresh (e.g. the heatmap).
+  const wireToggle = (eventName, key, toggleFn, label, after) => {
     const handler = () => {
       const dash = toggleFn(dashMap);
       toggleFn(fullMap);
       showToast(`${label} ${dash ? 'shown' : 'hidden'}`, 'info', 1500);
+      if (after) after(dash);
     };
     document.getElementById('map').addEventListener(eventName, handler);
     document.getElementById('full-map').addEventListener(eventName, handler);
@@ -1136,9 +1164,73 @@ async function init() {
   wireToggle('nodepulse:toggletraces',    't', (m) => m.toggleTraces(), 'Traceroute paths');
   wireToggle('nodepulse:togglenames',     'n', (m) => m.toggleNames(), 'Node names');
   wireToggle('nodepulse:toggletrails',    'h', (m) => m.toggleTrails(), 'Position trails');
+  wireToggle('nodepulse:toggleheatmap',   'm', (m) => m.toggleHeatmap(), 'Signal heatmap', (visible) => {
+    if (!visible) return;
+    // Show a loading toast so the user knows data is being fetched.
+    const loadingToast = showToast('Loading heatmap data…', 'info', 30000);
+    fetchPositionHistory()
+      .then(data => {
+        dashMap.updateTrails(data, dashMap._allNodes);
+        fullMap.updateTrails(data, fullMap._allNodes);
+        // Replace loading toast with success.
+        if (loadingToast) loadingToast.remove();
+        showToast('Heatmap updated', 'success', 1500);
+      })
+      .catch(() => {
+        if (loadingToast) loadingToast.remove();
+        showToast('Failed to load heatmap', 'error');
+      });
+  });
+
+  // Keep the dashboard heatmap checkbox in sync with the map control-bar toggle.
+  const syncHeatCheckbox = () => {
+    const cb = document.getElementById('map-toggle-heatmap');
+    if (cb) cb.checked = !!fullMap._heatmapVisible;
+  };
+  document.getElementById('map')?.addEventListener('nodepulse:toggleheatmap', syncHeatCheckbox);
+  document.getElementById('full-map')?.addEventListener('nodepulse:toggleheatmap', syncHeatCheckbox);
 
   // Map node filter (text / max hops / last-heard window) — apply to both maps.
   wireMapFilters();
+
+  // Topology: wire controls for dynamic updates
+  const _updateTopologyFromUi = () => {
+    const namesCk = document.getElementById('topology-toggle-names');
+    const traceroutesCk = document.getElementById('topology-toggle-traceroutes');
+    const neighborsCk = document.getElementById('topology-toggle-neighbors');
+    const physicsCk = document.getElementById('topology-toggle-physics');
+
+    if (namesCk) topology.setShowNames(namesCk.checked);
+    if (traceroutesCk) topology.setShowTraceroutes(traceroutesCk.checked);
+    if (neighborsCk) topology.setShowNeighbors(neighborsCk.checked);
+    if (physicsCk) topology.setPhysicsEnabled(physicsCk.checked);
+  };
+
+  document.getElementById('topology-fit-btn')?.addEventListener('click', () => {
+    topology.fit();
+  });
+
+  document.getElementById('topology-reset-btn')?.addEventListener('click', () => {
+    topology.resetLayout();
+  });
+
+  const bindTopologyToggle = (id, setter) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('change', _updateTopologyFromUi);
+    setter(el.checked); // initialize
+  };
+
+  bindTopologyToggle('topology-toggle-names', (v) => topology.setShowNames(!!v));
+  bindTopologyToggle('topology-toggle-traceroutes', (v) => topology.setShowTraceroutes(!!v));
+  bindTopologyToggle('topology-toggle-neighbors', (v) => topology.setShowNeighbors(!!v));
+  bindTopologyToggle('topology-toggle-physics', (v) => topology.setPhysicsEnabled(!!v));
+
+  const searchEl = document.getElementById('topology-search');
+  if (searchEl) {
+    searchEl.addEventListener('input', () => topology.setSearchTerm(searchEl.value));
+  }
+
   switchView('dashboard');
 
   // Initial data load — show a spinner state while waiting.
@@ -1168,6 +1260,7 @@ function wireMapFilters() {
   const hopsEl   = document.getElementById('map-filter-hops');
   const heardEl  = document.getElementById('map-filter-heard');
   const countEl  = document.getElementById('map-filter-count');
+  const heatEl   = document.getElementById('map-toggle-heatmap');
   if (!textEl || !hopsEl || !heardEl || !countEl) return;
 
   const apply = () => {
@@ -1187,6 +1280,18 @@ function wireMapFilters() {
   textEl.addEventListener('input', apply);
   hopsEl.addEventListener('change', apply);
   heardEl.addEventListener('change', apply);
+  if (heatEl) {
+    heatEl.addEventListener('change', () => {
+      dashMap.toggleHeatmap(heatEl.checked);
+      fullMap.toggleHeatmap(heatEl.checked);
+      // Keep the map control-bar button's active state in sync.
+      document.querySelectorAll('.leaflet-control-maptoggle').forEach(b => {
+        if (b.title && b.title.toLowerCase().includes('heatmap')) {
+          b.classList.toggle('active', heatEl.checked);
+        }
+      });
+    });
+  }
   // Keep the counter in sync on every poll (node set changes underneath filter).
   const origUpdateNodes = fullMap.updateNodes.bind(fullMap);
   fullMap.updateNodes = (nodes) => { origUpdateNodes(nodes); countEl.textContent = `${fullMap._filterNodes(fullMap._allNodes).length} shown`; };

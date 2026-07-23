@@ -2,6 +2,19 @@
 
 All notable changes to NodePulse are documented here.
 
+## [0.2.38] - 2026-07-23
+### Fixed
+- **Raw HTML in topology node hover tooltips** — Escaped HTML entities in node tooltip text when hovering over nodes in the topology graph. Ensures special characters (`<`, `>`, `&`, etc) are rendered as text rather than parsed as HTML in tooltips.
+
+## [0.2.35] - 2026-07-22
+### Added
+- **Coverage Heatmap** — Added a visual heatmap layer to the map views showing signal strength (SNR) based on node position history and current live node positions. Includes a toggle button and a dynamic gradient legend.
+- **Network Topology Graph** — Added a new "Topology" tab that visualizes the mesh network using a force-directed graph. Uses traceroute and neighbor data to draw connecting edges. Edges are color-coded by signal strength (SNR). Nodes are styled based on their Role (Router/Repeater/Tracker/Client). Includes a toolbar with a legend and a "Fit" button to center the graph.
+
+## [0.2.34] - 2026-07-22
+### Fixed
+- **Integration 404 Error** — Fixed a `NameError` during the integration's async setup phase caused by dynamic sensor class instantiation. The integration now properly loads and registers its API endpoints, resolving the "Track-node relay rejected" 404 errors.
+
 ## [0.2.33] - 2026-07-22
 ### Changed
 - **Cleaner per-node sensors** — NodePulse now discovers sensors from a single `SENSOR_CLASSES` list keyed by `unique_id`, and only registers a sensor when it actually has a value. Hardware metrics a node doesn't report (e.g. temperature, humidity, gas resistance) no longer clutter the UI with "Unknown" entities. Entity removal bookkeeping is fixed to track the sensor's `unique_id` so stale entities are cleaned up correctly.

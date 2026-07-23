@@ -68,16 +68,6 @@ async def async_setup_entry(
     # Always create the aggregate node count sensor immediately.
     async_add_entities([NodeCountSensor(coordinator, entry)])
 
-    SENSOR_CLASSES = [
-        NodeSnrSensor, NodeRssiSensor, NodeHopsSensor, NodeLastHeardSensor,
-        NodeBatterySensor, NodeTemperatureSensor, NodeHumiditySensor,
-        NodePressureSensor, NodeVoltageSensor, NodeChannelUtilSensor,
-        NodeAirUtilTxSensor, NodeUptimeSensor, NodeRoleSensor,
-        NodeGasResistanceSensor, NodeLatitudeSensor, NodeLongitudeSensor,
-        NodeAltitudeSensor, NodeMessageReceivedSensor, NodeMessageSentSensor,
-        NodeDistanceSensor, NodeNeighborCountSensor, NodePositionFixCountSensor,
-        NodeTagsSensor,
-    ]
 
     @callback
     def _discover_new_nodes() -> None:
@@ -110,16 +100,38 @@ async def async_setup_entry(
             if node_id not in coordinator.tracked_nodes:
                 continue
 
-            for sensor_cls in SENSOR_CLASSES:
-                # We instantiate the sensor briefly to check its unique_id and current value.
-                # If it's already registered, we skip it.
-                # If it's not registered, we only add it if it has a known value,
-                # preventing the UI from being cluttered with "Unknown" metrics
-                # for hardware features the node doesn't possess.
-                sensor = sensor_cls(coordinator, entry, node_id)
+            # We instantiate the full set of potential sensors for this node.
+            sensor_set = [
+                NodeSnrSensor(coordinator, entry, node_id),
+                NodeRssiSensor(coordinator, entry, node_id),
+                NodeHopsSensor(coordinator, entry, node_id),
+                NodeLastHeardSensor(coordinator, entry, node_id),
+                NodeBatterySensor(coordinator, entry, node_id),
+                NodeTemperatureSensor(coordinator, entry, node_id),
+                NodeHumiditySensor(coordinator, entry, node_id),
+                NodePressureSensor(coordinator, entry, node_id),
+                NodeVoltageSensor(coordinator, entry, node_id),
+                NodeChannelUtilSensor(coordinator, entry, node_id),
+                NodeAirUtilTxSensor(coordinator, entry, node_id),
+                NodeUptimeSensor(coordinator, entry, node_id),
+                NodeRoleSensor(coordinator, entry, node_id),
+                NodeGasResistanceSensor(coordinator, entry, node_id),
+                NodeLatitudeSensor(coordinator, entry, node_id),
+                NodeLongitudeSensor(coordinator, entry, node_id),
+                NodeAltitudeSensor(coordinator, entry, node_id),
+                NodeMessageReceivedSensor(coordinator, entry, node_id),
+                NodeMessageSentSensor(coordinator, entry, node_id),
+                NodeDistanceSensor(coordinator, entry, node_id),
+                NodeNeighborCountSensor(coordinator, entry, node_id),
+                NodePositionFixCountSensor(coordinator, entry, node_id),
+                NodeTagsSensor(coordinator, entry, node_id),
+            ]
+
+            for sensor in sensor_set:
                 if sensor.unique_id in registered_node_ids:
                     continue
-
+                # Only add if it currently has a value to avoid cluttering the UI
+                # with "Unknown" metrics for features the node doesn't have.
                 if sensor.native_value is not None:
                     registered_node_ids.add(sensor.unique_id)
                     registered_entities.append(sensor)

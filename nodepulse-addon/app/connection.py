@@ -877,13 +877,17 @@ class MeshtasticConnection:
         except Exception as exc:
             logger.debug("Could not persist position history (ignored): %s", exc)
 
-    def _record_position(self, node_id: str, lat: float, lng: float, alt: Optional[float] = None) -> None:
+    def _record_position(self, node_id: str, lat: float, lng: float, alt: Optional[float] = None, snr: Optional[float] = None, rssi: Optional[float] = None) -> None:
         """Append a position fix to a node's trail, capping at _POS_HISTORY_MAX."""
         if node_id is None or lat is None or lng is None:
             return
         entry = {"lat": lat, "lng": lng, "timestamp": int(time.time())}
         if alt is not None:
             entry["alt"] = alt
+        if snr is not None:
+            entry["snr"] = snr
+        if rssi is not None:
+            entry["rssi"] = rssi
         with self._pos_hist_lock:
             trail = self._pos_history.get(node_id, [])
             trail.append(entry)
@@ -1213,32 +1217,32 @@ class MeshtasticConnection:
             if not from_id:
                 return
 
+            # Integer microdegrees -> decimal degrees. 0 means "not set".
+            lat = pos.latitude_i * 1e-7 if pos.latitude_i else None
+            lng = pos.longitude_i * 1e-7 if pos.longitude_i else None
+            alt = pos.altitude if pos.altitude else None
+            snr = packet.get("rxSnr")
+            rssi = packet.get("rxRssi")
+
+            # Always record the fix in position history for trails and heatmaps.
+            if lat is not None and lng is not None:
+                self._record_position(from_id, lat, lng, alt, snr, rssi)
+                # Persist asynchronously on a daemon thread.
+                t = threading.Thread(target=self._save_position_history, daemon=True)
+                t.start()
+
             # Only treat this as a reply to a position request we actually made.
             # POSITION_APP packets also arrive as periodic broadcasts from nodes
-            # we didn't ask; updating our cache on those would make a node appear
-            # to have responded to a request it didn't. If there's no matching
-            # pending request, ignore the packet.
+            # we didn't ask. If there's no matching pending request, ignore the packet.
             with self._lock:
                 if from_id not in self._pending_position_dests:
                     return
                 self._pending_position_dests.discard(from_id)
 
-            # Integer microdegrees -> decimal degrees. 0 means "not set".
-            lat = pos.latitude_i * 1e-7 if pos.latitude_i else None
-            lng = pos.longitude_i * 1e-7 if pos.longitude_i else None
-            alt = pos.altitude if pos.altitude else None
-
             logger.debug(
-                "Captured position for %s: lat=%s lng=%s alt=%s",
+                "Captured requested position for %s: lat=%s lng=%s alt=%s",
                 from_id, lat, lng, alt,
             )
-
-            # Record this fix in position history.
-            if lat is not None and lng is not None:
-                self._record_position(from_id, lat, lng, alt)
-                # Persist asynchronously on a daemon thread.
-                t = threading.Thread(target=self._save_position_history, daemon=True)
-                t.start()
 
             with self._nodes_lock:
                 node = next(

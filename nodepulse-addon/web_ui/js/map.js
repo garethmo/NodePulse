@@ -11,23 +11,70 @@
 
 import { escapeHtml, haversineKm, formatDistance } from './util.js';
 
+// Defensive monkeypatch: leaflet-heat's _redraw() calls getImageData on its
+// canvas. If the map container hasn't been laid out yet (zero width), the
+// call throws IndexSizeError. Guard it so the app doesn't crash.
+(function _patchHeatLayer() {
+  if (typeof L !== 'undefined' && L.HeatLayer && L.HeatLayer.prototype) {
+    const _orig = L.HeatLayer.prototype._redraw;
+    L.HeatLayer.prototype._redraw = function() {
+      try { _orig.call(this); } catch (_) {}
+    };
+  }
+})();
+
+// Also patch simpleheat to use willReadFrequently: true for faster getImageData.
+(function _patchSimpleHeat() {
+  if (typeof simpleheat !== 'undefined') {
+    const _origInit = simpleheat.prototype.draw;
+    simpleheat.prototype.draw = function() {
+      // The canvas context is created in the simpleheat constructor.
+      // We can't easily patch that, but we can try to get a new context
+      // with willReadFrequently before drawing.
+      if (this._ctx && this._canvas) {
+        try {
+          this._ctx = this._canvas.getContext('2d', { willReadFrequently: true });
+        } catch (_) {}
+      }
+      return _origInit.call(this);
+    };
+  }
+})();
+
 // Tile layer URL — dark CartoDB "Dark Matter" tiles, no API key needed.
 const TILE_URL = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
 const TILE_ATTRIBUTION = '&copy; <a href="https://carto.com">CARTO</a>';
 
-// Custom icon for node markers — teal circle with a pulsing ring.
-const NODE_ICON = L.divIcon({
+// Custom icon for default client node markers.
+const CLIENT_ICON = L.divIcon({
   className: '',
-  html: `
-    <div style="
-      width:14px; height:14px; border-radius:50%;
-      background:#00d4aa; border:2px solid rgba(0,212,170,0.4);
-      box-shadow:0 0 12px rgba(0,212,170,0.6);
-    "></div>`,
+  html: `<div class="map-marker-client"></div>`,
   iconSize: [14, 14],
   iconAnchor: [7, 7],
   popupAnchor: [0, -10],
 });
+
+const ROUTER_ICON = L.divIcon({
+  className: '',
+  html: `<div class="map-marker-router"></div>`,
+  iconSize: [18, 18],
+  iconAnchor: [9, 9],
+  popupAnchor: [0, -12],
+});
+
+const TRACKER_ICON = L.divIcon({
+  className: '',
+  html: `<div class="map-marker-tracker"></div>`,
+  iconSize: [10, 10],
+  iconAnchor: [5, 5],
+  popupAnchor: [0, -8],
+});
+
+function getNodeIcon(role) {
+  if (role === 'ROUTER' || role === 'REPEATER') return ROUTER_ICON;
+  if (role === 'TRACKER') return TRACKER_ICON;
+  return CLIENT_ICON;
+}
 
 const SELF_ICON = L.divIcon({
   className: '',
@@ -103,10 +150,13 @@ function createMap(elementId) {
        btn.textContent = glyph;
        if (initialOn) btn.classList.add('active');
        L.DomEvent.disableClickPropagation(btn);
-       L.DomEvent.on(btn, 'click', () => {
-         const evt = new CustomEvent(eventName);
-         map.getContainer().dispatchEvent(evt);
-       });
+        L.DomEvent.on(btn, 'click', () => {
+          // Reflect the toggle's on/off state visually (the `initialOn`
+          // styling is only the initial state).
+          btn.classList.toggle('active');
+          const evt = new CustomEvent(eventName);
+          map.getContainer().dispatchEvent(evt);
+        });
        container.appendChild(btn);
      };
 
@@ -118,8 +168,10 @@ function createMap(elementId) {
      makeToggle('nodepulse:toggletraces',    'Toggle traceroute paths (T)',     '⤴', true);
       // Node name labels                                 — key "N"
       makeToggle('nodepulse:togglenames',     'Toggle node names (N)',           '🏷', true);
-      // Position history trails                          — key "H"
-      makeToggle('nodepulse:toggletrails',    'Toggle position trails (H)',      '⏳', true);
+       // Position history trails                          — key "H"
+       makeToggle('nodepulse:toggletrails',    'Toggle position trails (H)',      '⏳', true);
+       // Coverage heatmap (signal strength)               — key "M"
+       makeToggle('nodepulse:toggleheatmap',  'Toggle signal heatmap (M)',      '🌡', false);
 
      // Restore saved collapsed state.
      const saved = localStorage.getItem('nodepulse-map-controls-collapsed');
@@ -134,6 +186,36 @@ function createMap(elementId) {
      return container;
    };
    toggleBar.addTo(map);
+
+   // --- Role legend (bottom-left) -----------------------------------------
+   const legend = L.control({ position: 'bottomleft' });
+   legend.onAdd = () => {
+     const div = L.DomUtil.create('div', 'map-legend');
+     div.innerHTML = `
+       <div class="map-legend-title">Node Roles</div>
+       <div class="map-legend-item">
+         <span class="map-legend-marker map-marker-router" style="display:inline-block;vertical-align:middle;"></span>
+         Router / Repeater
+       </div>
+       <div class="map-legend-item">
+         <span class="map-legend-marker map-marker-client" style="display:inline-block;vertical-align:middle;"></span>
+         Client
+       </div>
+       <div class="map-legend-item">
+         <span class="map-legend-marker map-marker-tracker" style="display:inline-block;vertical-align:middle;"></span>
+         Tracker
+       </div>
+       <div class="map-legend-divider"></div>
+       <div class="map-legend-heatmap" id="map-legend-heatmap" style="display:none">
+         <div class="map-legend-title">Signal Strength</div>
+         <div class="map-legend-gradient"></div>
+         <div class="map-legend-gradient-labels"><span>Weak</span><span>Strong</span></div>
+       </div>
+     `;
+     L.DomEvent.disableClickPropagation(div);
+     return div;
+   };
+   legend.addTo(map);
 
    // Keyboard shortcut "C" to toggle.
    L.DomEvent.on(map.getContainer(), 'keydown', (e) => {
@@ -179,6 +261,9 @@ export class MapManager {
     this._peerLinksVisible = false; // node <-> node proximity links
     this._tracesVisible = true;     // discovered traceroute paths
     this._trailsVisible = true;     // position history trails
+    this._heatmapVisible = false;   // coverage heatmap
+    this._lastHeatPoints = [];      // last computed heat points (for immediate redraw)
+    this._lastHeatSig = '';         // serialised heatPoints — skip setLatLngs when unchanged
     this._namesVisible = true;      // permanent node-name labels
     this._centeredOnSelf = false;    // one-time auto-centre on the connected node
     // The last full node list we received (unfiltered). Markers are drawn from
@@ -274,6 +359,54 @@ export class MapManager {
   }
 
   /**
+   * Toggle the coverage heatmap. Returns the new visibility.
+   * Shows/hides both the heat overlay and the legend section.
+   * @param {boolean} [state] - Optional explicit state to set.
+   */
+  toggleHeatmap(state) {
+    this._heatmapVisible = state !== undefined ? state : !this._heatmapVisible;
+
+    // Lazily create the layer here as well (not only in updateTrails) so the
+    // toggle works even if updateTrails hasn't run yet or leaflet.heat loaded
+    // late (it is fetched with `defer`).
+    if (this._heatmapVisible && !this._heatLayer && typeof L.heatLayer === 'function') {
+      this._heatLayer = L.heatLayer([], {
+        radius: 40,
+        blur: 30,
+        maxZoom: 0, // Disable zoom-based intensity scaling
+        max: 1.0,
+        minOpacity: 0.4,
+      });
+    }
+
+    // Only add/remove the layer if the map container has real dimensions —
+    // leaflet-heat's _reset / _redraw will throw IndexSizeError if the
+    // canvas has zero width (e.g. the view was just switched but rAF hasn't
+    // fired yet).
+    if (this._heatLayer && this._mapHasSize()) {
+      if (this._heatmapVisible) {
+        if (!this._map.hasLayer(this._heatLayer)) {
+          if (this._lastHeatPoints.length) this._heatLayer.setLatLngs(this._lastHeatPoints);
+          this._heatLayer.addTo(this._map);
+        }
+      } else {
+        this._map.removeLayer(this._heatLayer);
+      }
+    }
+    // Show/hide the heatmap section in the legend.
+    const legendHeat = this._map?.getContainer()?.querySelector('#map-legend-heatmap');
+    if (legendHeat) legendHeat.style.display = this._heatmapVisible ? '' : 'none';
+    return this._heatmapVisible;
+  }
+  
+  /** True when the map container has non-zero width/height. */
+  _mapHasSize() {
+    if (!this._map) return false;
+    const s = this._map.getSize();
+    return s && s.x > 0 && s.y > 0;
+  }
+
+  /**
    * Toggle the permanent node-name labels. Returns the new visibility.
    * Triggered by the map control and "N" key.
    */
@@ -306,7 +439,14 @@ export class MapManager {
    *
    * @param {Object} posHistory - { node_id: [{ lat, lng, timestamp }, ...], ... }
    */
-  updateTrails(posHistory) {
+  /**
+   * Update position history trail polylines and the coverage heatmap.
+   *
+   * @param {Object} posHistory  - { node_id: [{ lat, lng, snr?, rssi?, timestamp }, ...], ... }
+   * @param {Array}  [liveNodes] - Current node list. Used to seed heatmap from
+   *   live SNR values when history entries pre-date the snr/rssi additions.
+   */
+  updateTrails(posHistory, liveNodes = []) {
     if (!this._map) return;
 
     // Remove old trails.
@@ -315,25 +455,83 @@ export class MapManager {
     }
     this._trailLines.clear();
 
-    if (!posHistory) return;
-
-    for (const [nodeId, fixes] of Object.entries(posHistory)) {
-      if (!Array.isArray(fixes) || fixes.length < 2) continue;
-      const coords = fixes
-        .filter(f => f.lat != null && f.lng != null)
-        .map(f => [f.lat, f.lng]);
-      if (coords.length < 2) continue;
-
-      const line = L.polyline(coords, {
-        color: COLOR_TRAIL,
-        weight: 2,
-        opacity: 0.5,
-      }).bindTooltip(`Trail — ${escapeHtml(nodeId)}`, {
-        sticky: true,
-        className: 'link-label',
+    // Lazily create the heat layer — leaflet.heat is loaded defer'd so it
+    // may not be available when init() ran, but it is always ready by the
+    // time the first poll resolves.
+    if (!this._heatLayer && typeof L.heatLayer === 'function') {
+      this._heatLayer = L.heatLayer([], { 
+        radius: 40, 
+        blur: 30, 
+        maxZoom: 0, // Disable zoom-based intensity scaling
+        max: 1.0,
+        minOpacity: 0.4
       });
-      if (this._trailsVisible) line.addTo(this._map);
-      this._trailLines.set(nodeId, line);
+    }
+
+    const heatPoints = [];
+
+    if (posHistory) {
+      for (const [nodeId, fixes] of Object.entries(posHistory)) {
+        if (!Array.isArray(fixes) || fixes.length === 0) continue;
+
+        // --- Trail polyline (2+ fixes required) ---
+        const coords = fixes
+          .filter(f => f.lat != null && f.lng != null)
+          .map(f => [f.lat, f.lng]);
+        if (coords.length >= 2) {
+          const line = L.polyline(coords, {
+            color: COLOR_TRAIL,
+            weight: 2,
+            opacity: 0.5,
+          }).bindTooltip(`Trail — ${escapeHtml(nodeId)}`, {
+            sticky: true,
+            className: 'link-label',
+          });
+          if (this._trailsVisible) line.addTo(this._map);
+          this._trailLines.set(nodeId, line);
+        }
+
+        // --- Heatmap points from position history ---
+        for (const f of fixes) {
+          if (f.lat == null || f.lng == null) continue;
+          // Normalise SNR (-20 … +15 dB) → intensity 0.1 … 1.0
+          const intensity = f.snr != null
+            ? Math.max(0.1, Math.min(1.0, (f.snr + 20) / 35))
+            : 0.4; // default when no snr stored yet
+          heatPoints.push([f.lat, f.lng, intensity]);
+        }
+      }
+    }
+
+    // Supplement / seed from live node positions so the heatmap is useful
+    // even before any node has broadcast a new POSITION_APP packet.
+    for (const node of liveNodes) {
+      if (node.latitude == null || node.longitude == null) continue;
+      const intensity = node.snr != null
+        ? Math.max(0.1, Math.min(1.0, (node.snr + 20) / 35))
+        : 0.4;
+      heatPoints.push([node.latitude, node.longitude, intensity]);
+    }
+
+    if (this._heatLayer && this._mapHasSize()) {
+      // Only call setLatLngs (which triggers an expensive getImageData canvas
+      // redraw) when the points have actually changed. A simple serialise-and-
+      // compare is safe because the heatPoints array is always built fresh.
+      const newSig = JSON.stringify(heatPoints);
+      if (newSig !== this._lastHeatSig) {
+        this._lastHeatSig = newSig;
+        this._lastHeatPoints = heatPoints;
+        this._heatLayer.setLatLngs(heatPoints);
+      }
+      // Ensure it is on the map if the toggle is active.
+      if (this._heatmapVisible && !this._map.hasLayer(this._heatLayer)) {
+        this._heatLayer.addTo(this._map);
+      }
+    } else {
+      // Store the points for when the map container gets a valid size
+      // (e.g. after the deferred rAF for the Map view fires).
+      this._lastHeatSig = JSON.stringify(heatPoints);
+      this._lastHeatPoints = heatPoints;
     }
   }
 
@@ -374,6 +572,8 @@ export class MapManager {
   init() {
     if (this._map) return; // already initialised
     this._map = createMap(this._elementId);
+    // Note: heatLayer is created lazily in updateTrails() because leaflet.heat
+    // is loaded with `defer` and may not yet be available at init() time.
   }
 
   /**
@@ -383,6 +583,14 @@ export class MapManager {
    */
   invalidateSize() {
     this._map?.invalidateSize();
+    // If a heat layer exists with pending points but was skipped because the
+    // container had zero size (e.g. the deferred rAF just fired), apply it now.
+    if (this._heatLayer && this._heatmapVisible && this._mapHasSize()) {
+      if (!this._map.hasLayer(this._heatLayer)) {
+        if (this._lastHeatPoints.length) this._heatLayer.setLatLngs(this._lastHeatPoints);
+        this._heatLayer.addTo(this._map);
+      }
+    }
   }
 
   /**
@@ -415,7 +623,7 @@ export class MapManager {
       const latLng = [latitude, longitude];
 
       const isSelf = id === this._selfId;
-      const icon = isSelf ? SELF_ICON : NODE_ICON;
+      const icon = isSelf ? SELF_ICON : getNodeIcon(node.role);
 
       if (this._markers.has(id)) {
         // Update existing marker position without recreating it.

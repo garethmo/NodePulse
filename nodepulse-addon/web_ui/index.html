@@ -12,9 +12,13 @@
   <!-- Leaflet.js — loaded from CDN; no build step required -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous" defer></script>
+  <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js" defer></script>
 
   <!-- Chart.js — loaded from CDN -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js" integrity="sha384-JUh163oCRItcbPme8pYnROHQMC6fNKTBWtRG3I3I0erJkzNgL7uxKlNwcrcFKeqF" crossorigin="anonymous" defer></script>
+  
+  <!-- vis-network — for topology graph -->
+  <script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js" crossorigin="anonymous" defer></script>
 </head>
 <body>
   <div id="app">
@@ -65,6 +69,14 @@
           <line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/>
         </svg>
         Map
+      </div>
+
+      <div class="nav-item" data-view="topology" role="button" tabindex="0">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+          <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+        </svg>
+        Topology
       </div>
 
       <div class="nav-item" data-view="settings" role="button" tabindex="0">
@@ -258,11 +270,82 @@
               <option value="stale">Cached only</option>
             </select>
           </label>
+          <label class="map-filter-field" style="display:flex; align-items:center; gap:4px; margin-left: 8px;">
+            <input type="checkbox" id="map-toggle-heatmap" />
+            Heatmap
+          </label>
           <span class="map-filter-count" id="map-filter-count"></span>
           <button type="button" class="map-export-btn" data-export="kml" title="Export visible nodes as KML">📥 KML</button>
           <button type="button" class="map-export-btn" data-export="gpx" title="Export visible nodes as GPX">📥 GPX</button>
         </div>
         <div id="full-map"></div>
+      </div>
+
+      <!-- ---- TOPOLOGY VIEW ------------------------------------------ -->
+      <div id="view-topology" class="view">
+        <!-- Toolbar -->
+        <div class="topology-toolbar">
+          <span class="topology-toolbar-title">Network Topology</span>
+          <div class="topology-legend">
+            <span class="topology-legend-item">
+              <span class="topology-legend-swatch" style="background:#ffb300;border-radius:2px;"></span>
+              Router / Repeater
+            </span>
+            <span class="topology-legend-item">
+              <span class="topology-legend-swatch" style="background:#00d4aa;border-radius:50%;"></span>
+              Client
+            </span>
+            <span class="topology-legend-item">
+              <span class="topology-legend-swatch" style="background:#9e9e9e;border-radius:50%;"></span>
+              Tracker
+            </span>
+            <span class="topology-legend-divider">|</span>
+            <span class="topology-legend-item">
+              <span class="topology-legend-edge" style="border-color:#4caf50;"></span>
+              Strong (>5 dB)
+            </span>
+            <span class="topology-legend-item">
+              <span class="topology-legend-edge" style="border-color:#ffb300;"></span>
+              Moderate
+            </span>
+            <span class="topology-legend-item">
+              <span class="topology-legend-edge" style="border-color:#e53935;"></span>
+              Weak
+            </span>
+            <span class="topology-legend-divider">|</span>
+            <span class="topology-legend-item">
+              <span class="topology-legend-edge" style="border-style:solid;border-color:#4fc3f7;"></span>
+              Traceroute
+            </span>
+            <span class="topology-legend-item">
+              <span class="topology-legend-edge" style="border-style:dashed;border-color:#888;"></span>
+              Neighbor
+            </span>
+          </div>
+          <div class="topology-controls">
+            <button id="topology-fit-btn" class="topology-btn" title="Fit all nodes into view">⛶ Fit</button>
+            <button id="topology-reset-btn" class="topology-btn" title="Reset layout (re-run physics)">⟳ Reset</button>
+            <label class="topology-toggle">
+              <input type="checkbox" id="topology-toggle-names" checked />
+              <span class="topology-toggle-label">Names</span>
+            </label>
+            <label class="topology-toggle">
+              <input type="checkbox" id="topology-toggle-traceroutes" checked />
+              <span class="topology-toggle-label">Traceroutes</span>
+            </label>
+            <label class="topology-toggle">
+              <input type="checkbox" id="topology-toggle-neighbors" checked />
+              <span class="topology-toggle-label">Neighbors</span>
+            </label>
+            <label class="topology-toggle">
+              <input type="checkbox" id="topology-toggle-physics" checked />
+              <span class="topology-toggle-label">Physics</span>
+            </label>
+            <input type="text" id="topology-search" class="topology-search" placeholder="Search node…" />
+          </div>
+        </div>
+        <!-- Graph canvas -->
+        <div id="topology-container"></div>
       </div>
 
       <!-- ---- SETTINGS VIEW ------------------------------------------ -->
@@ -351,7 +434,7 @@
           <div class="settings-group-title">About</div>
           <div class="settings-row">
             <span class="settings-row-label">NodePulse Version</span>
-            <span class="settings-row-value">0.2.30</span>
+            <span class="settings-row-value">0.2.34</span>
           </div>
           <div class="settings-row">
             <span class="settings-row-label">UI Poll Interval</span>
