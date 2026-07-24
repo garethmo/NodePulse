@@ -365,8 +365,6 @@
           <div class="card-header" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
             <h1 style="font-size:20px;font-weight:700;margin:0">Packet Inspector</h1>
             <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
-              <input type="text" id="pkt-filter-port" placeholder="Filter portnum…" style="min-width:120px;padding:6px 10px;border:1px solid var(--border-subtle);border-radius:var(--radius-sm);background:var(--card-bg);color:var(--text-primary);font-size:13px" />
-              <input type="text" id="pkt-filter-node" placeholder="Filter node ID…" style="min-width:120px;padding:6px 10px;border:1px solid var(--border-subtle);border-radius:var(--radius-sm);background:var(--card-bg);color:var(--text-primary);font-size:13px" />
               <button id="pkt-clear" style="padding:6px 12px;border:1px solid var(--border-subtle);border-radius:var(--radius-sm);background:var(--card-bg);color:var(--text-primary);cursor:pointer;font-size:13px">Clear</button>
               <button id="pkt-export-json" style="padding:6px 12px;border:1px solid var(--border-subtle);border-radius:var(--radius-sm);background:var(--card-bg);color:var(--text-primary);cursor:pointer;font-size:13px">Export JSON</button>
               <button id="pkt-export-csv" style="padding:6px 12px;border:1px solid var(--border-subtle);border-radius:var(--radius-sm);background:var(--card-bg);color:var(--text-primary);cursor:pointer;font-size:13px">Export CSV</button>
@@ -383,18 +381,18 @@
             <div id="sniffer-dist-bars" style="margin-top:12px;display:flex;flex-direction:column;gap:4px"></div>
           </div>
           <!-- Packet table -->
-          <div style="overflow-x:auto">
+          <div style="overflow-x:auto;position:relative">
             <table style="width:100%;border-collapse:collapse;font-size:13px">
               <thead>
                 <tr style="background:var(--bg-subtle);text-align:left">
-                  <th style="padding:8px 12px;border-bottom:1px solid var(--border-subtle)">Time</th>
-                  <th style="padding:8px 12px;border-bottom:1px solid var(--border-subtle)">Portnum</th>
-                  <th style="padding:8px 12px;border-bottom:1px solid var(--border-subtle)">From</th>
-                  <th style="padding:8px 12px;border-bottom:1px solid var(--border-subtle)">To</th>
-                  <th style="padding:8px 12px;border-bottom:1px solid var(--border-subtle)">Ch</th>
-                  <th style="padding:8px 12px;border-bottom:1px solid var(--border-subtle)">SNR</th>
-                  <th style="padding:8px 12px;border-bottom:1px solid var(--border-subtle)">Hops</th>
-                  <th style="padding:8px 12px;border-bottom:1px solid var(--border-subtle)">ACK</th>
+                  <th class="pkt-th" style="padding:8px 12px;border-bottom:1px solid var(--border-subtle)">Time</th>
+                  <th class="pkt-th pkt-th-sortable" data-col="portnum" style="padding:8px 12px;border-bottom:1px solid var(--border-subtle)">Portnum<span class="pkt-th-arrow"></span><span class="pkt-th-filter-btn" data-col="portnum" title="Filter">▾</span></th>
+                  <th class="pkt-th pkt-th-sortable" data-col="from_id" style="padding:8px 12px;border-bottom:1px solid var(--border-subtle)">From<span class="pkt-th-arrow"></span><span class="pkt-th-filter-btn" data-col="from_id" title="Filter">▾</span></th>
+                  <th class="pkt-th pkt-th-sortable" data-col="to_id" style="padding:8px 12px;border-bottom:1px solid var(--border-subtle)">To<span class="pkt-th-arrow"></span><span class="pkt-th-filter-btn" data-col="to_id" title="Filter">▾</span></th>
+                  <th class="pkt-th pkt-th-sortable" data-col="channel" style="padding:8px 12px;border-bottom:1px solid var(--border-subtle)">Ch<span class="pkt-th-arrow"></span><span class="pkt-th-filter-btn" data-col="channel" title="Filter">▾</span></th>
+                  <th class="pkt-th" style="padding:8px 12px;border-bottom:1px solid var(--border-subtle)">SNR</th>
+                  <th class="pkt-th" style="padding:8px 12px;border-bottom:1px solid var(--border-subtle)">Hops</th>
+                  <th class="pkt-th" style="padding:8px 12px;border-bottom:1px solid var(--border-subtle)">ACK</th>
                 </tr>
               </thead>
               <tbody id="packet-table-body"></tbody>

@@ -52,8 +52,8 @@ const state = {
   // Packet inspector / sniffer state
   packetLog:          [],
   snifferStats:       null,
-  packetFilter:       '',
-  packetNodeFilter:   '',
+  packetFilters:      {},    // { col: value } — active column filters
+  packetSort:         null,  // { col, dir } where dir is 'asc' or 'desc'
 
   // Notification state (Feature 2)
   _lastSeenMsgId:     localStorage.getItem('np_last_msg_id') || null,
@@ -1323,16 +1323,48 @@ async function init() {
   _updateBellButton();
 
   // Packet inspector controls.
-  const pktPortFilter = document.getElementById('pkt-filter-port');
-  if (pktPortFilter) pktPortFilter.addEventListener('input', e => { state.packetFilter = e.target.value; renderPacketTable(); });
-  const pktNodeFilter = document.getElementById('pkt-filter-node');
-  if (pktNodeFilter) pktNodeFilter.addEventListener('input', e => { state.packetNodeFilter = e.target.value; renderPacketTable(); });
-  document.getElementById('pkt-clear')?.addEventListener('click', () => { state.packetLog=[]; renderPacketTable(); });
+  // Packet inspector — header click filters.
+  document.getElementById('pkt-clear')?.addEventListener('click', () => { state.packetLog=[]; state.packetFilters={}; renderPacketTable(); });
   document.getElementById('pkt-export-json')?.addEventListener('click', exportPacketsJSON);
   document.getElementById('pkt-export-csv')?.addEventListener('click', exportPacketsCSV);
   const snifferToggle = document.getElementById('sniffer-toggle');
   const snifferPanel  = document.getElementById('sniffer-panel');
   if (snifferToggle && snifferPanel) snifferToggle.addEventListener('click', () => snifferPanel.classList.toggle('hidden'));
+
+  // Header sort on click, filter via icon button.
+  const pktThead = document.querySelector('#view-packets thead');
+  if (pktThead) {
+    pktThead.addEventListener('click', e => {
+      const th = e.target.closest('.pkt-th-sortable');
+      if (th && !e.target.closest('.pkt-th-filter-btn')) {
+        const col = th.dataset.col;
+        if (!state.packetSort || state.packetSort.col !== col) {
+          state.packetSort = { col, dir: 'asc' };
+        } else if (state.packetSort.dir === 'asc') {
+          state.packetSort.dir = 'desc';
+        } else {
+          state.packetSort = null;
+        }
+        renderPacketTable();
+      }
+    });
+    pktThead.addEventListener('click', e => {
+      const btn = e.target.closest('.pkt-th-filter-btn');
+      if (btn) {
+        const col = btn.dataset.col;
+        const th = btn.closest('th');
+        showPacketFilterDropdown(th, col);
+      }
+    });
+  }
+
+  // Close dropdown on outside click.
+  document.addEventListener('click', e => {
+    if (!e.target.closest('.pkt-filter-dropdown') && !e.target.closest('.pkt-th-filter-btn')) {
+      const dd = document.getElementById('pkt-filter-dropdown');
+      if (dd) dd.remove();
+    }
+  });
 
   switchView('dashboard');
 
@@ -1444,16 +1476,83 @@ function _fmtPacketTime(ts) {
   return new Date(ts * 1000).toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
 }
 
+function showPacketFilterDropdown(th, col) {
+  const existing = document.getElementById('pkt-filter-dropdown');
+  if (existing) existing.remove();
+
+  const rect = th.getBoundingClientRect();
+  const tableRect = th.closest('table').getBoundingClientRect();
+  const dd = document.createElement('div');
+  dd.id = 'pkt-filter-dropdown';
+  dd.className = 'pkt-filter-dropdown';
+  dd.style.top = (rect.bottom - tableRect.top) + 'px';
+  dd.style.left = Math.max(0, rect.left - tableRect.left) + 'px';
+
+  const activeVal = state.packetFilters[col];
+  const values = new Set();
+  for (const p of state.packetLog) {
+    let v = p[col];
+    if (v == null) v = '';
+    values.add(String(v));
+  }
+  const sorted = [...values].sort((a, b) => a.localeCompare(b));
+
+  // "All" option to clear filter
+  const all = document.createElement('div');
+  all.className = 'pkt-dd-item' + (!activeVal ? ' active' : '');
+  all.textContent = '(All)';
+  all.addEventListener('click', e => { e.stopPropagation(); delete state.packetFilters[col]; renderPacketTable(); dd.remove(); });
+  dd.appendChild(all);
+
+  for (const v of sorted) {
+    const item = document.createElement('div');
+    const display = col === 'from_id' || col === 'to_id' ? v : v || '(empty)';
+    item.className = 'pkt-dd-item' + (activeVal === v ? ' active' : '');
+    item.textContent = display;
+    item.addEventListener('click', e => {
+      e.stopPropagation();
+      if (state.packetFilters[col] === v) {
+        delete state.packetFilters[col];
+      } else {
+        state.packetFilters[col] = v;
+      }
+      renderPacketTable();
+      dd.remove();
+    });
+    dd.appendChild(item);
+  }
+
+  th.closest('table').parentElement.appendChild(dd);
+}
+
 function renderPacketTable() {
   const tbody = document.getElementById('packet-table-body');
   if (!tbody) return;
-  const pf = state.packetFilter.toLowerCase();
-  const nf = state.packetNodeFilter.toLowerCase();
-  const packets = state.packetLog.filter(p => {
-    if (pf && !(p.portnum || '').toLowerCase().includes(pf)) return false;
-    if (nf) { const f=(p.from_id||'').toLowerCase(),t=(p.to_id||'').toLowerCase(); if(!f.includes(nf)&&!t.includes(nf)) return false; }
+  const pf = state.packetFilters;
+  let packets = state.packetLog.filter(p => {
+    for (const [col, val] of Object.entries(pf)) {
+      const pv = String(p[col] ?? '');
+      if (pv !== val) return false;
+    }
     return true;
   });
+
+  // Apply sort.
+  if (state.packetSort) {
+    const { col, dir } = state.packetSort;
+    packets = [...packets].sort((a, b) => {
+      let va = a[col], vb = b[col];
+      if (va == null) va = '';
+      if (vb == null) vb = '';
+      if (typeof va === 'number' && typeof vb === 'number') {
+        return dir === 'asc' ? va - vb : vb - va;
+      }
+      va = String(va);
+      vb = String(vb);
+      const cmp = va.localeCompare(vb);
+      return dir === 'asc' ? cmp : -cmp;
+    });
+  }
   tbody.innerHTML = '';
   for (const pkt of packets) {
     const color = _portnumColor(pkt.portnum);
@@ -1463,7 +1562,7 @@ function renderPacketTable() {
       <td class="packet-time">${_fmtPacketTime(pkt.timestamp)}</td>
       <td><span class="portnum-badge" style="color:${color}">${escapeHtml(pkt.portnum||'UNKNOWN')}</span></td>
       <td class="mono pkt-id">${escapeHtml(pkt.from_id||'—')}${shortNameFor(pkt.from_id) ? ' <span class="pkt-name">'+escapeHtml(shortNameFor(pkt.from_id))+'</span>' : ''}</td>
-      <td class="mono pkt-id">${escapeHtml(pkt.to_id  ||'—')}</td>
+      <td class="mono pkt-id">${escapeHtml(pkt.to_id||'—')}${shortNameFor(pkt.to_id) ? ' <span class="pkt-name">'+escapeHtml(shortNameFor(pkt.to_id))+'</span>' : ''}</td>
       <td>${pkt.channel??'—'}</td>
       <td>${pkt.rx_snr!=null?pkt.rx_snr.toFixed(1):'—'}</td>
       <td>${pkt.hop_limit!=null?`${pkt.hop_limit}/${pkt.hop_start??'?'}`:'—'}</td>
@@ -1482,6 +1581,21 @@ function renderPacketTable() {
     tr.innerHTML = `<td colspan="8" style="text-align:center;color:var(--text-muted);padding:24px">${state.packetLog.length===0?'No packets captured yet — waiting for mesh traffic.':'No packets match the current filter.'}</td>`;
     tbody.appendChild(tr);
   }
+
+  // Update header indicators — sort arrow and active filter dot.
+  document.querySelectorAll('.pkt-th-sortable').forEach(th => {
+    const col = th.dataset.col;
+    const arrow = th.querySelector('.pkt-th-arrow');
+    if (arrow) {
+      if (state.packetSort && state.packetSort.col === col) {
+        arrow.textContent = state.packetSort.dir === 'asc' ? ' ▲' : ' ▼';
+      } else {
+        arrow.textContent = '';
+      }
+    }
+    const btn = th.querySelector('.pkt-th-filter-btn');
+    if (btn) btn.classList.toggle('active', !!state.packetFilters[col]);
+  });
 }
 
 function renderSnifferStats(stats) {

@@ -5,6 +5,21 @@ All notable changes to NodePulse are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-07-24
+### Added
+- **Packet Inspector column sort/filter** — Clickable column headers for sorting (asc/desc) and filtering by unique values via dropdown. Active filters and sort direction indicated on headers.
+- **Short names in packet table** — From and To columns show node short name next to hex ID.
+- **Complete README rewrite** — Restored architecture diagrams, full installation guide, addon configuration docs, troubleshooting, and development sections.
+
+### Fixed
+- **Packet table not populating** — Fixed ID mismatch between HTML (`packet-table-body`) and JS (`packet-tbody`).
+- **Sniffer stats toggle broken on wide screens** — Moved `.hidden` utility class out of `@media` query into global scope.
+- **Portnum filter input not working** — Fixed ID mismatch (`pkt-filter-port` vs `pkt-filter-portnum`).
+- **Sniffer distribution bars not rendering** — Fixed ID mismatch (`sniffer-dist-bars` vs `sniffer-bars`).
+
+### Changed
+- **Version bump** — 1.0.0 → 1.1.0.
+
 ## [1.0.0] - 2026-07-23
 ### Added
 - **Major Release** — NodePulse reaches 1.0! Stable release with full feature parity.

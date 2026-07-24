@@ -1565,6 +1565,28 @@ body.nav-open #sidebar-backdrop { display: block; }
   .portnum-badge { font-weight: 600; font-size: 0.8rem; }
   .mono { font-family: 'JetBrains Mono', monospace; }
   .pkt-name { color: var(--text-muted); font-size: 0.75rem; font-family: var(--font-family); }
+  .pkt-th { user-select: none; }
+  .pkt-th-sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+  .pkt-th-sortable:hover { background: var(--bg-highlight); }
+  .pkt-th-arrow { font-size: 0.7rem; color: var(--accent); margin-left: 2px; }
+  .pkt-th-filter-btn {
+    cursor: pointer; margin-left: 3px; font-size: 0.6rem; opacity: 0.4;
+    vertical-align: middle; padding: 2px 4px; border-radius: var(--radius-sm);
+  }
+  .pkt-th-filter-btn:hover { opacity: 1; background: var(--bg-highlight); }
+  .pkt-th-filter-btn.active { opacity: 1; color: var(--accent); }
+  .pkt-filter-dropdown {
+    position: absolute; z-index: 100; min-width: 140px;
+    background: var(--card-bg); border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm); box-shadow: 0 4px 12px rgba(0,0,0,.25);
+    max-height: 260px; overflow-y: auto;
+  }
+  .pkt-dd-item {
+    padding: 6px 12px; cursor: pointer; font-size: 12px; white-space: nowrap;
+    color: var(--text-primary);
+  }
+  .pkt-dd-item:hover { background: var(--bg-highlight); }
+  .pkt-dd-item.active { background: var(--accent); color: var(--accent-text, #fff); font-weight: 600; }
 
   /* Signal quality badge */
   .quality-badge {
