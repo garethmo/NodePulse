@@ -362,7 +362,7 @@ async def handle_channels(request: web.Request) -> web.Response:
     """Return the channel list configured on the connected Meshtastic node."""
     conn: MeshtasticConnection = request.app["connection"]
     try:
-        channels = await conn.get_channels()
+        channels = await conn.refresh_channels()
         logger.debug("Channels fetched: count=%s, data=%s", len(channels) if channels else 0, channels)
         return _json_response(channels)
     except Exception as exc:

@@ -31,3 +31,10 @@ Thumbs.db
 DEVELOPMENT_PLAN.md
 ROADMAP.md
 session-ses_079d.md
+
+# Caches
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+node_modules/
+MQTT_PROXY.md

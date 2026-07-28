@@ -15,7 +15,8 @@ RUN case "${BUILD_ARCH}" in \
 # If requirements.txt hasn't changed, this layer won't be rebuilt.
 COPY requirements.txt /tmp/requirements.txt
 # --prefer-binary guarantees we never fall back to a slow source build.
-RUN pip install --no-cache-dir --prefer-binary -r /tmp/requirements.txt
+# --retries 5 / --timeout 30 handle transient HA wheels server issues.
+RUN pip install --no-cache-dir --prefer-binary --retries 5 --timeout 30 -r /tmp/requirements.txt
 
 # Enable detailed logging for s6-overlay and bashio to debug startup issues
 ENV S6_VERBOSITY=3

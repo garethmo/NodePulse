@@ -5,6 +5,22 @@ All notable changes to NodePulse are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-07-28
+### Added
+- **Standalone Docker support** — New `Dockerfile.standalone` based on `python:3.12-alpine3.19` for running the Web UI without Home Assistant. Full guide in `STANDALONE_DOCKER.md`.
+- **Signal strength filter** on the Nodes tab now uses `snr_avg` (rolling average of last 10 packet SNRs) instead of the instantaneous `snr` value for more stable filtering.
+
+### Fixed
+- **`notifyNode` dead code** — Removed the async `try/catch/await` wrapper and rollback logic that could never trigger since `notifyNode` is entirely client-side (localStorage + toast). Now directly updates state and calls `_updateNotifyUI`.
+- **`_originalColor` shallow clone** — `{...node.color}` only copied the top-level keys, so vis.js mutations to nested `highlight`/`hover` objects corrupted the stored original. Changed to a deep clone with spread for both sub-objects.
+- **`_applySearchHighlight` color comparison** — The `JSON.stringify` comparison didn't include `opacity`, so an opacity-only change (e.g. search dimming) wouldn't trigger a vis.js redraw. Now explicitly checks `opacity` alongside `background` and `border`.
+- **`_buildNodeTooltip` indentation** — The method and its `escapeTextContent` helper were at column 0 inside the class, which would cause syntax errors in strict mode or under minifiers. Properly indented.
+- **`app.js init()` indentation** — The `localStorage` loading blocks for `state.notifyNodes` and `state.dismissedConvs` had mismatched indentation relative to surrounding code.
+- **`storeMessage` echo dedup false positive** — Sending identical message text twice within 3 seconds would incorrectly suppress the second one. Now also matches on `destination` and `channel`, making the dedup specific enough to avoid false positives while still suppressing firmware echoes.
+
+### Changed
+- **Version bump** — 1.1.0 → 1.2.0.
+
 ## [1.1.0] - 2026-07-24
 ### Added
 - **Packet Inspector column sort/filter** — Clickable column headers for sorting (asc/desc) and filtering by unique values via dropdown. Active filters and sort direction indicated on headers.

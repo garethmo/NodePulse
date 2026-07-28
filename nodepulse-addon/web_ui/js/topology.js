@@ -59,6 +59,7 @@ export class TopologyManager {
     this._edgesDS   = null;
     this._initialised = false;
     this._lastNodeCount = 0;
+    this._hasStabilized = false;   // becomes true after first stabilization pass
     
     // Toggle state
     this._showNames = true;
@@ -153,8 +154,13 @@ export class TopologyManager {
       options,
     );
 
-    // Fit the graph after the initial stabilisation pass.
+    // Fit the graph once after the initial stabilisation pass.
+    // The `_hasStabilized` flag prevents re-fitting on subsequent
+    // stabilizations triggered by resetLayout() — those should preserve
+    // the user's current viewport.
     this._network.on('stabilizationIterationsDone', () => {
+      if (this._hasStabilized) return;
+      this._hasStabilized = true;
       this._network.fit({ animation: { duration: 500, easingFunction: 'easeInOutQuad' } });
     });
 
@@ -185,7 +191,7 @@ export class TopologyManager {
    */
   resetLayout() {
     if (!this._initialised) return;
-    this._network.setOptions({ physics: { enabled: true, stabilization: { iterations: 200, fit: true } } });
+    this._network.setOptions({ physics: { enabled: true, stabilization: { iterations: 200 } } });
     this._network.stabilize();
   }
 
@@ -261,22 +267,22 @@ export class TopologyManager {
       // Tooltip: rich HTML shown on hover.
       const title = this._buildNodeTooltip(node);
 
+      const roleColor = {
+        background: style.color,
+        border:     style.border,
+        highlight:  { background: '#ffffff', border: style.border },
+        hover:      { background: '#ffffff', border: style.border },
+      };
       newNodes.push({
         id:    node.id,
         label: this._showNames ? label : '',
         title: title,
-        color: {
-          background: style.color,
-          border:     style.border,
-          highlight:  { background: '#ffffff', border: style.border },
-          hover:      { background: '#ffffff', border: style.border },
-        },
+        color: roleColor,
         shape:   style.shape,
         size:    style.size,
         opacity: opacity,
-        // Store original label for search
         _originalLabel: label,
-        // Store role for potential filtering
+        _originalColor: { ...roleColor, highlight: { ...roleColor.highlight }, hover: { ...roleColor.hover } },
         _role: role,
       });
     }
@@ -342,8 +348,24 @@ export class TopologyManager {
     const currentNodeIds = new Set(this._nodesDS.getIds());
     const currentEdgeIds = new Set(this._edgesDS.getIds());
 
-    const nodesToAdd    = newNodes.filter(n => !currentNodeIds.has(n.id));
-    const nodesToUpdate = newNodes.filter(n =>  currentNodeIds.has(n.id));
+    // Build a lookup of current vis node data by id for label comparison
+    const currentNodesById = {};
+    this._nodesDS.forEach(n => { currentNodesById[n.id] = n; });
+
+    const nodesToAdd    = [];
+    const nodesToUpdate = [];
+
+    for (const n of newNodes) {
+      if (!currentNodeIds.has(n.id)) {
+        nodesToAdd.push(n);
+      } else {
+        // Force update if label or tooltip changed — vis merge can miss this
+        const existing = currentNodesById[n.id];
+        if (existing.label !== n.label || existing.title !== n.title || existing._originalLabel !== n._originalLabel) {
+          nodesToUpdate.push(n);
+        }
+      }
+    }
     const nodesToRemove = [...currentNodeIds].filter(id => !newNodes.some(n => n.id === id));
 
     const edgesToAdd    = newEdges.filter(e => !currentEdgeIds.has(e.id));
@@ -358,6 +380,11 @@ export class TopologyManager {
     if (edgesToAdd.length)    this._edgesDS.add(edgesToAdd);
     if (edgesToUpdate.length) this._edgesDS.update(edgesToUpdate);
 
+    // Force redraw so label/tooltip changes render immediately
+    if (nodesToUpdate.length || edgesToUpdate.length) {
+      this._network?.redraw();
+    }
+
     // Apply search highlight if active
     this._applySearchHighlight();
 
@@ -368,10 +395,6 @@ export class TopologyManager {
       this._clearError();
     }
 
-    // Re-fit if the node count jumped noticeably (new nodes discovered).
-    if (Math.abs(nodes.length - this._lastNodeCount) > 2) {
-      this._network.fit({ animation: { duration: 600, easingFunction: 'easeInOutQuad' } });
-    }
     this._lastNodeCount = nodes.length;
   }
 
@@ -383,12 +406,14 @@ export class TopologyManager {
     if (!this._initialised) return;
     const updates = [];
     this._nodesDS.forEach(node => {
-      const label = this._showNames ? node._originalLabel : '';
+      const currentLabel = node._originalLabel || node.label || '';
+      const label = this._showNames ? currentLabel : '';
       if (node.label !== label) {
         updates.push({ id: node.id, label });
       }
     });
     if (updates.length) this._nodesDS.update(updates);
+    if (updates.length) this._network?.redraw();
   }
 
   _applyEdgeVisibility() {
@@ -409,42 +434,49 @@ export class TopologyManager {
     this._nodesDS.forEach(node => {
       const label = node._originalLabel || '';
       const matches = term === '' || label.toLowerCase().includes(term);
-      const color = matches ? node.color : { background: '#444', border: '#666', opacity: 0.4 };
-      const fontColor = matches ? '#e8eaf6' : '#666';
-      if (node.color !== color || node.font?.color !== fontColor) {
+      const targetColor = matches
+        ? (node._originalColor || { background: '#00d4aa', border: '#4dd0c4' })
+        : { background: '#444', border: '#666', opacity: 0.4 };
+      const targetFontColor = matches ? '#e8eaf6' : '#666';
+      if (
+        node.color?.background !== targetColor.background ||
+        node.color?.border !== targetColor.border ||
+        node.color?.opacity !== targetColor.opacity ||
+        node.font?.color !== targetFontColor
+      ) {
         updates.push({
           id: node.id,
-          color: color,
-          font: { ...node.font, color: fontColor },
+          color: targetColor,
+          font: { ...node.font, color: targetFontColor },
         });
       }
     });
     if (updates.length) this._nodesDS.update(updates);
   }
 
- /** Build a tooltip string for a node. */
-_buildNodeTooltip(node) {
-const escapeTextContent = (text) => {
-if (!text) return '';
-return String(text)
- .replace(/&/g, '&amp;')
- .replace(/</g, '&lt;')
- .replace(/>/g, '&gt;')
- .replace(/\"/g, '&quot;')
- .replace(/'/g, '&#39;');
-};
+  /** Build a tooltip string for a node. */
+  _buildNodeTooltip(node) {
+    const escapeTextContent = (text) => {
+      if (!text) return '';
+      return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/\"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    };
 
-const titleLines = [
-`${escapeTextContent(node.long_name || node.id)}`,
-node.id ? `ID: ${escapeTextContent(node.id)}` : null,
-node.role ? `Role: ${escapeTextContent(node.role)}` : null,
-node.hops_away != null ? `Hops: ${escapeTextContent(node.hops_away)}` : null,
-node.snr != null ? `SNR: ${escapeTextContent(node.snr)} dB` : null,
-node.rssi != null ? `RSSI: ${escapeTextContent(node.rssi)} dBm` : null,
-node.battery_level != null ? `Battery: ${escapeTextContent(node.battery_level)}%` : null,
-];
-return titleLines.filter(Boolean).join('\n');
-}
+    const titleLines = [
+      `${escapeTextContent(node.long_name || node.id)}`,
+      node.id ? `ID: ${escapeTextContent(node.id)}` : null,
+      node.role ? `Role: ${escapeTextContent(node.role)}` : null,
+      node.hops_away != null ? `Hops: ${escapeTextContent(node.hops_away)}` : null,
+      node.snr != null ? `SNR: ${escapeTextContent(node.snr)} dB` : null,
+      node.rssi != null ? `RSSI: ${escapeTextContent(node.rssi)} dBm` : null,
+      node.battery_level != null ? `Battery: ${escapeTextContent(node.battery_level)}%` : null,
+    ];
+    return titleLines.filter(Boolean).join('\n');
+  }
 
   /** Show a text message in the container (error / empty state). */
   _showError(msg) {

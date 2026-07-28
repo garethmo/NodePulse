@@ -156,12 +156,28 @@ class NodePulseCoordinator(DataUpdateCoordinator):
         return (message.get("from_id"), message.get("text"), message.get("timestamp"))
 
     async def persist_tracked_nodes(self, hass: HomeAssistant) -> None:
-        """Write the current tracked set back into the config entry options."""
-        new_options = dict(self._config_entry.options)
+        """Write the current tracked set back into the config entry options.
+
+        Looks up the config entry fresh each time so a stale reference from a
+        coordinator that outlived a config-entry reload does not cause an
+        UnknownEntry error. Silently skips if the entry no longer exists.
+        """
+        entry = hass.config_entries.async_get_entry(self._config_entry.entry_id)
+        if entry is None:
+            logger.warning(
+                "Config entry %s not found, skipping tracked nodes persistence",
+                self._config_entry.entry_id,
+            )
+            return
+        new_options = dict(entry.options)
         new_options[CONF_TRACKED_NODES] = list(self.tracked_nodes)
-        hass.config_entries.async_update_entry(
-            self._config_entry, options=new_options
-        )
+        try:
+            hass.config_entries.async_update_entry(entry, options=new_options)
+        except Exception:
+            logger.exception(
+                "Failed to persist tracked nodes for entry %s",
+                entry.entry_id,
+            )
 
     def _load_ignored_nodes(self) -> Set[str]:
         """Return the set of node IDs to exclude from the integration.

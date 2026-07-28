@@ -42,12 +42,17 @@ const state = {
   selfId:         null,   // node ID of the locally-connected node
   trackedNodes:   new Set(), // node IDs currently tracked as HA entities
   nodeFilter:     '',       // free-text filter for the Nodes tab
+  signalFilter:   '',       // signal-strength filter for the Nodes tab
   activeConversation: 'ch:0', // currently-open thread (ch:<n> or dm:<nodeId>)
   messageFilter:    '',       // free-text filter for message history
   conversations:  {},       // key -> { key, name, kind, unread }
   messagesByConv: {},       // key -> [message objects], persisted across polls
   channels:       [],       // configured mesh channels from the node
   nodeTags:        {},       // node_id -> [tag strings], loaded from /api/tags
+  notifyNodes:     new Set(), // node IDs that should trigger HA notifications
+  dismissedConvs:  new Set(), // conversation keys hidden from sidebar, persisted in localStorage
+  _initialBatchComplete: false, // becomes true after first message poll
+
   // Counter incremented on each fast poll cycle. Used to throttle the slow
   // Packet inspector / sniffer state
   packetLog:          [],
@@ -151,6 +156,20 @@ function sortByLastHeard(nodes) {
   return [...nodes].sort((a, b) => (b.last_heard ?? 0) - (a.last_heard ?? 0));
 }
 
+function sortBySignal(nodes) {
+  return [...nodes].sort((a, b) => {
+    const sa = a.snr != null ? a.snr : -Infinity;
+    const sb = b.snr != null ? b.snr : -Infinity;
+    if (sb > sa) return 1;
+    if (sb < sa) return -1;
+    const ra = a.rssi != null ? a.rssi : -Infinity;
+    const rb = b.rssi != null ? b.rssi : -Infinity;
+    if (rb > ra) return 1;
+    if (rb < ra) return -1;
+    return 0;
+  });
+}
+
 // ============================================================================
 // Rendering: Status Bar
 // ============================================================================
@@ -189,8 +208,8 @@ function renderNodeList(nodes) {
     return;
   }
 
-  // Sort by last heard (most recent first).
-  const sorted = sortByLastHeard(nodes);
+  // Sort by signal strength (strongest first).
+  const sorted = sortBySignal(nodes);
 
   for (const node of sorted) {
     const li = document.createElement('li');
@@ -235,8 +254,7 @@ function renderNodesGrid(nodes) {
   const grid = document.getElementById('nodes-grid');
 
   // Fast check: compute a fingerprint of the current state that affects the grid.
-  // We include trackedNodes size and node IDs + last_heard + snr + distance (coords).
-  const fingerprint = state.nodeFilter + '|' + state.trackedNodes.size + '|' + JSON.stringify(state.nodeTags) + '|' + nodes.map(n => `${n.id}:${n.last_heard}:${n.snr}:${n.latitude}:${n.longitude}:${n.traceroute?.timestamp}:${(n.neighbors || []).length}:${n.neighbor_info_updated || ''}`).join('|');
+  const fingerprint = [state.nodeFilter, state.signalFilter, state.trackedNodes.size, state.notifyNodes.size, JSON.stringify(state.nodeTags), ...nodes.map(n => `${n.id}:${n.last_heard}:${n.snr}:${n.snr_avg}:${n.latitude}:${n.longitude}`)].join('|');
   if (grid.dataset.fingerprint === fingerprint && grid.innerHTML !== '') return;
   grid.dataset.fingerprint = fingerprint;
 
@@ -250,7 +268,7 @@ function renderNodesGrid(nodes) {
   // Apply the free-text filter from the Nodes tab search box. Match against
   // long name, short name, hardware model, or node ID (all case-insensitive).
   const q = state.nodeFilter.trim().toLowerCase();
-  const filtered = q
+  let filtered = q
     ? nodes.filter(n =>
         (n.long_name || '').toLowerCase().includes(q) ||
         (n.short_name || '').toLowerCase().includes(q) ||
@@ -258,13 +276,32 @@ function renderNodesGrid(nodes) {
         (n.id || '').toLowerCase().includes(q))
     : nodes;
 
+  // Apply the signal-strength filter.
+  const sf = state.signalFilter;
+  if (sf) {
+    const thresholds = {
+      excellent: [10, Infinity],
+      good:      [5, 10],
+      fair:      [0, 5],
+      poor:      [-Infinity, 0],
+      none:      [null, null],
+    };
+    const [lo, hi] = thresholds[sf] || [];
+    filtered = filtered.filter(n => {
+      if (lo === null) return n.snr_avg == null;
+      if (n.snr_avg == null) return false;
+      return n.snr_avg >= lo && (hi === Infinity || n.snr_avg < hi);
+    });
+  }
+
   if (filtered.length === 0) {
-    grid.innerHTML = `<div class="list-placeholder">No nodes match "${escapeHtml(state.nodeFilter)}".</div>`;
+    const reason = sf ? ` matching "${sf}" signal` : ` matching "${escapeHtml(state.nodeFilter)}"`;
+    grid.innerHTML = `<div class="list-placeholder">No nodes${reason}.</div>`;
     return;
   }
 
-  // Sort the filtered nodes by distance from the self node (nearest first).
-  const sorted = sortByDistance(filtered);
+  // Sort the filtered nodes by signal strength (strongest first).
+  const sorted = sortBySignal(filtered);
 
   // Resolve the self node's coordinates once so we can compute per-node
   // distance (MeshSense-style "distance from your node").
@@ -401,6 +438,10 @@ function renderNodesGrid(nodes) {
           <input type="checkbox" data-action="track" data-node="${escapeHtml(node.id)}" ${state.trackedNodes.has(node.id) ? 'checked' : ''} />
           <span>Track in HA</span>
         </label>
+        <label class="node-track-toggle" title="Receive browser notifications for messages from this node">
+          <input type="checkbox" data-action="notify" data-node="${escapeHtml(node.id)}" ${state.notifyNodes.has(node.id) ? 'checked' : ''} />
+          <span>Notify</span>
+        </label>
       </div>`;
 
     grid.appendChild(card);
@@ -456,6 +497,16 @@ async function handleNodeCardAction(event) {
       showToast(`Track request failed: ${err.message}`, 'error');
       btn.checked = !enabled;
     }
+  } else if (action === 'notify') {
+    const checkbox = btn;
+    const enabled = checkbox.checked;
+    if (enabled) state.notifyNodes.add(nodeId);
+    else state.notifyNodes.delete(nodeId);
+    localStorage.setItem('nodepulse_notify_nodes', JSON.stringify([...state.notifyNodes]));
+    showToast(
+      `${enabled ? 'Notifications enabled' : 'Notifications disabled'} for ${nodeId}`,
+      'success',
+    );
   }
 }
 
@@ -493,6 +544,11 @@ function shortNameFor(nodeId) {
     return id === norm;
   });
   return n && n.short_name ? n.short_name : null;
+}
+
+function formatMessageTime(timestamp) {
+  const d = new Date((timestamp || Date.now() / 1000) * 1000);
+  return `${d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} ${d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`;
 }
 
 // Build the canonical conversation key + display name for a destination the
@@ -573,6 +629,7 @@ function selectConversation(key) {
 
   renderConversationTabs();
   renderMessageList();
+  updateMessagesBadge();
 }
 
 // Populate and sync the channel <select> in the compose box. Only meaningful
@@ -616,7 +673,7 @@ function syncChannelSelect() {
 }
 
 // Append a message object to its conversation thread + (optionally) to the UI.
-function storeMessage(msg) {
+function storeMessage(msg, { skipUnread } = {}) {
   const key = msg.conversation || (msg.is_dm ? `dm:${msg.from_id}` : `ch:${msg.channel ?? 0}`);
   if (!state.messagesByConv[key]) state.messagesByConv[key] = [];
   const thread = state.messagesByConv[key];
@@ -632,14 +689,19 @@ function storeMessage(msg) {
   if (msg.outgoing && thread.some(m =>
     m.outgoing &&
     m.text === msg.text &&
+    m.destination === msg.destination &&
+    m.channel === msg.channel &&
     Math.abs((m.timestamp || 0) - (msg.timestamp || now)) < THREE_SECONDS
   )) return;
   thread.push(msg);
 
+  if (skipUnread) return;
   const conv = _ensureConversation(key);
   // Mark unread only if it arrived in a non-active conversation and isn't ours.
   if (key !== state.activeConversation && !msg.outgoing) {
     conv.unread = (conv.unread || 0) + 1;
+    // New message on a dismissed conversation — bring it back
+    state.dismissedConvs.delete(key);
   }
 }
 
@@ -680,8 +742,7 @@ function renderMessageList() {
     const bubble = document.createElement('div');
     const type = msg.outgoing ? 'outgoing' : 'incoming';
     bubble.className = `message-bubble ${type}`;
-    const time = new Date((msg.timestamp || Date.now() / 1000) * 1000)
-      .toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+    const time = formatMessageTime(msg.timestamp);
 
     // Delivery / ACK status indicator. Uses server ack_status field if present,
     // falling back to the optimistic local status field.
@@ -754,8 +815,10 @@ async function retryMessage(msg) {
 // clicks "Message" on a node card or a node in the list).
 function openDirectMessage(nodeId) {
   const key = `dm:${nodeId}`;
-  selectConversation(key);
-  if (state.currentView !== 'dashboard') switchView('dashboard');
+  if (state.currentView !== 'messages') switchView('messages');
+  selectMessagesConversation(key);
+  const msgInput = document.getElementById('messages-message-input');
+  if (msgInput) setTimeout(() => msgInput.focus(), 100);
 }
 
 // Grow the compose textarea with its content (capped) for comfortable typing.
@@ -805,6 +868,354 @@ async function handleSend() {
 }
 
 // ============================================================================
+// Unread badge on the Messages nav item and tab button
+// ============================================================================
+
+function updateMessagesBadge() {
+  const total = Object.values(state.conversations).reduce((sum, c) => sum + (c.unread || 0), 0);
+  const label = total > 0 ? (total > 99 ? '99+' : String(total)) : '';
+  for (const id of ['nav-messages-badge', 'tab-messages-badge']) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    el.textContent = label;
+    el.classList.toggle('has-unread', total > 0);
+  }
+}
+
+// ============================================================================
+// Full-screen Messages View — sidebar + thread rendering
+// ============================================================================
+
+function renderMessagesSidebar() {
+  const list = document.getElementById('messages-conv-list');
+  if (!list) return;
+
+  const keys = new Set(['ch:0']);
+  for (const k of Object.keys(state.conversations)) keys.add(k);
+  for (const k of Object.keys(state.messagesByConv)) {
+    if (state.messagesByConv[k].length) keys.add(k);
+  }
+  for (const ch of (state.channels || [])) {
+    if (ch && ch.index != null) keys.add(`ch:${ch.index}`);
+  }
+
+  // Filter out dismissed conversations (except the active one)
+  const filtered = [...keys].filter(k => k === state.activeConversation || !state.dismissedConvs.has(k));
+
+  const ordered = filtered.sort((a, b) => {
+    const ca = a.startsWith('ch:') ? 0 : 1;
+    const cb = b.startsWith('ch:') ? 0 : 1;
+    if (ca !== cb) return ca - cb;
+    return a.localeCompare(b);
+  });
+
+  list.innerHTML = '';
+  for (const key of ordered) {
+    const conv = _ensureConversation(key);
+    const thread = (state.messagesByConv[key] || []);
+    const lastMsg = thread.length > 0 ? thread[thread.length - 1] : null;
+    const time = lastMsg
+      ? new Date(lastMsg.timestamp * 1000).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+      : '';
+
+    const item = document.createElement('div');
+    item.className = `messages-conv-item ${key === state.activeConversation ? 'active' : ''}`;
+    item.dataset.conv = key;
+    item.setAttribute('role', 'option');
+    item.setAttribute('aria-selected', key === state.activeConversation);
+
+    const avatar = document.createElement('div');
+    avatar.className = `messages-conv-avatar ${conv.kind}`;
+    avatar.textContent = conv.name.charAt(0).toUpperCase();
+
+    const content = document.createElement('div');
+    content.className = 'messages-conv-content';
+
+    const nameRow = document.createElement('div');
+    nameRow.className = 'messages-conv-name-row';
+    nameRow.innerHTML = `<span class="messages-conv-name">${escapeHtml(conv.name)}</span>`;
+    if (conv.unread > 0) {
+      nameRow.innerHTML += `<span class="messages-conv-unread">${conv.unread > 99 ? '99+' : conv.unread}</span>`;
+    }
+    if (time) {
+      nameRow.innerHTML += `<span class="messages-conv-time">${time}</span>`;
+    }
+
+    content.appendChild(nameRow);
+
+    if (lastMsg) {
+      const lastMsgEl = document.createElement('div');
+      lastMsgEl.className = 'messages-conv-last-msg';
+      lastMsgEl.textContent = lastMsg.text || '(media)';
+      content.appendChild(lastMsgEl);
+    }
+
+    item.appendChild(avatar);
+    item.appendChild(content);
+
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'messages-conv-close';
+    closeBtn.setAttribute('aria-label', `Close ${conv.name}`);
+    closeBtn.innerHTML = '✕';
+    closeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      state.dismissedConvs.add(key);
+      try { localStorage.setItem('nodepulse_dismissed_convs', JSON.stringify([...state.dismissedConvs])); } catch (_) {}
+      if (state.activeConversation === key) {
+        selectConversation('ch:0');
+      }
+      renderMessagesSidebar();
+      renderMessagesThread();
+    });
+    item.appendChild(closeBtn);
+
+    item.addEventListener('click', () => selectMessagesConversation(key));
+    list.appendChild(item);
+  }
+}
+
+function selectMessagesConversation(key) {
+  selectConversation(key);
+  renderMessagesSidebar();
+  renderMessagesThread();
+  // On mobile, close the sidebar to show the thread
+  document.body.classList.remove('messages-sidebar-open');
+}
+
+function renderMessagesThread() {
+  const list = document.getElementById('messages-thread-list');
+  if (!list) return;
+
+  const nameEl = document.getElementById('messages-thread-name');
+  const subtitleEl = document.getElementById('messages-thread-subtitle');
+
+  if (!state.activeConversation || state.activeConversation === 'ch:0') {
+    const conv = conversationForKey('ch:0');
+    if (nameEl) nameEl.textContent = conv.name;
+    if (subtitleEl) subtitleEl.textContent = 'Channel broadcast';
+  } else {
+    const conv = conversationForKey(state.activeConversation);
+    if (nameEl) nameEl.textContent = conv.name;
+    if (subtitleEl) subtitleEl.textContent = conv.kind === 'dm' ? 'Direct message' : 'Channel';
+  }
+
+  // Sync recipient label
+  const conv = conversationForKey(state.activeConversation || 'ch:0');
+  const msgLabel = document.getElementById('messages-recipient-label');
+  if (msgLabel) msgLabel.textContent = conv.name;
+
+  // Sync channel select
+  const chSelect = document.getElementById('messages-channel-select');
+  if (chSelect) {
+    if (conv.kind === 'dm') {
+      chSelect.style.display = 'none';
+    } else {
+      chSelect.style.display = '';
+      chSelect.value = String(conv.channel ?? 0);
+    }
+  }
+
+  const thread = (state.messagesByConv[state.activeConversation] || []);
+
+  const q = state.messageFilter.trim().toLowerCase();
+  const filtered = q
+    ? thread.filter(m =>
+        (m.text || '').toLowerCase().includes(q) ||
+        (m.from_name || '').toLowerCase().includes(q)
+      )
+    : thread;
+
+  list.innerHTML = '';
+
+  if (filtered.length === 0) {
+    list.innerHTML = `
+      <div class="messages-thread-empty">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+        </svg>
+        <div>${q ? `No messages match "${escapeHtml(q)}".` : 'No messages yet.'}</div>
+      </div>`;
+    return;
+  }
+
+  for (const msg of filtered) {
+    const bubble = document.createElement('div');
+    const type = msg.outgoing ? 'outgoing' : 'incoming';
+    bubble.className = `message-bubble ${type}`;
+    const time = formatMessageTime(msg.timestamp);
+
+    let statusHtml = '';
+    if (msg.outgoing) {
+      const ack = msg.ack_status || msg.status;
+      if (ack === 'sending') {
+        statusHtml = '<span class="msg-status sending">Sending…</span>';
+      } else if (ack === 'sent' || ack === 'delivered') {
+        statusHtml = '<span class="msg-status sent">✓</span>';
+      } else if (ack === 'failed') {
+        statusHtml = '<span class="msg-status failed">✗ Failed</span>';
+        bubble.classList.add('failed');
+      }
+    }
+
+    let channelHtml = '';
+    if (conv.kind === 'dm' && msg.channel != null) {
+      const ch = parseInt(msg.channel, 10) || 0;
+      const cfg = (state.channels || []).find(c => c && c.index === ch);
+      const chName = cfg && cfg.name ? cfg.name : (ch === 0 ? 'Primary' : `Ch ${ch}`);
+      channelHtml = `<span class="message-channel">${escapeHtml(chName)}</span>`;
+    }
+
+    const sender = msg.outgoing
+      ? 'Me'
+      : (shortNameFor(msg.from_id) || msg.from_name || nodeName(msg.from_id) || 'Unknown');
+    bubble.innerHTML = `
+      ${msg.outgoing ? '' : `<div class="message-sender">${escapeHtml(sender)}</div>`}
+      <div class="message-text">${escapeHtml(msg.text)}</div>
+      <div class="message-meta">
+        <span class="message-time">${time}</span>${channelHtml}${statusHtml}
+      </div>`;
+
+    if (msg.outgoing && msg.status === 'failed') {
+      bubble.style.cursor = 'pointer';
+      bubble.addEventListener('click', () => retryMessage(msg));
+    }
+    list.appendChild(bubble);
+  }
+
+  const wasAtBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
+  if (wasAtBottom) {
+    list.scrollTop = list.scrollHeight;
+  }
+}
+
+async function handleMessagesSend() {
+  const input  = document.getElementById('messages-message-input');
+  const text   = input.value.trim();
+  if (!text) return;
+
+  const conv = conversationForKey(state.activeConversation || 'ch:0');
+  const destination = conv.kind === 'dm' ? conv.nodeId : null;
+  const channel = conv.kind === 'dm' ? 0 : conv.channel;
+
+  const optimistic = {
+    id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    text,
+    outgoing: true,
+    conversation: state.activeConversation || 'ch:0',
+    timestamp: Date.now() / 1000,
+    from_name: 'Me',
+    status: 'sending',
+    destination,
+    channel,
+  };
+  storeMessage(optimistic);
+  renderMessagesThread();
+  renderMessagesSidebar();
+  input.value = '';
+  input.style.height = 'auto';
+
+  try {
+    await sendMessage(text, destination, channel);
+    optimistic.status = 'sent';
+  } catch (err) {
+    optimistic.status = 'failed';
+    showToast(`Send failed: ${err.message}`, 'error');
+  }
+  if (state.activeConversation === optimistic.conversation) {
+    renderMessagesThread();
+    renderMessagesSidebar();
+  }
+}
+
+function populateMessagesChannelSelect() {
+  const sel = document.getElementById('messages-channel-select');
+  if (!sel) return;
+  const prev = sel.value;
+
+  const chans = (state.channels || []).filter(c => c && c.index != null);
+  const hasPrimary = chans.some(c => c.index === 0);
+  const list = hasPrimary ? chans : [{ index: 0, name: 'Primary' }, ...chans];
+
+  sel.innerHTML = '';
+  for (const c of list) {
+    const opt = document.createElement('option');
+    opt.value = String(c.index);
+    opt.textContent = c.name ? `${c.name} (ch ${c.index})` : `Channel ${c.index}`;
+    sel.appendChild(opt);
+  }
+
+  if (prev && list.some(c => String(c.index) === prev)) sel.value = prev;
+  else sel.value = '0';
+}
+
+// ============================================================================
+// Node picker — search nodes and start a DM
+// ============================================================================
+
+function toggleNodePicker() {
+  const picker = document.getElementById('messages-node-picker');
+  if (!picker) return;
+  const hidden = picker.classList.toggle('hidden');
+  if (!hidden) {
+    renderNodePicker('');
+    const input = document.getElementById('messages-node-picker-search');
+    if (input) { input.value = ''; input.focus(); }
+  }
+}
+
+function closeNodePicker() {
+  const picker = document.getElementById('messages-node-picker');
+  if (picker) picker.classList.add('hidden');
+}
+
+function renderNodePicker(query) {
+  const list = document.getElementById('messages-node-picker-list');
+  if (!list) return;
+
+  const nodes = (state.nodes || []).filter(n => n && n.id);
+
+  const q = query.trim().toLowerCase();
+  const filtered = q
+    ? nodes.filter(n =>
+        (n.long_name || '').toLowerCase().includes(q) ||
+        (n.short_name || '').toLowerCase().includes(q) ||
+        n.id.toLowerCase().includes(q)
+      )
+    : nodes;
+
+  list.innerHTML = '';
+
+  if (filtered.length === 0) {
+    list.innerHTML = `<div class="messages-node-picker-empty">${q ? 'No nodes match.' : 'No nodes available.'}</div>`;
+    return;
+  }
+
+  for (const node of filtered) {
+    const name = node.long_name || node.short_name || 'Unknown';
+    const item = document.createElement('div');
+    item.className = 'messages-node-picker-item';
+    item.innerHTML = `
+      <div class="node-picker-icon">${name.charAt(0).toUpperCase()}</div>
+      <div class="node-picker-info">
+        <div class="node-picker-name">${escapeHtml(name)}</div>
+        <div class="node-picker-id">${escapeHtml(node.id)}</div>
+      </div>`;
+    item.addEventListener('click', () => {
+      closeNodePicker();
+      if (state.currentView !== 'messages') switchView('messages');
+      const key = `dm:${node.id}`;
+      selectMessagesConversation(key);
+      // Switch the full messages view to this DM
+      if (state.currentView !== 'messages') switchView('messages');
+      // Focus the message input
+      const msgInput = document.getElementById('messages-message-input');
+      if (msgInput) setTimeout(() => msgInput.focus(), 100);
+    });
+    list.appendChild(item);
+  }
+}
+
+// ============================================================================
 // View Switching
 // ============================================================================
 function switchView(viewName) {
@@ -845,6 +1256,16 @@ function switchView(viewName) {
       topology.updateData(state);
     } else if (viewName === 'packets') {
       pollPackets();
+    } else if (viewName === 'messages') {
+      renderMessagesSidebar();
+      renderMessagesThread();
+      updateMessagesBadge();
+      // On mobile (≤768px), show the conversation sidebar by default so the
+      // user sees the list before picking a conversation. The sidebar slides
+      // over the thread and is dismissed when a conversation is tapped.
+      if (window.innerWidth <= 768) {
+        document.body.classList.add('messages-sidebar-open');
+      }
     }
   });
 }
@@ -898,6 +1319,15 @@ async function renderSettings() {
     _setEl('settings-conn', `⚠ Error: ${msg}`);
     console.error('renderSettings failed:', err);
   }
+}
+
+/**
+ * Toggle browser notification preference for a mesh node.
+ * This is purely client-side — stored in localStorage, no backend call needed.
+ */
+async function notifyNode(nodeId, enabled) {
+  // No-op: the calling code already updates state.notifyNodes and localStorage.
+  return { node_id: nodeId, enabled };
 }
 
 // ============================================================================
@@ -999,6 +1429,7 @@ async function pollData() {
     const chans = Array.isArray(channelsResult.value) ? channelsResult.value : [];
     state.channels = chans;
     renderChannelSelect();
+    populateMessagesChannelSelect();
     // Channel tabs must re-render once the channel list is known so they
     // appear immediately (not only after a message arrives on each channel).
     renderConversationTabs();
@@ -1052,6 +1483,8 @@ function renderIncomingMessages(messages) {
   if (!Array.isArray(messages)) return;
   let changed = false;
 
+  const initialBatch = !state._initialBatchComplete;
+
   for (const msg of messages) {
     if (!msg.id) continue;
 
@@ -1071,15 +1504,20 @@ function renderIncomingMessages(messages) {
     }
 
     state.seenMessageIds.add(msg.id);
-    storeMessage(msg);
+    storeMessage(msg, { skipUnread: initialBatch });
     changed = true;
 
-    if (!msg.outgoing) _fireNewMessageNotification(msg);
+    if (!initialBatch && !msg.outgoing) _fireNewMessageNotification(msg);
   }
+
+  state._initialBatchComplete = true;
 
   if (changed) {
     renderConversationTabs();
     renderMessageList();
+    renderMessagesSidebar();
+    renderMessagesThread();
+    updateMessagesBadge();
   }
 }
 
@@ -1091,6 +1529,8 @@ function _fireNewMessageNotification(msg) {
   if (!('Notification' in window)) return;
   if (Notification.permission !== 'granted') return;
   if (document.visibilityState === 'visible') return;
+  const hasExplicitSettings = state.notifyNodes.size > 0;
+  if (hasExplicitSettings && msg.from_id && !state.notifyNodes.has(msg.from_id)) return;
   const title = `NodePulse — ${msg.from_name || msg.from_id || 'Unknown'}`;
   const body  = (msg.text || '').length > 100 ? msg.text.slice(0, 97) + '…' : msg.text;
   try {
@@ -1167,16 +1607,35 @@ async function init() {
     });
   }
 
+  // Load notify nodes from localStorage
+    try {
+      const savedNotify = localStorage.getItem('nodepulse_notify_nodes');
+      if (savedNotify) {
+        state.notifyNodes = new Set(JSON.parse(savedNotify));
+      }
+    } catch (_) { /* ignore */ }
+
+  // Load dismissed conversations from localStorage
+    try {
+      const savedDismissed = localStorage.getItem('nodepulse_dismissed_convs');
+      if (savedDismissed) {
+        state.dismissedConvs = new Set(JSON.parse(savedDismissed));
+      }
+    } catch (_) { /* ignore */ }
+
   // Wire up the send button and Enter key shortcut in the message input.
-  document.getElementById('send-btn').addEventListener('click', handleSend);
+  const sendBtn = document.getElementById('send-btn');
+  if (sendBtn) sendBtn.addEventListener('click', handleSend);
   const msgInput = document.getElementById('message-input');
-  msgInput.addEventListener('keydown', e => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
-  });
-  msgInput.addEventListener('input', () => _autoSizeInput(msgInput));
+  if (msgInput) {
+    msgInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        handleSend();
+      }
+    });
+    msgInput.addEventListener('input', () => _autoSizeInput(msgInput));
+  }
 
   // Channel selector: switching it jumps to that channel's conversation thread.
   const channelSelect = document.getElementById('channel-select');
@@ -1193,6 +1652,98 @@ async function init() {
     msgSearch.addEventListener('input', (e) => {
       state.messageFilter = e.target.value;
       renderMessageList();
+    });
+  }
+
+  // Conversation tabs collapse toggle on dashboard
+  const convTabsToggle = document.getElementById('conv-tabs-toggle');
+  const convTabsSection = document.getElementById('conv-tabs-section');
+  if (convTabsToggle && convTabsSection) {
+    const saved = localStorage.getItem('nodepulse-conv-tabs-collapsed') === 'true';
+    if (saved) {
+      convTabsSection.classList.add('collapsed');
+      convTabsToggle.classList.add('collapsed');
+    }
+    convTabsToggle.addEventListener('click', () => {
+      const collapsed = convTabsSection.classList.toggle('collapsed');
+      convTabsToggle.classList.toggle('collapsed');
+      localStorage.setItem('nodepulse-conv-tabs-collapsed', collapsed);
+    });
+  }
+
+  // ---- Full-screen Messages View event wiring ----------------------------
+
+  const msgsSendBtn = document.getElementById('messages-send-btn');
+  if (msgsSendBtn) {
+    msgsSendBtn.addEventListener('click', handleMessagesSend);
+  }
+  const msgsInput = document.getElementById('messages-message-input');
+  if (msgsInput) {
+    msgsInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        handleMessagesSend();
+      }
+    });
+    msgsInput.addEventListener('input', () => _autoSizeInput(msgsInput));
+  }
+  const msgsChanSelect = document.getElementById('messages-channel-select');
+  if (msgsChanSelect) {
+    msgsChanSelect.addEventListener('change', () => {
+      const ch = parseInt(msgsChanSelect.value, 10) || 0;
+      selectMessagesConversation(`ch:${ch}`);
+    });
+  }
+  const msgsSearch = document.getElementById('messages-search-input');
+  if (msgsSearch) {
+    msgsSearch.addEventListener('input', (e) => {
+      state.messageFilter = e.target.value;
+      renderMessagesSidebar();
+      renderMessagesThread();
+    });
+  }
+  const msgsNewDm = document.getElementById('messages-new-dm');
+  if (msgsNewDm) {
+    msgsNewDm.addEventListener('click', toggleNodePicker);
+  }
+  const nodePickerClose = document.getElementById('messages-node-picker-close');
+  if (nodePickerClose) {
+    nodePickerClose.addEventListener('click', closeNodePicker);
+  }
+  const nodePickerSearch = document.getElementById('messages-node-picker-search');
+  if (nodePickerSearch) {
+    nodePickerSearch.addEventListener('input', (e) => {
+      renderNodePicker(e.target.value);
+    });
+    nodePickerSearch.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeNodePicker();
+    });
+  }
+  // Close node picker on Escape anywhere
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeNodePicker();
+  });
+  // Close node picker on click outside
+  document.addEventListener('click', (e) => {
+    const picker = document.getElementById('messages-node-picker');
+    const btn = document.getElementById('messages-new-dm');
+    if (picker && !picker.classList.contains('hidden') &&
+        !picker.contains(e.target) && btn && !btn.contains(e.target)) {
+      closeNodePicker();
+    }
+  });
+
+  // Mobile messages sidebar: back button & backdrop
+  const msgsBackBtn = document.getElementById('messages-thread-back');
+  if (msgsBackBtn) {
+    msgsBackBtn.addEventListener('click', () => {
+      document.body.classList.add('messages-sidebar-open');
+    });
+  }
+  const msgsBackdrop = document.querySelector('.messages-sidebar-backdrop');
+  if (msgsBackdrop) {
+    msgsBackdrop.addEventListener('click', () => {
+      document.body.classList.remove('messages-sidebar-open');
     });
   }
 
@@ -1215,12 +1766,19 @@ async function init() {
     }
   });
 
-  // Nodes-tab filter: re-render the grid from the current cached node list
+  // Nodes-tab filters: re-render the grid from the current cached node list
   // without waiting for the next poll.
   const nodeFilter = document.getElementById('node-filter');
   if (nodeFilter) {
     nodeFilter.addEventListener('input', (e) => {
       state.nodeFilter = e.target.value;
+      renderNodesGrid(state.nodes);
+    });
+  }
+  const signalFilter = document.getElementById('node-signal-filter');
+  if (signalFilter) {
+    signalFilter.addEventListener('change', (e) => {
+      state.signalFilter = e.target.value;
       renderNodesGrid(state.nodes);
     });
   }

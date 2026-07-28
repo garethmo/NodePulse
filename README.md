@@ -196,7 +196,20 @@ Because NodePulse consists of both an **addon** and an **integration**, both pie
 
 *(For developers: copy the `nodepulse-addon` folder to your `/addons` directory for local installation.)*
 
-### 2. Install the Custom Integration (HACS)
+### 2. Standalone Docker (no Home Assistant required)
+
+Run just the Web UI dashboard — all core features work without HA (dashboard, map, topology, messaging, packet inspector, etc.). See [STANDALONE_DOCKER.md](STANDALONE_DOCKER.md) for the full guide.
+
+```bash
+git clone https://github.com/garethmo/NodePulse.git
+cd NodePulse/nodepulse-addon
+docker build -t nodepulse:latest -f Dockerfile.standalone .
+docker run -d --name nodepulse -p 8099:8099 -v /path/to/config.json:/app/dev_options.json:ro nodepulse:latest
+```
+
+Open **http://localhost:8099** in your browser.
+
+### 3. Install the Custom Integration (HACS)
 
 1. Open **HACS** in Home Assistant.
 2. Click the three dots (⋮) in the top right and select **Custom repositories**.

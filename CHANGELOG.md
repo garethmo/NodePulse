@@ -2,6 +2,23 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.2.0] - 2026-07-28
+### Added
+- **Standalone Docker support** — Run NodePulse without Home Assistant using `Dockerfile.standalone`. Full guide in `STANDALONE_DOCKER.md`. All Web UI features work standalone; only HA integration relays (sensor entities, notify platform) require HA.
+- **Signal strength filter** now uses `snr_avg` (rolling average of last 10 packets) instead of the instantaneous `snr` value for more stable filtering.
+
+### Fixed
+- **6 JavaScript bugs** — see `nodepulse-addon/CHANGELOG.md` for full breakdown:
+  - `notifyNode` dead `try/catch/await` rollback simplified
+  - `_originalColor` shallow clone → deep clone in topology graph
+  - `_applySearchHighlight` color comparison missing `opacity`
+  - `_buildNodeTooltip` broken indentation (syntax error in strict mode)
+  - `app.js` init() localStorage loading indentation
+  - `storeMessage` outgoing echo dedup now matches on `destination` + `channel` to prevent false dedup
+
+### Changed
+- **Version bump** — 1.1.0 → 1.2.0.
+
 ## [1.1.0] - 2026-07-24
 ### Added
 - **Packet Inspector column sort/filter** — Clickable column headers on the packets table for sorting (asc/desc) and filtering by unique values via dropdown per column. Active filters and sort direction indicated on headers.

@@ -79,6 +79,13 @@
         Topology
       </div>
 
+      <div class="nav-item" data-view="messages" role="button" tabindex="0">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+        </svg>
+        Messages<span class="nav-badge" id="nav-messages-badge"></span>
+      </div>
+
       <div class="nav-item" data-view="packets" role="button" tabindex="0">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
           <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
@@ -119,6 +126,7 @@
           <button class="tab-btn" data-view="nodes">Nodes</button>
           <button class="tab-btn" data-view="map">Map</button>
           <button class="tab-btn" data-view="topology">Topology</button>
+          <button class="tab-btn" data-view="messages">Messages<span class="nav-badge" id="tab-messages-badge"></span></button>
           <button class="tab-btn" data-view="packets">Packets</button>
           <button class="tab-btn" data-view="settings">Settings</button>
         </div>
@@ -161,36 +169,6 @@
           </div>
           <div id="map-container">
             <div id="map"></div>
-          </div>
-        </div>
-
-        <!-- Column 3: Messaging -->
-        <div class="card" id="messaging-card">
-          <div class="card-header">
-            <span class="card-title">Messages</span>
-          </div>
-          <div id="conversation-tabs" role="tablist" aria-label="Conversations"></div>
-          <div id="message-search-bar"><input id="message-search-input" type="search" placeholder="Search messages…" aria-label="Search messages" /></div>
-          <div id="message-list"></div>
-          <div id="message-compose">
-            <div id="compose-top">
-              <div id="compose-recipient" title="Recipient">
-                <span class="recipient-icon">➤</span>
-                <span id="recipient-label">Primary</span>
-              </div>
-              <select id="channel-select" aria-label="Channel" title="Channel to send on">
-                <option value="0">Primary</option>
-              </select>
-            </div>
-            <div id="compose-bottom">
-              <textarea
-                id="message-input"
-                placeholder="Type a message… (Enter to send, Shift+Enter for newline)"
-                rows="1"
-                aria-label="Message text"
-              ></textarea>
-              <button id="send-btn" aria-label="Send message">Send</button>
-            </div>
           </div>
         </div>
 
@@ -248,8 +226,16 @@
             type="search"
             placeholder="Filter by name, short name, or ID…"
             aria-label="Filter nodes"
-            style="margin-left:auto;min-width:240px;max-width:360px;flex:1"
+            style="min-width:160px;max-width:260px;flex:1"
           />
+          <select id="node-signal-filter" aria-label="Filter by signal strength" style="font-size:12px;padding:6px 8px;border:1px solid var(--border-subtle);border-radius:var(--radius-sm);background:var(--card-bg);color:var(--text-primary);cursor:pointer">
+            <option value="">Any signal</option>
+            <option value="excellent">Excellent ≥10 dB</option>
+            <option value="good">Good ≥5 dB</option>
+            <option value="fair">Fair ≥0 dB</option>
+            <option value="poor">Poor &lt;0 dB</option>
+            <option value="none">No signal</option>
+          </select>
         </div>
         <div id="nodes-grid"></div>
       </div>
@@ -357,6 +343,80 @@
         </div>
         <!-- Graph canvas -->
         <div id="topology-container"></div>
+      </div>
+
+      <!-- ---- MESSAGES VIEW ---------------------------------------------- -->
+      <div id="view-messages" class="view">
+        <div id="messages-layout" class="messages-layout">
+          <!-- Conversation Sidebar -->
+          <aside id="messages-sidebar" class="messages-sidebar">
+            <div class="messages-sidebar-header">
+              <h2 class="messages-sidebar-title">Conversations</h2>
+              <button id="messages-new-dm" class="messages-new-btn" title="New direct message" aria-label="New direct message">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                  <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path>
+                  <circle cx="9" cy="7" r="4"></circle>
+                  <line x1="19" y1="8" x2="19" y2="14"></line>
+                  <line x1="22" y1="11" x2="16" y2="11"></line>
+                </svg>
+              </button>
+            </div>
+            <div id="messages-node-picker" class="messages-node-picker hidden">
+              <div class="messages-node-picker-header">
+                <input id="messages-node-picker-search" type="search" placeholder="Search nodes…" autocomplete="off" />
+                <button id="messages-node-picker-close" class="messages-node-picker-close" aria-label="Close">✕</button>
+              </div>
+              <div id="messages-node-picker-list" class="messages-node-picker-list"></div>
+            </div>
+            <div id="messages-search-bar" class="messages-search-bar">
+              <input id="messages-search-input" type="search" placeholder="Search conversations…" aria-label="Search conversations" />
+            </div>
+            <div id="messages-conv-list" class="messages-conv-list" role="listbox" aria-label="Conversation list"></div>
+          </aside>
+
+          <!-- Message Thread Area -->
+          <div id="messages-thread" class="messages-thread">
+            <div id="messages-thread-header" class="messages-thread-header">
+              <div style="display:flex;align-items:center;gap:var(--space-xs);min-width:0;flex:1">
+                <button id="messages-thread-back" class="messages-thread-back" aria-label="Back to conversations" type="button">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                    <polyline points="15 18 9 12 15 6"></polyline>
+                  </svg>
+                </button>
+                <div class="messages-thread-info">
+                  <span id="messages-thread-name" class="messages-thread-name">Select a conversation</span>
+                  <span id="messages-thread-subtitle" class="messages-thread-subtitle"></span>
+                </div>
+              </div>
+              <div class="messages-thread-actions"></div>
+            </div>
+
+            <div id="messages-thread-list" class="messages-thread-list" role="log" aria-live="polite"></div>
+
+            <div id="messages-compose" class="messages-compose">
+              <div id="messages-compose-top" class="messages-compose-top">
+                <div id="messages-compose-recipient" class="messages-compose-recipient" title="Recipient">
+                  <span class="messages-recipient-icon">➤</span>
+                  <span id="messages-recipient-label">Primary</span>
+                </div>
+                <select id="messages-channel-select" class="messages-channel-select" aria-label="Channel" title="Channel to send on">
+                  <option value="0">Primary</option>
+                </select>
+              </div>
+              <div id="messages-compose-bottom" class="messages-compose-bottom">
+                <textarea
+                  id="messages-message-input"
+                  placeholder="Type a message… (Enter to send, Shift+Enter for newline)"
+                  rows="1"
+                  aria-label="Message text"
+                ></textarea>
+                <button id="messages-send-btn" class="messages-send-btn" aria-label="Send message">Send</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <!-- Mobile sidebar backdrop for messages -->
+        <div class="messages-sidebar-backdrop"></div>
       </div>
 
       <!-- ---- PACKETS VIEW ------------------------------------------- -->

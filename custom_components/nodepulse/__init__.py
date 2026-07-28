@@ -149,9 +149,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.async_create_task(_load_notify_platforms())
 
-    # Relay HTTP views used by the addon Web UI's "Track in HA" toggle.
-    hass.http.register_view(NodePulseTrackView)
-    hass.http.register_view(NodePulseTrackedNodesView)
+    # Register entry-specific HTTP views for the addon Web UI's "Track in HA" toggle.
+    # Each config entry gets its own view instance so the coordinator is looked up
+    # by entry_id, supporting multiple NodePulse addon instances.
+    hass.http.register_view(NodePulseTrackView(entry.entry_id))
+    hass.http.register_view(NodePulseTrackedNodesView(entry.entry_id))
 
     # Listen for new mesh messages: fire device-trigger events and write
     # logbook entries.
@@ -253,7 +255,15 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Check the notify unload independently — its result must be AND-ed in so we
     # don't remove the coordinator from hass.data if either platform failed to
     # unload cleanly. (B4: previously the notify result was ignored.)
-    notify_unloaded = await hass.config_entries.async_unload_platforms(entry, ["notify"])
+    try:
+        notify_unloaded = await hass.config_entries.async_unload_platforms(entry, ["notify"])
+    except ValueError as err:
+        # If the notify platform wasn't loaded, treat this as successful unload
+        if "not loaded" in str(err):
+            notify_unloaded = True
+        else:
+            # Re-raise if it's a different ValueError
+            raise
 
     if unloaded and notify_unloaded:
         hass.data[DOMAIN].pop(entry.entry_id, None)

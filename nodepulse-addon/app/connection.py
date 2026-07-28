@@ -241,6 +241,18 @@ class MeshtasticConnection:
         self._last_node_save = 0.0
         self._pending_node_save = False
 
+        # Serializes concurrent traceroute dispatches. The underlying
+        # ``iface.sendTraceRoute`` is **not** thread-safe — calling it
+        # concurrently from multiple threads (which happens when the user
+        # clicks "Traceroute" on several nodes in quick succession) crashes
+        # the transport layer. The asyncio lock serialises the entire
+        # ``_traceroute_dispatch`` coroutine, but because ``asyncio.wait_for``
+        # cannot actually *stop* a stuck thread, we also guard
+        # ``sendTraceRoute`` with a thread-level lock so a timed-out dispatch
+        # cannot race against the next one on the same interface.
+        self._trace_dispatch_lock = asyncio.Lock()
+        self._send_trace_lock = threading.Lock()
+
         # Destination node IDs of in-flight traceroute requests. The reply
         # packet only carries the origin (the responding node), not the original
         # request target, so we remember the destinations to attribute the
@@ -402,31 +414,42 @@ class MeshtasticConnection:
         UI polls ``/api/nodes`` to see the discovered route once it arrives.
         """
         logger.debug("Requesting traceroute to %s", destination)
-        # Record the in-flight destination now so the reply can be attributed
-        # even if the firmware ack is slow to arrive.
-        with self._lock:
-            self._pending_traceroute_dests.append(destination)
         try:
-            # Use get_running_loop() (correct inside a coroutine). get_event_loop()
-            # is deprecated in 3.10+ and raises RuntimeError on 3.12+ when no
-            # loop is bound to the current context.
             loop = asyncio.get_running_loop()
             loop.create_task(self._traceroute_dispatch(destination))
         except RuntimeError:
-            # No running loop (e.g. offline test harness): fall back to a
-            # thread so the request still completes.
             await asyncio.to_thread(self._request_traceroute_sync, destination)
         return True
 
     async def _traceroute_dispatch(self, destination: str) -> None:
         """Background: perform the blocking send + cache refresh for a traceroute."""
-        try:
-            await asyncio.to_thread(self._request_traceroute_sync, destination)
-            # Pull whatever route data we've captured into the cache.
-            await asyncio.to_thread(self._refresh_node_from_interface, destination)
-            logger.debug("Traceroute dispatch to %s completed", destination)
-        except Exception as exc:  # defensive: never crash the background task
-            logger.error("Traceroute background dispatch failed (%s): %s", destination, exc)
+        async with self._trace_dispatch_lock:
+            # Push AFTER acquiring the serialization lock so push + dispatch
+            # are atomic. _capture_traceroute pops the list when a RouteDiscovery
+            # reply arrives; with serialized dispatches the oldest pending
+            # destination is always the active one.
+            with self._lock:
+                self._pending_traceroute_dests.append(destination)
+            success = False
+            try:
+                await asyncio.wait_for(
+                    asyncio.to_thread(self._request_traceroute_sync, destination),
+                    timeout=90,
+                )
+                await asyncio.to_thread(self._refresh_node_from_interface, destination)
+                logger.debug("Traceroute dispatch to %s completed", destination)
+                success = True
+            except asyncio.TimeoutError:
+                logger.error("Traceroute to %s timed out (90s timeout)", destination)
+            except Exception as exc:
+                logger.error("Traceroute background dispatch failed (%s): %s", destination, exc)
+            finally:
+                if not success:
+                    with self._lock:
+                        try:
+                            self._pending_traceroute_dests.remove(destination)
+                        except ValueError:
+                            pass
 
     async def request_position(self, destination: str) -> bool:
         """Request a fresh GPS position from a specific destination node."""
@@ -1422,13 +1445,13 @@ class MeshtasticConnection:
             # Store under the node this route belongs to. Prefer the node the
             # user asked about if we have a pending request; otherwise the
             # reply's origin. A re-request simply overwrites the previous result.
-            # Pop the most recent pending destination (LIFO) so overlapping
-            # traceroute requests each attribute to their own target rather than
-            # clobbering a single shared slot.
+            # Pop the oldest pending destination (FIFO). Dispatches are
+            # serialized by _trace_dispatch_lock, so the first element in the
+            # queue is always the active trace.
             target_id = from_id
             with self._lock:
                 if self._pending_traceroute_dests:
-                    target_id = self._pending_traceroute_dests.pop()
+                    target_id = self._pending_traceroute_dests.pop(0)
 
             logger.debug(
                 "Captured traceroute for %s (target=%s): route=%s route_back=%s",
@@ -1812,18 +1835,12 @@ class MeshtasticConnection:
     def _read_channels_from_interface(self) -> List[Dict[str, Any]]:
         """Read the channel list straight from the connected node.
 
-        Returns every channel slot the radio knows about. In Meshtastic the
-        library populates ``interface.localNode.channels`` — a list of
-        ``Channel`` protobufs (one per slot, indexed 0..N) — during the initial
-        config handshake via ``localNode.setChannels(...)``. Each ``Channel``
-        carries ``index``, ``role`` (PRIMARY / SECONDARY / DISABLED) and a nested
-        ``settings`` with the human ``name``. We read from there.
-
-        We deliberately DON'T rely on ``interface.localConfig.channel_settings``:
-        the radio does not always push the channel settings into the local
-        config, so that field is frequently empty and would make the UI show
-        only the hardcoded "Primary" tab. We still accept it as a fallback for
-        older library versions that populate it.
+        Returns every channel slot the radio knows about. Names are sourced
+        from whichever of ``localNode.channels`` or
+        ``localConfig.channel_settings`` provides them — the radio may populate
+        one, both, or neither depending on firmware / library version, so we
+        merge the two: structure (index, role) from the primary, names from
+        whichever source has them.
 
         Disabled slots are skipped (role == DISABLED) except slot 0, which is
         always present as the PRIMARY channel even when unnamed.
@@ -1832,26 +1849,37 @@ class MeshtasticConnection:
         if iface is None:
             return []
 
-        # Preferred: the Channel list on the local node.
         local_node = getattr(iface, "localNode", None)
-        channels = getattr(local_node, "channels", None) if local_node else None
+        ch_from_node = getattr(local_node, "channels", None) if local_node else None
 
-        # Fallback for library versions that only populate localConfig.
-        if not channels:
-            local_config = getattr(iface, "localConfig", None)
-            channels = getattr(local_config, "channel_settings", None) if local_config else None
+        local_config = getattr(iface, "localConfig", None)
+        ch_from_config = getattr(local_config, "channel_settings", None) if local_config else None
 
-        if not channels:
+        # Pick the primary source: prefer localNode.channels for structure.
+        primary = ch_from_node or ch_from_config or []
+        if not primary:
             return []
 
+        # Build a name lookup from whichever source has names filled in.
+        name_by_idx: Dict[int, str] = {}
+        for src in (ch_from_node, ch_from_config):
+            if not src:
+                continue
+            for ch in src:
+                idx = getattr(ch, "index", None)
+                if idx is None:
+                    continue
+                settings = getattr(ch, "settings", None)
+                raw = getattr(settings, "name", "") if settings else ""
+                if raw:
+                    name_by_idx[idx] = raw
+
         result: List[Dict[str, Any]] = []
-        for ch in channels:
+        for ch in primary:
             idx = getattr(ch, "index", None)
             if idx is None:
-                # localConfig.channel_settings is keyed by position; derive index.
                 idx = len(result)
             role_raw = getattr(ch, "role", None)
-            # Role may be an enum, an enum name string, or an int.
             if hasattr(role_raw, "name"):
                 role = role_raw.name
             elif isinstance(role_raw, int):
@@ -1860,21 +1888,17 @@ class MeshtasticConnection:
                 role = str(role_raw or "")
             role_upper = (role or "").upper()
 
-            settings = getattr(ch, "settings", None)
-            name = getattr(settings, "name", "") if settings else ""
-            name = name or ""
-            # The primary channel (index 0) is usually unnamed in the radio;
-            # give it the conventional "Primary" label the UI expects.
+            # Take the name from the lookup, else fall back to role / generic.
+            name = name_by_idx.get(idx) or ""
             if idx == 0 and not name:
                 name = "Primary"
 
-            # Skip disabled slots, but always keep the primary (index 0).
             if role_upper == "DISABLED" and idx != 0:
                 continue
 
             result.append({
                 "index": idx,
-                "name": name or f"Channel {idx}",
+                "name": name or role_upper.title() or f"Channel {idx}",
                 "role": role_upper,
             })
 
@@ -1882,8 +1906,8 @@ class MeshtasticConnection:
         if not any(c["index"] == 0 for c in result):
             result.insert(0, {"index": 0, "name": "Primary", "role": "PRIMARY"})
 
-        logger.debug("Channel fetch: %d channels (source=%s)", len(result),
-                     "localNode.channels" if local_node and getattr(local_node, "channels", None) else "localConfig.channel_settings")
+        logger.debug("Channel fetch: %d channels (node=%s, config=%s)", len(result),
+                     bool(ch_from_node), bool(ch_from_config))
         return result
 
     def _get_channels_sync(self) -> List[Dict[str, Any]]:
@@ -2035,27 +2059,32 @@ class MeshtasticConnection:
             except (ValueError, AttributeError):
                 dest_num = destination
 
-        try:
-            # hopLimit is a REQUIRED positional argument in meshtastic 2.7.x —
-            # passing None raises TypeError. A hopLimit of 0 would prevent the
-            # packet from relaying past directly-connected nodes, so most
-            # traceroutes would silently fail. We use a sane high value (10)
-            # which lets the firmware traverse the mesh; a 0 here is NOT the
-            # "default", it actually disables relaying.
-            # The call blocks until the RouteDiscovery reply arrives (the
-            # library waits internally for the acknowledgment flag). The
-            # actual per-hop route SNR is NOT stored by the library, so we
-            # capture it ourselves in _on_mesh_receive (TRACEROUTE_APP) and
-            # merge it into our node cache. The destination is already queued in
-            # request_traceroute; the cache refresh is done by the background
-            # dispatch task so this call stays non-blocking.
-            iface.sendTraceRoute(dest_num if dest_num is not None else destination, 10)
-            return True
-        except Exception as exc:
-            logger.error(
-                "Traceroute request failed (destination=%s): %s", destination, exc
-            )
-            return False
+        # Thread-level guard: even if the asyncio timeout fires and the async
+        # lock is released, a timed-out thread may still be blocked inside
+        # sendTraceRoute. This lock ensures only one thread ever calls it at
+        # a time, preventing transport-layer crashes from concurrent calls.
+        with self._send_trace_lock:
+            try:
+                # hopLimit is a REQUIRED positional argument in meshtastic 2.7.x —
+                # passing None raises TypeError. A hopLimit of 0 would prevent the
+                # packet from relaying past directly-connected nodes, so most
+                # traceroutes would silently fail. We use a sane high value (10)
+                # which lets the firmware traverse the mesh; a 0 here is NOT the
+                # "default", it actually disables relaying.
+                # The call blocks until the RouteDiscovery reply arrives (the
+                # library waits internally for the acknowledgment flag). The
+                # actual per-hop route SNR is NOT stored by the library, so we
+                # capture it ourselves in _on_mesh_receive (TRACEROUTE_APP) and
+                # merge it into our node cache. The destination is already queued in
+                # request_traceroute; the cache refresh is done by the background
+                # dispatch task so this call stays non-blocking.
+                iface.sendTraceRoute(dest_num if dest_num is not None else destination, 10)
+                return True
+            except Exception as exc:
+                logger.error(
+                    "Traceroute request failed (destination=%s): %s", destination, exc
+                )
+                return False
 
     def _request_position_sync(self, destination: str) -> bool:
         # Release the lock before the blocking sendPosition call for the same
