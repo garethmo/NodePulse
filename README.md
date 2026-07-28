@@ -209,12 +209,6 @@ Because NodePulse consists of both an **addon** and an **integration**, both pie
    - The integration features auto-discovery and will try both standard and local DNS names automatically. You can leave the default or leave it blank.
    - Do **not** use `http://localhost:8099` — from the integration's perspective, `localhost` is Home Assistant itself, not the addon container.
 
----
-
-## Addon Configuration
-
-NodePulse reaches your Meshtastic node over TCP. Meshtastic firmware **allows only ONE TCP client per node**, so you must choose how NodePulse connects.
-
 ### 3. Dont have Home Assistant no worries - Standalone Docker (no Home Assistant required)
 
 Run just the Web UI dashboard — all core features work without HA (dashboard, map, topology, messaging, packet inspector, etc.). See [STANDALONE_DOCKER.md](STANDALONE_DOCKER.md) for the full guide.
@@ -227,6 +221,12 @@ docker run -d --name nodepulse -p 8099:8099 -v /path/to/config.json:/app/dev_opt
 ```
 
 Open **http://localhost:8099** in your browser.
+
+---
+
+## Addon Configuration
+
+NodePulse reaches your Meshtastic node over TCP. Meshtastic firmware **allows only ONE TCP client per node**, so you must choose how NodePulse connects.
 
 ### Connection Modes
 
