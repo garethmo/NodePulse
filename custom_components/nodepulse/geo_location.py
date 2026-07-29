@@ -12,7 +12,6 @@ Each entity exposes:
 The HA Map card natively plots ``geo_location`` entities and can render
 their trails via a ``geo_json_source`` configuration.
 """
-import json
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -154,43 +153,23 @@ class NodeGeoLocation(CoordinatorEntity, GeolocationEvent):
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
-        """Return attributes including trail GeoJSON."""
+        """Return extra attributes for the geo location entity."""
         node = self._get_node()
         if not node:
             return {}
 
-        attrs: Dict[str, Any] = {
+        # Note: position trail/history data is NOT included in the node object
+        # returned by /api/nodes. It lives at /api/position-history and is fetched
+        # separately by the Web UI. We surface only the scalar node metrics here.
+        return {
             "snr": node.get("snr"),
             "hops_away": node.get("hops_away"),
             "short_name": node.get("short_name"),
             "last_position_fix": node.get("last_position_fix"),
             "stale": node.get("stale"),
+            # How many GPS fixes have been recorded for this node in the addon store.
+            "position_fix_count": node.get("position_fix_count"),
         }
-
-        # Build a GeoJSON LineString from the position history.
-        # The coordinator stores position history under the node's ID.
-        # We build a FeatureCollection so both the point and the trail
-        # can be consumed by the HA Map card with geo_json_source.
-        fixes = node.get("position_fixes")
-        if fixes and isinstance(fixes, list) and len(fixes) >= 2:
-            coords = [
-                [f["lng"], f["lat"]]
-                for f in fixes
-                if f.get("lat") is not None and f.get("lng") is not None
-            ]
-            if len(coords) >= 2:
-                attrs["trail_geojson"] = json.dumps({
-                    "type": "FeatureCollection",
-                    "features": [
-                        {
-                            "type": "Feature",
-                            "geometry": {"type": "LineString", "coordinates": coords},
-                            "properties": {"name": "Position Trail"},
-                        },
-                    ],
-                })
-
-        return attrs
 
     @property
     def available(self) -> bool:

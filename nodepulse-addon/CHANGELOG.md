@@ -2,6 +2,20 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.2.1] - 2026-07-29
+### Added
+- **PWA support** — Added missing `apple-mobile-web-app` meta tags and a proper viewport configuration to prevent iOS/Android zooming when tapping input fields.
+
+### Changed
+- **Cleaner mobile header** — Completely removed the redundant scrolling navigation tabs on mobile screens (≤768px), uncluttering the top bar to rely fully on the hamburger sidebar.
+
+### Fixed
+- **Thread safety** — Fixed a lock ordering bug in `_save_traceroutes` (which used the wrong lock, causing data races) and removed an unnecessary lock in `_schedule_save`.
+- **Relay API crash** — Fixed a missing `NodePulseCoordinator` import in `api.py` that caused a silent `NameError` at parse time in newer Python versions, breaking the "Track in HA" views.
+- **GeoLocation entity updates** — Removed dead code looking for a non-existent `position_fixes` key and correctly exposed `position_fix_count`.
+- **Packet Inspector on mobile** — Attached the missing `.packet-table` CSS class to the HTML table so it scales down correctly on phones without blowing out the layout.
+- **Dead code** — Removed unreachable `switchView` duplicate check in the node picker.
+
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 

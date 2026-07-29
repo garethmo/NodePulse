@@ -2,7 +2,10 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="theme-color" content="#0a0e1a" />
   <title>NodePulse — Meshtastic Network Monitor</title>
   <meta name="description" content="Real-time Meshtastic mesh network monitoring dashboard. Track nodes, signal quality (SNR/RSSI), GPS positions, and send encrypted messages." />
 
@@ -383,6 +386,7 @@
                     <polyline points="15 18 9 12 15 6"></polyline>
                   </svg>
                 </button>
+                <div id="messages-thread-avatar" class="messages-thread-avatar">P</div>
                 <div class="messages-thread-info">
                   <span id="messages-thread-name" class="messages-thread-name">Select a conversation</span>
                   <span id="messages-thread-subtitle" class="messages-thread-subtitle"></span>
@@ -394,24 +398,21 @@
             <div id="messages-thread-list" class="messages-thread-list" role="log" aria-live="polite"></div>
 
             <div id="messages-compose" class="messages-compose">
-              <div id="messages-compose-top" class="messages-compose-top">
-                <div id="messages-compose-recipient" class="messages-compose-recipient" title="Recipient">
-                  <span class="messages-recipient-icon">➤</span>
-                  <span id="messages-recipient-label">Primary</span>
-                </div>
-                <select id="messages-channel-select" class="messages-channel-select" aria-label="Channel" title="Channel to send on">
-                  <option value="0">Primary</option>
-                </select>
-              </div>
-              <div id="messages-compose-bottom" class="messages-compose-bottom">
-                <textarea
-                  id="messages-message-input"
-                  placeholder="Type a message… (Enter to send, Shift+Enter for newline)"
-                  rows="1"
-                  aria-label="Message text"
-                ></textarea>
-                <button id="messages-send-btn" class="messages-send-btn" aria-label="Send message">Send</button>
-              </div>
+              <select id="messages-channel-select" class="messages-channel-select" aria-label="Channel" title="Channel">
+                <option value="0">Primary</option>
+              </select>
+              <textarea
+                id="messages-message-input"
+                placeholder="Type a message…"
+                rows="1"
+                aria-label="Message text"
+              ></textarea>
+              <button id="messages-send-btn" class="messages-send-btn" aria-label="Send message">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="22" y1="2" x2="11" y2="13"></line>
+                  <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                </svg>
+              </button>
             </div>
           </div>
         </div>
@@ -442,7 +443,7 @@
           </div>
           <!-- Packet table -->
           <div style="overflow-x:auto;position:relative">
-            <table style="width:100%;border-collapse:collapse;font-size:13px">
+            <table class="packet-table" style="width:100%;border-collapse:collapse;font-size:13px">
               <thead>
                 <tr style="background:var(--bg-subtle);text-align:left">
                   <th class="pkt-th" style="padding:8px 12px;border-bottom:1px solid var(--border-subtle)">Time</th>
@@ -547,7 +548,7 @@
           <div class="settings-group-title">About</div>
           <div class="settings-row">
             <span class="settings-row-label">NodePulse Version</span>
-            <span class="settings-row-value">0.2.34</span>
+            <span class="settings-row-value">1.2.1</span>
           </div>
           <div class="settings-row">
             <span class="settings-row-label">UI Poll Interval</span>

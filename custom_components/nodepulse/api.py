@@ -36,6 +36,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.update_coordinator import UpdateFailed
 
 from .const import DOMAIN
+from .coordinator import NodePulseCoordinator
 
 logger = logging.getLogger(__name__)
 

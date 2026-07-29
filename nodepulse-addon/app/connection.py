@@ -293,6 +293,11 @@ class MeshtasticConnection:
         self._packet_log_lock = threading.Lock()
         self._packet_log: collections.deque = collections.deque(maxlen=_PACKET_LOG_MAX)
 
+        # Protects _traceroutes, _last_traceroute_save, and _pending_traceroute_save.
+        # Separate from _nodes_lock so traceroute writes (on the meshtastic receive
+        # thread) don't contend with node-list reads (on the asyncio worker thread).
+        self._traceroutes_lock = threading.Lock()
+
     # ------------------------------------------------------------------
     # Public async API
     # ------------------------------------------------------------------
@@ -1221,10 +1226,14 @@ class MeshtasticConnection:
         thread; doing a blocking json.dump there would stall inbound packet
         processing. We snapshot the deque and hand the write to a throwaway
         daemon thread instead.
+
+        The snapshot itself (list()) is safe without a lock: Python's GIL
+        guarantees that a list() call on a deque sees a consistent internal
+        state. The subsequent write to disk is serialised by _persist_lock
+        inside _write_json, preventing interleaved reads and writes.
         """
         try:
-            with self._msg_lock:
-                snapshot = list(source_deque)
+            snapshot = list(source_deque)
             t = threading.Thread(
                 target=self._write_json, args=(snapshot, path), daemon=True
             )
@@ -1372,7 +1381,7 @@ class MeshtasticConnection:
         """
         try:
             now = time.time()
-            with self._nodes_lock:
+            with self._traceroutes_lock:
                 # If a save happened very recently, schedule a single trailing
                 # flush after the debounce window so the latest state is still
                 # persisted once the burst settles. A negative delta disables
@@ -1464,6 +1473,7 @@ class MeshtasticConnection:
                 )
                 if node is not None:
                     node["traceroute"] = record
+            with self._traceroutes_lock:
                 # Persist so the result survives addon restarts.
                 self._traceroutes[target_id] = record
             self._save_traceroutes()
@@ -1692,6 +1702,12 @@ class MeshtasticConnection:
         # Merge the interface's latest node data into our persistent cache.
         # This keeps late-arriving traceroute/position updates visible on the
         # next poll even though the library updates interface.nodes async.
+        # Snapshot traceroutes under _traceroutes_lock BEFORE entering
+        # _nodes_lock to respect the lock ordering and avoid holding two locks
+        # simultaneously (which would risk deadlock with _capture_traceroute).
+        with self._traceroutes_lock:
+            traceroutes_snapshot = dict(self._traceroutes)
+
         with self._nodes_lock:
             cached = {n.get("id"): n for n in self._nodes if n.get("id")}
             for node_id, node_data in nodes_raw.items():
@@ -1784,7 +1800,7 @@ class MeshtasticConnection:
             # Merge persisted traceroute results back onto their nodes so a
             # previously-discovered route is shown even before (or without)
             # a fresh traceroute request this session.
-            for tid, rec in self._traceroutes.items():
+            for tid, rec in traceroutes_snapshot.items():
                 if tid in cached and rec:
                     cached[tid]["traceroute"] = rec
 

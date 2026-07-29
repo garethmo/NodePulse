@@ -988,23 +988,22 @@ function renderMessagesThread() {
 
   const nameEl = document.getElementById('messages-thread-name');
   const subtitleEl = document.getElementById('messages-thread-subtitle');
+  const avatarEl = document.getElementById('messages-thread-avatar');
 
   if (!state.activeConversation || state.activeConversation === 'ch:0') {
     const conv = conversationForKey('ch:0');
     if (nameEl) nameEl.textContent = conv.name;
     if (subtitleEl) subtitleEl.textContent = 'Channel broadcast';
+    if (avatarEl) { avatarEl.textContent = conv.name.charAt(0).toUpperCase(); avatarEl.style.display = ''; }
   } else {
     const conv = conversationForKey(state.activeConversation);
     if (nameEl) nameEl.textContent = conv.name;
     if (subtitleEl) subtitleEl.textContent = conv.kind === 'dm' ? 'Direct message' : 'Channel';
+    if (avatarEl) { avatarEl.textContent = conv.name.charAt(0).toUpperCase(); avatarEl.style.display = ''; }
   }
 
-  // Sync recipient label
   const conv = conversationForKey(state.activeConversation || 'ch:0');
-  const msgLabel = document.getElementById('messages-recipient-label');
-  if (msgLabel) msgLabel.textContent = conv.name;
 
-  // Sync channel select
   const chSelect = document.getElementById('messages-channel-select');
   if (chSelect) {
     if (conv.kind === 'dm') {
@@ -1038,21 +1037,42 @@ function renderMessagesThread() {
     return;
   }
 
-  for (const msg of filtered) {
+  let lastSender = null;
+  let lastOutgoing = null;
+
+  for (let i = 0; i < filtered.length; i++) {
+    const msg = filtered[i];
+    const next = filtered[i + 1] || null;
+
+    const isOutgoing = !!msg.outgoing;
+    const senderKey = isOutgoing ? '__self__' : (msg.from_id || msg.from_name || '');
+    const sameSender = senderKey === lastSender && isOutgoing === lastOutgoing;
+    const nextSameSender = next && (!!next.outgoing === isOutgoing) &&
+      (isOutgoing ? true : (next.from_id || next.from_name || '') === senderKey);
+
+    lastSender = senderKey;
+    lastOutgoing = isOutgoing;
+
+    const type = isOutgoing ? 'outgoing' : 'incoming';
     const bubble = document.createElement('div');
-    const type = msg.outgoing ? 'outgoing' : 'incoming';
-    bubble.className = `message-bubble ${type}`;
+    let cls = `message-bubble ${type}`;
+    if (sameSender) cls += ' msg-grouped';
+    if (!nextSameSender) cls += ' msg-group-end';
+    bubble.className = cls;
+
     const time = formatMessageTime(msg.timestamp);
 
-    let statusHtml = '';
-    if (msg.outgoing) {
+    let statusIcon = '';
+    if (isOutgoing) {
       const ack = msg.ack_status || msg.status;
       if (ack === 'sending') {
-        statusHtml = '<span class="msg-status sending">Sending…</span>';
-      } else if (ack === 'sent' || ack === 'delivered') {
-        statusHtml = '<span class="msg-status sent">✓</span>';
+        statusIcon = '<span class="msg-status sending" title="Sending">&#8987;</span>';
+      } else if (ack === 'sent') {
+        statusIcon = '<span class="msg-status sent" title="Sent">&#10003;</span>';
+      } else if (ack === 'delivered') {
+        statusIcon = '<span class="msg-status delivered" title="Delivered">&#10003;&#10003;</span>';
       } else if (ack === 'failed') {
-        statusHtml = '<span class="msg-status failed">✗ Failed</span>';
+        statusIcon = '<span class="msg-status failed" title="Failed">&#9888;</span>';
         bubble.classList.add('failed');
       }
     }
@@ -1065,17 +1085,18 @@ function renderMessagesThread() {
       channelHtml = `<span class="message-channel">${escapeHtml(chName)}</span>`;
     }
 
-    const sender = msg.outgoing
-      ? 'Me'
+    const sender = isOutgoing
+      ? null
       : (shortNameFor(msg.from_id) || msg.from_name || nodeName(msg.from_id) || 'Unknown');
+
     bubble.innerHTML = `
-      ${msg.outgoing ? '' : `<div class="message-sender">${escapeHtml(sender)}</div>`}
+      ${sender && !sameSender ? `<div class="message-sender">${escapeHtml(sender)}</div>` : ''}
       <div class="message-text">${escapeHtml(msg.text)}</div>
       <div class="message-meta">
-        <span class="message-time">${time}</span>${channelHtml}${statusHtml}
+        <span class="message-time">${time}</span>${channelHtml}${statusIcon}
       </div>`;
 
-    if (msg.outgoing && msg.status === 'failed') {
+    if (isOutgoing && msg.status === 'failed') {
       bubble.style.cursor = 'pointer';
       bubble.addEventListener('click', () => retryMessage(msg));
     }
@@ -1205,8 +1226,6 @@ function renderNodePicker(query) {
       if (state.currentView !== 'messages') switchView('messages');
       const key = `dm:${node.id}`;
       selectMessagesConversation(key);
-      // Switch the full messages view to this DM
-      if (state.currentView !== 'messages') switchView('messages');
       // Focus the message input
       const msgInput = document.getElementById('messages-message-input');
       if (msgInput) setTimeout(() => msgInput.focus(), 100);

@@ -12,9 +12,45 @@ NodePulse is a Home Assistant addon and custom integration that gives you deep v
 
 ## Screenshots
 
+<details open>
+<summary><b>Dashboard & Metrics</b></summary>
+<br>
 <div align="center">
-<img src="images/dashboard.png" width="90%" alt="NodePulse Web Dashboard">
+<img src="images/dashboard.png" width="90%" alt="NodePulse Dashboard">
 </div>
+</details>
+
+<details>
+<summary><b>Nodes Grid</b></summary>
+<br>
+<div align="center">
+<img src="images/nodes.png" width="90%" alt="NodePulse Nodes Grid">
+</div>
+</details>
+
+<details>
+<summary><b>Map & Coverage Heatmap</b></summary>
+<br>
+<div align="center">
+<img src="images/map.png" width="90%" alt="NodePulse Map">
+</div>
+</details>
+
+<details>
+<summary><b>Network Topology</b></summary>
+<br>
+<div align="center">
+<img src="images/topology.png" width="90%" alt="NodePulse Topology">
+</div>
+</details>
+
+<details>
+<summary><b>Packet Inspector</b></summary>
+<br>
+<div align="center">
+<img src="images/packets.png" width="90%" alt="NodePulse Packet Inspector">
+</div>
+</details>
 
 ---
 
@@ -30,8 +66,8 @@ NodePulse is a Home Assistant addon and custom integration that gives you deep v
 | 🕸️ **Network Topology** | Force-directed network graph visualizing nodes, roles, and connections (traceroutes & neighbors) with SNR coloring. Includes interactive toggles for node names, edges, physics, and a node search box |
 | 💬 **Messaging** | Send broadcast or DM messages via the Web UI; channel tabs appear immediately with real channel names, and the chat shows each sender's short name |
 | 🔍 **Traceroute** | Dispatch traceroutes to any node from the Web UI (fire-and-forget — results appear on the next poll) |
-| 🖥️ **Web UI Dashboard** | Full-featured dashboard served via HA Ingress (no port forwarding), mobile-friendly with slide-in nav drawer and responsive layout |
-| 📦 **Packet Inspector** | Real-time packet capture ring buffer showing every inbound Meshtastic packet with portnum, source/destination (with short names), channel, SNR, hop count, ACK status, and expandable JSON detail. Sort/filter by column headers, export to JSON/CSV, and view live sniffer stats (packets/min, unique nodes, portnum distribution) |
+| 🖥️ **Web UI Dashboard** | Full-featured dashboard served via HA Ingress (no port forwarding). PWA-ready and fully mobile-optimized with slide-in navigation, responsive data tables, and tap-zoom protection. |
+| 📦 **Packet Inspector** | Real-time packet capture ring buffer showing every inbound Meshtastic packet with portnum, source/destination (with short names), channel, SNR, hop count, ACK status, and expandable JSON detail. Sort/filter by column headers, export to JSON/CSV, and view live sniffer stats. Fully responsive on mobile screens. |
 | 📨 **Notify Platform** | `notify.mesh_<entry>` entity — send mesh messages from any automation/script, plus one `notify.mesh_<entry>_channel_<name>` entity per configured channel |
 | ⚡ **Service Actions** | `nodepulse.send_message`, `nodepulse.request_position`, `nodepulse.trace_route` |
 | 🤖 **Device Triggers & Actions** | Automate on message received/sent (and `channel_message.received`); send message / request position / trace route per node device |
@@ -48,6 +84,8 @@ NodePulse is a Home Assistant addon and custom integration that gives you deep v
 | 📊 **Airtime Trends** | Channel utilization & airtime utilization charts with a 30-minute rolling window |
 | 🔍 **Message Search** | Free-text search across message history per conversation |
 | 🎛️ **Collapsible Map Controls** | Collapse/expand overlay toggle buttons on the map |
+| 🐳 **Standalone Docker** | Run NodePulse completely independently of Home Assistant using the `Dockerfile.standalone` container |
+| 🎚️ **Node Signal Filter** | Filter the nodes grid by signal strength (Excellent, Good, Fair, Poor) using a stable rolling `snr_avg` calculation |
 
 ---
 
