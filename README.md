@@ -3,7 +3,7 @@
 <h1>NodePulse</h1>
 </div>
 
-**Real-time Meshtastic mesh network monitoring for Home Assistant.**
+**Real-time Meshtastic mesh network monitoring**
 
 NodePulse is a Home Assistant addon and custom integration that gives you deep visibility into your Meshtastic mesh network — node health, signal metrics, GPS positions on the HA map, packet inspection, and encrypted direct messaging — all from inside Home Assistant.
 
@@ -234,20 +234,7 @@ Because NodePulse consists of both an **addon** and an **integration**, both pie
 
 *(For developers: copy the `nodepulse-addon` folder to your `/addons` directory for local installation.)*
 
-### 2. Standalone Docker (no Home Assistant required)
-
-Run just the Web UI dashboard — all core features work without HA (dashboard, map, topology, messaging, packet inspector, etc.). See [STANDALONE_DOCKER.md](STANDALONE_DOCKER.md) for the full guide.
-
-```bash
-git clone https://github.com/garethmo/NodePulse.git
-cd NodePulse/nodepulse-addon
-docker build -t nodepulse:latest -f Dockerfile.standalone .
-docker run -d --name nodepulse -p 8099:8099 -v /path/to/config.json:/app/dev_options.json:ro nodepulse:latest
-```
-
-Open **http://localhost:8099** in your browser.
-
-### 3. Install the Custom Integration (HACS)
+### 2. Install the Custom Integration (HACS)
 
 1. Open **HACS** in Home Assistant.
 2. Click the three dots (⋮) in the top right and select **Custom repositories**.
@@ -259,6 +246,19 @@ Open **http://localhost:8099** in your browser.
    - If you installed NodePulse as a local addon, the DNS name is `http://local_nodepulse_addon:8099`.
    - The integration features auto-discovery and will try both standard and local DNS names automatically. You can leave the default or leave it blank.
    - Do **not** use `http://localhost:8099` — from the integration's perspective, `localhost` is Home Assistant itself, not the addon container.
+
+### 3. Dont have Home Assistant no worries - Standalone Docker (no Home Assistant required)
+
+Run just the Web UI dashboard — all core features work without HA (dashboard, map, topology, messaging, packet inspector, etc.). See [STANDALONE_DOCKER.md](STANDALONE_DOCKER.md) for the full guide.
+
+```bash
+git clone https://github.com/garethmo/NodePulse.git
+cd NodePulse/nodepulse-addon
+docker build -t nodepulse:latest -f Dockerfile.standalone .
+docker run -d --name nodepulse -p 8099:8099 -v /path/to/config.json:/app/dev_options.json:ro nodepulse:latest
+```
+
+Open **http://localhost:8099** in your browser.
 
 ---
 
