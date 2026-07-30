@@ -430,6 +430,102 @@ async def handle_export_messages(request: web.Request) -> web.Response:
 
 
 # ---------------------------------------------------------------------------
+# Routes: /api/waypoints
+# ---------------------------------------------------------------------------
+
+async def handle_get_waypoints(request: web.Request) -> web.Response:
+    """Return all active (non-expired) waypoints."""
+    conn: MeshtasticConnection = request.app["connection"]
+    try:
+        waypoints = await conn.get_waypoints()
+        return _json_response(waypoints)
+    except Exception as exc:
+        logger.error("Error fetching waypoints: %s", exc)
+        return _error_response("Failed to retrieve waypoints")
+
+
+async def handle_add_waypoint(request: web.Request) -> web.Response:
+    """Create a new locally-defined waypoint.
+
+    Expected JSON body:
+      { "name": str, "lat": float (opt, defaults to 0), "lng": float (opt, defaults to 0),
+        "description": str (opt), "icon": str (opt), "expire": int (opt) }
+    """
+    conn: MeshtasticConnection = request.app["connection"]
+    try:
+        body = await request.json()
+        lat = body.get("lat")
+        lng = body.get("lng")
+        try:
+            lat = float(lat) if lat is not None else None
+            lng = float(lng) if lng is not None else None
+        except (TypeError, ValueError):
+            return _error_response("lat and lng must be numbers", status=400)
+
+        waypoint = {
+            "name": body.get("name") or "Waypoint",
+            "description": body.get("description") or "",
+            "lat": lat,
+            "lng": lng,
+            "icon": body.get("icon") or "📍",
+            "expire": body.get("expire"),
+        }
+        entry = await conn.add_waypoint(waypoint)
+        return _json_response(entry)
+    except Exception as exc:
+        logger.error("Error adding waypoint: %s", exc)
+        return _error_response("Failed to add waypoint")
+
+
+async def handle_update_waypoint(request: web.Request) -> web.Response:
+    """Update a waypoint's fields (e.g. lat/lng after map drag).
+
+    Acceptable JSON body fields: lat, lng, name, description, icon.
+    """
+    conn: MeshtasticConnection = request.app["connection"]
+    waypoint_id = request.match_info.get("waypoint_id", "")
+    if not waypoint_id:
+        return _error_response("waypoint_id is required", status=400)
+    try:
+        body = await request.json()
+        updates = {}
+        for key in ("lat", "lng", "name", "description", "icon"):
+            if key in body:
+                val = body[key]
+                if key in ("lat", "lng") and val is not None:
+                    try:
+                        val = float(val)
+                    except (TypeError, ValueError):
+                        return _error_response(f"{key} must be a number", status=400)
+                updates[key] = val
+        if not updates:
+            return _error_response("No valid fields to update", status=400)
+        updated = await conn.update_waypoint(waypoint_id, updates)
+        if updated is None:
+            return _error_response("Waypoint not found", status=404)
+        return _json_response(updated)
+    except Exception as exc:
+        logger.error("Error updating waypoint %s: %s", waypoint_id, exc)
+        return _error_response("Failed to update waypoint")
+
+
+async def handle_delete_waypoint(request: web.Request) -> web.Response:
+    """Delete a waypoint by its string ID."""
+    conn: MeshtasticConnection = request.app["connection"]
+    waypoint_id = request.match_info.get("waypoint_id", "")
+    if not waypoint_id:
+        return _error_response("waypoint_id is required", status=400)
+    try:
+        deleted = await conn.delete_waypoint(waypoint_id)
+        if not deleted:
+            return _error_response("Waypoint not found", status=404)
+        return _json_response({"deleted": waypoint_id})
+    except Exception as exc:
+        logger.error("Error deleting waypoint %s: %s", waypoint_id, exc)
+        return _error_response("Failed to delete waypoint")
+
+
+# ---------------------------------------------------------------------------
 # Route: GET /api/channels
 # ---------------------------------------------------------------------------
 

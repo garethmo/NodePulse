@@ -237,6 +237,15 @@ function createMap(elementId) {
  * than destroying/recreating markers on every poll cycle (which would cause
  * visible flicker and lose popup state).
  */
+// Waypoint map marker — distinctive amber pin with emoji icon inside.
+const WAYPOINT_ICON = (icon) => L.divIcon({
+  className: '',
+  html: `<div class="map-marker-waypoint">${icon || '\uD83D\uDCCD'}</div>`,
+  iconSize: [28, 28],
+  iconAnchor: [14, 26],
+  popupAnchor: [0, -28],
+});
+
 export class MapManager {
   constructor(elementId) {
     this._elementId = elementId;
@@ -255,6 +264,8 @@ export class MapManager {
     this._routeLinks = new Map();
     // Map<nodeId, L.Polyline> — position history trail for each node (deep orange).
     this._trailLines = new Map();
+    // Map<waypointId, L.Marker> — waypoint markers (amber pin with emoji).
+    this._waypointMarkers = new Map();
     // Separate visibility flags for each overlay category so they can be
     // toggled independently from the map controls.
     this._selfLinksVisible = false; // self -> node connectors
@@ -273,6 +284,14 @@ export class MapManager {
     // heardWithin (seconds|null — only show nodes heard within this window),
     // staleOnly (bool — only show cached/stale nodes).
     this._filter = { text: '', maxHops: null, heardWithin: null, staleOnly: false };
+
+    // --- Ruler ---
+    this._rulerActive = false;
+    this._rulerPoints = [];       // [{ lat, lng }, ...]
+    this._rulerLines = [];        // L.Polyline[]
+    this._rulerLabels = [];       // L.Tooltip[]
+    this._rulerClickHandler = null;
+    this._posHistory = {};        // { node_id: [{ lat, lng, altitude, timestamp }, ...] }
   }
 
   /**
@@ -431,6 +450,85 @@ export class MapManager {
       else this._map.removeLayer(line);
     }
     return this._trailsVisible;
+  }
+
+  /**
+   * Update waypoint markers on the map from the latest API data.
+   * Upserts existing markers in-place; removes any that are no longer present.
+   * Markers are draggable — the onUpdate callback fires on dragend.
+   *
+   * @param {Array} waypoints - Array of waypoint objects from GET /api/waypoints.
+   * @param {function} onDelete - Callback(waypointId) invoked when the user
+   *   clicks the delete button inside a waypoint popup.
+   * @param {function} onUpdate - Callback(waypointId, lat, lng) invoked when
+   *   the user drags a waypoint marker to a new position.
+   */
+  updateWaypoints(waypoints, onDelete, onUpdate) {
+    if (!this._map) return;
+    const incoming = waypoints || [];
+    const seenIds = new Set(incoming.map(w => w.id));
+
+    for (const [wid, marker] of this._waypointMarkers) {
+      if (!seenIds.has(wid)) {
+        marker.remove();
+        this._waypointMarkers.delete(wid);
+      }
+    }
+
+    for (const wp of incoming) {
+      if (wp.lat == null || wp.lng == null) continue;
+
+      const latLng = [wp.lat, wp.lng];
+      const popupHtml = this._buildWaypointPopupHtml(wp, onDelete);
+
+      if (this._waypointMarkers.has(wp.id)) {
+        const marker = this._waypointMarkers.get(wp.id);
+        marker.setLatLng(latLng);
+        marker.setIcon(WAYPOINT_ICON(wp.icon));
+        marker.setPopupContent(popupHtml);
+      } else {
+        const mk = L.marker(latLng, {
+          icon: WAYPOINT_ICON(wp.icon),
+          draggable: true,
+        })
+          .bindPopup(popupHtml)
+          .bindTooltip(escapeHtml(wp.name), {
+            permanent: false,
+            direction: 'top',
+            offset: [0, -26],
+            className: 'node-label',
+          })
+          .addTo(this._map);
+        if (onUpdate) {
+          mk.on('dragend', () => {
+            const pos = mk.getLatLng();
+            onUpdate(wp.id, pos.lat, pos.lng);
+          });
+        }
+        this._waypointMarkers.set(wp.id, mk);
+      }
+    }
+  }
+
+  /** Build HTML for a waypoint marker popup. */
+  _buildWaypointPopupHtml(wp, onDelete) {
+    const desc = wp.description ? `<div style="margin-top:4px;font-size:11px;color:#8892a4">${escapeHtml(wp.description)}</div>` : '';
+    const from = wp.from_id ? `<tr><td style="color:#8892a4;padding:2px 0">From</td><td style="text-align:right">${escapeHtml(wp.from_id)}</td></tr>` : '';
+    const src  = `<tr><td style="color:#8892a4;padding:2px 0">Source</td><td style="text-align:right">${escapeHtml(wp.source || 'local')}</td></tr>`;
+    const coords = `<tr><td style="color:#8892a4;padding:2px 0">Coords</td><td style="text-align:right">${wp.lat.toFixed(5)}, ${wp.lng.toFixed(5)}</td></tr>`;
+    // Inline onclick so the popup HTML is self-contained.
+    const delBtn = onDelete
+      ? `<button onclick="window._nodepulse_deleteWaypoint('${wp.id}')" style="margin-top:8px;width:100%;padding:4px;border-radius:4px;background:rgba(255,60,60,0.15);border:1px solid rgba(255,60,60,0.4);color:#ff6b6b;cursor:pointer;font-size:11px">🗑 Delete</button>`
+      : '';
+    return `
+      <div style="font-family:Inter,sans-serif;min-width:160px">
+        <div style="font-weight:700;font-size:14px;margin-bottom:2px">${escapeHtml(wp.icon || '📍')} ${escapeHtml(wp.name)}</div>
+        ${desc}
+        <table style="width:100%;font-size:12px;border-collapse:collapse;margin-top:6px">
+          ${coords}${from}${src}
+        </table>
+        ${delBtn}
+      </div>`;
   }
 
   /**
@@ -834,6 +932,346 @@ export class MapManager {
     if (!this._map || this._markers.size === 0) return;
     const group = L.featureGroup([...this._markers.values()]);
     this._map.fitBounds(group.getBounds().pad(0.3));
+  }
+
+  // ----------------------------------------------------------------
+  // Ruler — point-to-point measurement with elevation profile
+  // ----------------------------------------------------------------
+
+  /**
+   * Enable ruler mode: clicking the map adds measurement points.
+   * @param {Object} posHistory - position history data (node_id -> entries with altitude)
+   */
+  enableRuler(posHistory) {
+    if (this._rulerActive) return;
+    this._rulerActive = true;
+    this._posHistory = posHistory || {};
+
+    const viewEl = document.getElementById('view-map');
+    if (viewEl) viewEl.classList.add('ruler-active');
+
+    this._rulerClickHandler = (e) => {
+      this._rulerPoints.push({ lat: e.latlng.lat, lng: e.latlng.lng });
+      this._drawRuler();
+      this._updateRulerPanel();
+    };
+    this._map.on('click', this._rulerClickHandler);
+    this._map.getContainer().style.cursor = 'crosshair';
+  }
+
+  /** Disable ruler mode and clear all measurement overlays. */
+  disableRuler() {
+    if (!this._rulerActive) return;
+    this._rulerActive = false;
+    if (this._rulerClickHandler) {
+      this._map.off('click', this._rulerClickHandler);
+      this._rulerClickHandler = null;
+    }
+    this._map.getContainer().style.cursor = '';
+
+    const viewEl = document.getElementById('view-map');
+    if (viewEl) viewEl.classList.remove('ruler-active');
+
+    this._clearRulerOverlays();
+  }
+
+  /** Clear all ruler points and overlays but keep mode active. */
+  clearRuler() {
+    this._rulerPoints = [];
+    this._clearRulerOverlays();
+    this._updateRulerPanel();
+  }
+
+  _clearRulerOverlays() {
+    for (const l of this._rulerLines) { try { l.remove(); } catch (_) {} }
+    for (const l of this._rulerLabels) { try { l.remove(); } catch (_) {} }
+    this._rulerLines = [];
+    this._rulerLabels = [];
+  }
+
+  /** Draw polylines, distance labels, and point markers. */
+  _drawRuler() {
+    this._clearRulerOverlays();
+    const pts = this._rulerPoints;
+    if (pts.length === 0) return;
+
+    // Draw connecting lines and labels only when 2+ points exist
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i], b = pts[i + 1];
+      const km = haversineKm(a.lat, a.lng, b.lat, b.lng);
+      const line = L.polyline([[a.lat, a.lng], [b.lat, b.lng]], {
+        color: '#ffd54f',
+        weight: 2.5,
+        opacity: 0.9,
+        dashArray: '6 4',
+      }).addTo(this._map);
+      this._rulerLines.push(line);
+
+      // Distance label at segment midpoint
+      const midLat = (a.lat + b.lat) / 2;
+      const midLng = (a.lng + b.lng) / 2;
+      const label = L.tooltip({
+        permanent: true,
+        direction: 'top',
+        offset: [0, -6],
+        className: 'ruler-label',
+      }).setLatLng([midLat, midLng]).setContent(formatDistance(km)).addTo(this._map);
+      this._rulerLabels.push(label);
+    }
+
+    // Circle markers at each point — drawn even with 1 point so it appears immediately on click
+    for (const p of pts) {
+      const circle = L.circleMarker([p.lat, p.lng], {
+        radius: 5,
+        color: '#ffd54f',
+        fillColor: '#ffd54f',
+        fillOpacity: 0.8,
+        weight: 2,
+      }).addTo(this._map);
+      this._rulerLines.push(circle);
+    }
+  }
+
+  /** Update the ruler panel stats and elevation profile. */
+  _updateRulerPanel() {
+    const pts = this._rulerPoints;
+    const totalEl = document.getElementById('ruler-dist-total');
+    const gainEl = document.getElementById('ruler-elev-gain');
+    const lossEl = document.getElementById('ruler-elev-loss');
+    const ptsEl = document.getElementById('ruler-points');
+    const emptyEl = document.getElementById('ruler-profile-empty');
+    const canvas = document.getElementById('ruler-profile-canvas');
+    if (!totalEl) return;
+
+    ptsEl.textContent = pts.length;
+
+    if (pts.length < 2) {
+      totalEl.textContent = '0 m';
+      gainEl.textContent = '0 m';
+      lossEl.textContent = '0 m';
+      if (emptyEl) emptyEl.style.display = '';
+      if (canvas) this._drawElevationProfile([]);
+      return;
+    }
+
+    // Compute total distance
+    let totalKm = 0;
+    for (let i = 0; i < pts.length - 1; i++) {
+      totalKm += haversineKm(pts[i].lat, pts[i].lng, pts[i + 1].lat, pts[i + 1].lng);
+    }
+    totalEl.textContent = formatDistance(totalKm);
+
+    // Sample elevation along the path
+    const samples = this._sampleElevationPath(pts);
+    if (emptyEl && samples.length > 0) emptyEl.style.display = 'none';
+    if (emptyEl && samples.length === 0) emptyEl.style.display = '';
+
+    // Compute elevation gain/loss
+    let gain = 0, loss = 0;
+    for (let i = 1; i < samples.length; i++) {
+      const diff = (samples[i].alt || 0) - (samples[i - 1].alt || 0);
+      if (diff > 0) gain += diff;
+      else loss += Math.abs(diff);
+    }
+    gainEl.textContent = `${Math.round(gain)} m`;
+    lossEl.textContent = `${Math.round(loss)} m`;
+
+    if (canvas) this._drawElevationProfile(samples);
+  }
+
+  /**
+   * Sample elevation along a path by interpolating from position history altitudes.
+   * Returns [{ distKm, alt }] at regular intervals.
+   */
+  _sampleElevationPath(pts) {
+    if (!this._posHistory || Object.keys(this._posHistory).length === 0) return [];
+
+    // Build a flat list of all known position fixes with altitude
+    const known = [];
+    for (const entries of Object.values(this._posHistory)) {
+      if (!Array.isArray(entries)) continue;
+      for (const e of entries) {
+        if (e.lat != null && e.lng != null && e.alt != null) {
+          known.push({ lat: e.lat, lng: e.lng, alt: e.alt });
+        }
+      }
+    }
+    if (known.length === 0) return [];
+
+    // Sample the path at a fine granularity for a detailed profile
+    const totalKm = this._pathLength(pts);
+    const steps = Math.max(100, Math.min(500, Math.round(totalKm / 0.005)));
+    const samples = [];
+
+    for (let s = 0; s <= steps; s++) {
+      const frac = s / steps;
+      const pos = this._interpolatePath(pts, frac);
+      const alt = this._nearestAltitude(pos.lat, pos.lng, known);
+      samples.push({ distKm: totalKm * frac, alt });
+    }
+    return samples;
+  }
+
+  /** Total haversine length of a polyline path in km. */
+  _pathLength(pts) {
+    let km = 0;
+    for (let i = 1; i < pts.length; i++) {
+      km += haversineKm(pts[i - 1].lat, pts[i - 1].lng, pts[i].lat, pts[i].lng);
+    }
+    return km;
+  }
+
+  /** Interpolate a position at a fraction [0, 1] along a polyline path. */
+  _interpolatePath(pts, frac) {
+    if (frac <= 0) return pts[0];
+    if (frac >= 1) return pts[pts.length - 1];
+    const total = this._pathLength(pts);
+    const targetDist = total * frac;
+    let acc = 0;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const seg = haversineKm(pts[i].lat, pts[i].lng, pts[i + 1].lat, pts[i + 1].lng);
+      if (acc + seg >= targetDist || i === pts.length - 2) {
+        const t = seg > 0 ? (targetDist - acc) / seg : 0;
+        return {
+          lat: pts[i].lat + (pts[i + 1].lat - pts[i].lat) * t,
+          lng: pts[i].lng + (pts[i + 1].lng - pts[i].lng) * t,
+        };
+      }
+      acc += seg;
+    }
+    return pts[pts.length - 1];
+  }
+
+  /** Find the nearest known altitude to a point by inverse-distance weighting among the 4 closest fixes. */
+  _nearestAltitude(lat, lng, known) {
+    const distances = known.map(k => ({
+      d: haversineKm(lat, lng, k.lat, k.lng),
+      alt: k.alt,
+    })).sort((a, b) => a.d - b.d);
+
+    // Use the closest point if it's very near; otherwise IDW from 4 nearest
+    if (distances.length === 0) return 0;
+    if (distances[0].d < 0.01 || distances.length === 1) return distances[0].alt;
+
+    const nearest = distances.slice(0, Math.min(4, distances.length));
+    let wSum = 0, altSum = 0;
+    for (const n of nearest) {
+      const w = n.d < 0.001 ? 1000 : 1 / (n.d * n.d);
+      wSum += w;
+      altSum += w * n.alt;
+    }
+    return wSum > 0 ? altSum / wSum : nearest[0].alt;
+  }
+
+  /** Draw the elevation profile chart on the canvas. */
+  _drawElevationProfile(samples) {
+    const canvas = document.getElementById('ruler-profile-canvas');
+    if (!canvas) return;
+    const rect = canvas.parentElement.getBoundingClientRect();
+    canvas.width = rect.width * (window.devicePixelRatio || 1);
+    canvas.height = rect.height * (window.devicePixelRatio || 1);
+    canvas.style.width = rect.width + 'px';
+    canvas.style.height = rect.height + 'px';
+    const ctx = canvas.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+    const W = canvas.width, H = canvas.height;
+    ctx.clearRect(0, 0, W, H);
+
+    if (!samples || samples.length < 2) {
+      // Draw a dashed flat line hint
+      ctx.beginPath();
+      ctx.setLineDash([4, 4]);
+      ctx.strokeStyle = '#444';
+      ctx.lineWidth = 1 * dpr;
+      ctx.moveTo(10 * dpr, H / 2);
+      ctx.lineTo(W - 10 * dpr, H / 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      return;
+    }
+
+    const padL = 35 * dpr, padR = 10 * dpr, padT = 10 * dpr, padB = 18 * dpr;
+    const plotW = W - padL - padR;
+    const plotH = H - padT - padB;
+
+    const alts = samples.map(s => s.alt != null ? s.alt : 0);
+    const altMin = Math.min(...alts) - 5;
+    const altMax = Math.max(...alts) + 5;
+    const altRange = Math.max(altMax - altMin, 10);
+    const maxDist = samples[samples.length - 1].distKm;
+
+    const xScale = maxDist > 0 ? plotW / maxDist : plotW;
+    const yScale = plotH / altRange;
+
+    const toX = (km) => padL + km * xScale;
+    const toY = (alt) => padT + plotH - (alt - altMin) * yScale;
+
+    // Grid lines
+    ctx.strokeStyle = '#2a2a2a';
+    ctx.lineWidth = 0.5 * dpr;
+    ctx.setLineDash([2, 3]);
+    const gridSteps = 4;
+    for (let i = 0; i <= gridSteps; i++) {
+      const y = padT + (plotH / gridSteps) * i;
+      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
+    }
+    ctx.setLineDash([]);
+
+    // Y-axis labels (altitude)
+    ctx.fillStyle = '#666';
+    ctx.font = `${9 * dpr}px Inter, sans-serif`;
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    for (let i = 0; i <= gridSteps; i++) {
+      const alt = altMin + (altRange / gridSteps) * i;
+      const y = padT + plotH - (plotH / gridSteps) * i;
+      ctx.fillText(`${Math.round(alt)}m`, padL - 4 * dpr, y);
+    }
+
+    // X-axis label
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillText(maxDist < 1 ? `${Math.round(maxDist * 1000)}m` : `${maxDist.toFixed(2)}km`, padL + plotW / 2, H - padB + 2 * dpr);
+
+    // Fill area under profile
+    ctx.beginPath();
+    ctx.moveTo(toX(samples[0].distKm), padT + plotH);
+    for (const s of samples) {
+      ctx.lineTo(toX(s.distKm), toY(s.alt || 0));
+    }
+    ctx.lineTo(toX(samples[samples.length - 1].distKm), padT + plotH);
+    ctx.closePath();
+    const grad = ctx.createLinearGradient(0, padT, 0, padT + plotH);
+    grad.addColorStop(0, 'rgba(255, 213, 79, 0.3)');
+    grad.addColorStop(1, 'rgba(255, 213, 79, 0.02)');
+    ctx.fillStyle = grad;
+    ctx.fill();
+
+    // Profile line
+    ctx.beginPath();
+    for (let i = 0; i < samples.length; i++) {
+      const x = toX(samples[i].distKm);
+      const y = toY(samples[i].alt || 0);
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = '#ffd54f';
+    ctx.lineWidth = 2 * dpr;
+    ctx.stroke();
+
+    // Sample dots
+    ctx.fillStyle = '#ffd54f';
+    for (let i = 0; i < samples.length; i += Math.max(1, Math.floor(samples.length / 10))) {
+      ctx.beginPath();
+      ctx.arc(toX(samples[i].distKm), toY(samples[i].alt || 0), 2.5 * dpr, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  /**
+   * Update position history reference used for elevation sampling.
+   */
+  setPosHistory(posHistory) {
+    this._posHistory = posHistory || {};
   }
 
   /** Build the HTML string for a marker popup. */

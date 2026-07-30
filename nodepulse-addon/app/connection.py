@@ -39,6 +39,7 @@ _CHANNELS_FILE = os.path.join(_DATA_DIR, "channels.json")
 _NODES_FILE = os.path.join(_DATA_DIR, "nodes.json")
 _TAGS_FILE = os.path.join(_DATA_DIR, "tags.json")
 _POSITION_HISTORY_FILE = os.path.join(_DATA_DIR, "position_history.json")
+_WAYPOINTS_FILE = os.path.join(_DATA_DIR, "waypoints.json")
 logger = logging.getLogger(__name__)
 
 # A canonical Meshtastic node ID is a "!" followed by the node number in hex.
@@ -298,6 +299,14 @@ class MeshtasticConnection:
         # thread) don't contend with node-list reads (on the asyncio worker thread).
         self._traceroutes_lock = threading.Lock()
 
+        # --- Feature: Waypoints ------------------------------------------
+        # Persisted list of waypoints received from the mesh or created locally.
+        # Each entry is a dict with: id, name, description, lat, lng, icon,
+        # expire, from_id, timestamp.
+        self._waypoints_lock = threading.Lock()
+        self._waypoints: List[Dict[str, Any]] = []
+        self._load_waypoints()
+
     # ------------------------------------------------------------------
     # Public async API
     # ------------------------------------------------------------------
@@ -478,6 +487,22 @@ class MeshtasticConnection:
     async def get_position_history(self, node_id: Optional[str] = None) -> Dict[str, List[Dict]]:
         """Return position history. If node_id is given, return only that node's trail."""
         return await asyncio.to_thread(self._get_position_history_sync, node_id)
+
+    async def get_waypoints(self) -> List[Dict[str, Any]]:
+        """Return the current list of persisted waypoints."""
+        return await asyncio.to_thread(self._get_waypoints_sync)
+
+    async def add_waypoint(self, waypoint: Dict[str, Any]) -> Dict[str, Any]:
+        """Add a locally-created waypoint. Assigns a local ID and persists."""
+        return await asyncio.to_thread(self._add_waypoint_sync, waypoint)
+
+    async def delete_waypoint(self, waypoint_id: str) -> bool:
+        """Remove a waypoint by ID. Returns True if found and deleted."""
+        return await asyncio.to_thread(self._delete_waypoint_sync, waypoint_id)
+
+    async def update_waypoint(self, waypoint_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Update a waypoint's fields (e.g. lat/lng after drag). Returns updated waypoint or None."""
+        return await asyncio.to_thread(self._update_waypoint_sync, waypoint_id, updates)
 
     async def get_packet_log(self, limit: int = 200) -> List[Dict[str, Any]]:
         """Return the most recent captured packets (newest first, up to limit)."""
@@ -829,6 +854,11 @@ class MeshtasticConnection:
             # --- Routing ACKs (delivery confirmation) --------------------
             if portnum == "ROUTING_APP":
                 self._capture_routing_ack(packet)
+                return
+
+            # --- Waypoints ------------------------------------------------
+            if portnum == "WAYPOINT_APP":
+                self._capture_waypoint(packet)
                 return
 
             # --- Text messages ------------------------------------------
@@ -1217,6 +1247,159 @@ class MeshtasticConnection:
             self._write_json(snapshot, _MESSAGES_FILE)
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("Could not persist messages (ignored): %s", exc)
+
+    # ----------------------------------------------------------------
+    # Waypoint helpers
+    # ----------------------------------------------------------------
+
+    def _capture_waypoint(self, packet: Dict[str, Any]) -> None:
+        """Parse an inbound WAYPOINT_APP packet and upsert it into the store.
+
+        Meshtastic waypoints carry a latitude/longitude, a human-readable name,
+        an optional description, an icon emoji, an optional expiry (Unix
+        timestamp), and a unique integer ID broadcast by the originating node.
+        We normalise all fields to their Python equivalents, compute a
+        canonical string ``id`` (``!<from_hex>-<waypoint_int_id>``), and
+        upsert so re-broadcasts of the same waypoint update in-place rather
+        than appending a duplicate.
+        """
+        try:
+            decoded = packet.get("decoded", {}) or {}
+            wp = decoded.get("waypoint") or {}
+
+            # Core fields — all optional; fall back to safe defaults.
+            wp_int_id = wp.get("id") or 0
+            from_num = packet.get("from")
+            from_id = _node_id_from_num(from_num)
+
+            # Canonical string ID used as the primary key in our store.
+            canonical_id = f"{from_id or 'unknown'}-{wp_int_id}"
+
+            lat = wp.get("latitudeI")
+            lng = wp.get("longitudeI")
+            # Meshtastic encodes lat/lng as integer degrees × 1e7.
+            if lat is not None:
+                lat = lat / 1e7
+            if lng is not None:
+                lng = lng / 1e7
+
+            entry = {
+                "id": canonical_id,
+                "wp_id": wp_int_id,
+                "name": (wp.get("name") or "").strip() or canonical_id,
+                "description": (wp.get("description") or "").strip(),
+                "lat": lat,
+                "lng": lng,
+                "icon": wp.get("icon") or "📍",
+                "expire": wp.get("expire"),          # Unix timestamp or None
+                "locked_to": wp.get("lockedTo"),     # node num or None
+                "from_id": from_id,
+                "timestamp": int(time.time()),
+                "source": "mesh",
+            }
+
+            with self._waypoints_lock:
+                # Upsert: replace existing entry with same canonical_id.
+                for i, existing in enumerate(self._waypoints):
+                    if existing.get("id") == canonical_id:
+                        self._waypoints[i] = entry
+                        break
+                else:
+                    self._waypoints.append(entry)
+
+            # Persist on a daemon thread so we never block the receive thread.
+            t = threading.Thread(target=self._save_waypoints, daemon=True)
+            t.start()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Error capturing waypoint (ignored): %s", exc)
+
+    def _get_waypoints_sync(self) -> List[Dict[str, Any]]:
+        """Return a snapshot of all waypoints (unexpired first)."""
+        now = int(time.time())
+        with self._waypoints_lock:
+            # Filter out expired waypoints at read time.
+            return [
+                w for w in self._waypoints
+                if w.get("expire") is None or w["expire"] == 0 or w["expire"] > now
+            ]
+
+    def _add_waypoint_sync(self, waypoint: Dict[str, Any]) -> Dict[str, Any]:
+        """Store a locally-created waypoint, assign an ID, and persist."""
+        import uuid
+        entry = {
+            "id": f"local-{uuid.uuid4().hex[:8]}",
+            "wp_id": None,
+            "name": (waypoint.get("name") or "Waypoint").strip(),
+            "description": (waypoint.get("description") or "").strip(),
+            "lat": waypoint.get("lat"),
+            "lng": waypoint.get("lng"),
+            "icon": waypoint.get("icon") or "📍",
+            "expire": waypoint.get("expire"),
+            "locked_to": None,
+            "from_id": None,
+            "timestamp": int(time.time()),
+            "source": "local",
+        }
+        with self._waypoints_lock:
+            self._waypoints.append(entry)
+        t = threading.Thread(target=self._save_waypoints, daemon=True)
+        t.start()
+        return entry
+
+    def _update_waypoint_sync(self, waypoint_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Update a waypoint's fields in-place and persist."""
+        with self._waypoints_lock:
+            for wp in self._waypoints:
+                if wp.get("id") == waypoint_id:
+                    for key in ("lat", "lng", "name", "description", "icon"):
+                        if key in updates:
+                            wp[key] = updates[key]
+                    snapshot = dict(wp)
+                    break
+            else:
+                return None
+        t = threading.Thread(target=self._save_waypoints, daemon=True)
+        t.start()
+        return snapshot
+
+    def _delete_waypoint_sync(self, waypoint_id: str) -> bool:
+        """Remove a waypoint by its string ID. Returns True if deleted."""
+        with self._waypoints_lock:
+            before = len(self._waypoints)
+            self._waypoints = [w for w in self._waypoints if w.get("id") != waypoint_id]
+            deleted = len(self._waypoints) < before
+        if deleted:
+            t = threading.Thread(target=self._save_waypoints, daemon=True)
+            t.start()
+        return deleted
+
+    def _load_waypoints(self) -> None:
+        """Restore persisted waypoints from disk on startup (best-effort)."""
+        try:
+            if not os.path.exists(_WAYPOINTS_FILE):
+                return
+            with self._persist_lock:
+                with open(_WAYPOINTS_FILE, "r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+            if isinstance(data, list):
+                with self._waypoints_lock:
+                    self._waypoints = [w for w in data if isinstance(w, dict) and w.get("id")]
+                logger.debug(
+                    "Restored %s waypoints from %s",
+                    len(self._waypoints), _WAYPOINTS_FILE,
+                )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Could not load persisted waypoints (ignored): %s", exc)
+
+    def _save_waypoints(self) -> None:
+        """Persist the waypoint list to disk (best-effort, runs on daemon thread)."""
+        try:
+            os.makedirs(_DATA_DIR, exist_ok=True)
+            with self._waypoints_lock:
+                snapshot = list(self._waypoints)
+            self._write_json(snapshot, _WAYPOINTS_FILE)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Could not persist waypoints (ignored): %s", exc)
 
     def _schedule_save(self, source_deque, path: str) -> None:
         """

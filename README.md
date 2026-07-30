@@ -79,6 +79,8 @@ NodePulse is a Home Assistant addon and custom integration that gives you deep v
 | 🧹 **Clear Stale Nodes** | One-click purge of cached (stale) nodes from the store via Settings |
 | 🌓 **Dark/Light Theme** | Persistent theme toggle in the header |
 | 📥 **Map Export (KML/GPX)** | Export visible GPS-fixed nodes as KML or GPX from the Map view |
+| 📍 **Waypoints** | Capture and display mesh-broadcast WAYPOINT_APP packets as amber teardrop markers on the map, plus locally create/delete waypoints with name, description, and emoji icon via a floating panel (GPS optional — defaults to map centre). Markers are draggable to reposition. Persisted in `waypoints.json` and surviving restarts |
+| 📏 **Ruler** | Click-to-measure point-to-point distances on the map with dashed polylines and live distance labels. Samples elevation from node position history and displays total distance, elevation gain/loss, and a canvas-drawn elevation profile chart. Map toolbar auto-minimises when active |
 | 📡 **Neighbor Info** | Per-node SNRs from NEIGHBORINFO_APP packets displayed on node cards |
 | 🗺️ **Position History Trails** | GPS fix history (up to 200 fixes/node) persisted server-side, rendered as polylines on the map with toggle |
 | 📊 **Airtime Trends** | Channel utilization & airtime utilization charts with a 30-minute rolling window |

@@ -174,3 +174,43 @@ export async function fetchPackets(limit = 200) {
 export async function fetchSnifferStats() {
   return _apiFetch('/sniffer/stats');
 }
+
+/** Fetch all active (non-expired) waypoints from the server. */
+export async function fetchWaypoints() {
+  return _apiFetch('/waypoints');
+}
+
+/**
+ * Create a locally-defined waypoint.
+ * @param {{ name: string, lat: number, lng: number, description?: string, icon?: string, expire?: number }} wp
+ */
+export async function addWaypoint(wp) {
+  return _apiFetch('/waypoints', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(wp),
+  });
+}
+
+/**
+ * Delete a waypoint by its string ID.
+ * @param {string} waypointId
+ */
+export async function deleteWaypoint(waypointId) {
+  return _apiFetch(`/waypoints/${encodeURIComponent(waypointId)}`, {
+    method: 'DELETE',
+  });
+}
+
+/**
+ * Update a waypoint's position (or other fields).
+ * @param {string} waypointId
+ * @param {{ lat?: number, lng?: number, name?: string, description?: string, icon?: string }} updates
+ */
+export async function updateWaypoint(waypointId, updates) {
+  return _apiFetch(`/waypoints/${encodeURIComponent(waypointId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
+  });
+}

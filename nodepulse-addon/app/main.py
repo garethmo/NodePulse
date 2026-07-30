@@ -33,13 +33,17 @@ from .routes import (
     handle_position_history,
     handle_request_position,
     handle_send,
-    handle_set_tags,
     handle_sniffer_stats,
     handle_status,
+    handle_set_tags,
     handle_tags,
     handle_traceroute,
     handle_track_node,
     handle_tracked_nodes,
+    handle_get_waypoints,
+    handle_add_waypoint,
+    handle_update_waypoint,
+    handle_delete_waypoint,
 )
 
 # Configure structured logging early so all subsequent imports can log.
@@ -179,6 +183,10 @@ def build_app(config) -> web.Application:
     app.router.add_post("/api/track-node", handle_track_node)
     app.router.add_get("/api/packets", handle_packets)
     app.router.add_get("/api/sniffer/stats", handle_sniffer_stats)
+    app.router.add_get("/api/waypoints", handle_get_waypoints)
+    app.router.add_post("/api/waypoints", handle_add_waypoint)
+    app.router.add_patch("/api/waypoints/{waypoint_id}", handle_update_waypoint)
+    app.router.add_delete("/api/waypoints/{waypoint_id}", handle_delete_waypoint)
 
     # --- Static Web UI ---
     # Serve the dashboard from the root path. Under HA Ingress the addon is

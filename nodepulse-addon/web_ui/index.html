@@ -277,7 +277,67 @@
           <span class="map-filter-count" id="map-filter-count"></span>
           <button type="button" class="map-export-btn" data-export="kml" title="Export visible nodes as KML">📥 KML</button>
           <button type="button" class="map-export-btn" data-export="gpx" title="Export visible nodes as GPX">📥 GPX</button>
+          <button type="button" id="map-add-waypoint-btn" class="map-export-btn" title="Drop a waypoint on the map">📍 Waypoint</button>
+          <button type="button" id="map-ruler-btn" class="map-export-btn map-ruler-btn" title="Measure distance and elevation">📏 Ruler</button>
         </div>
+
+        <!-- Ruler panel — shown when "📏 Ruler" is clicked -->
+        <div id="ruler-panel" class="ruler-panel hidden" role="dialog" aria-label="Ruler">
+          <div class="ruler-panel-header">
+            <span class="ruler-panel-title">📏 Ruler</span>
+            <button type="button" id="ruler-panel-close" class="ruler-panel-close" aria-label="Close">✕</button>
+          </div>
+          <div class="ruler-panel-body">
+            <div class="ruler-stats">
+              <div class="ruler-stat">
+                <span class="ruler-stat-value" id="ruler-dist-total">0 m</span>
+                <span class="ruler-stat-label">Total</span>
+              </div>
+              <div class="ruler-stat">
+                <span class="ruler-stat-value" id="ruler-elev-gain">0 m</span>
+                <span class="ruler-stat-label">Elev Gain</span>
+              </div>
+              <div class="ruler-stat">
+                <span class="ruler-stat-value" id="ruler-elev-loss">0 m</span>
+                <span class="ruler-stat-label">Elev Loss</span>
+              </div>
+              <div class="ruler-stat">
+                <span class="ruler-stat-value" id="ruler-points">0</span>
+                <span class="ruler-stat-label">Points</span>
+              </div>
+            </div>
+            <div class="ruler-profile-wrap">
+              <canvas id="ruler-profile-canvas" class="ruler-profile-canvas"></canvas>
+              <div class="ruler-profile-empty" id="ruler-profile-empty">Click the map to add points</div>
+            </div>
+            <button type="button" id="ruler-clear-btn" class="ruler-clear-btn">Clear</button>
+          </div>
+        </div>
+
+        <!-- Add Waypoint panel — shown when "📍 Waypoint" is clicked -->
+        <div id="waypoint-panel" class="waypoint-panel hidden" role="dialog" aria-label="Add Waypoint">
+          <div class="waypoint-panel-header">
+            <span class="waypoint-panel-title">📍 Drop Waypoint</span>
+            <button type="button" id="waypoint-panel-close" class="waypoint-panel-close" aria-label="Close">✕</button>
+          </div>
+          <form id="waypoint-form" class="waypoint-form" autocomplete="off">
+            <label class="waypoint-form-label" for="wp-name">Name</label>
+            <input type="text" id="wp-name" class="waypoint-form-input" placeholder="e.g. Base Camp" required />
+            <label class="waypoint-form-label" for="wp-desc">Description</label>
+            <input type="text" id="wp-desc" class="waypoint-form-input" placeholder="Optional…" />
+            <label class="waypoint-form-label" for="wp-icon">Icon</label>
+            <input type="text" id="wp-icon" class="waypoint-form-input waypoint-form-icon" placeholder="📍" maxlength="2" value="📍" />
+            <div class="waypoint-coords-row">
+              <label class="waypoint-form-label" for="wp-lat">Lat</label>
+              <input type="number" id="wp-lat" class="waypoint-form-input" step="any" placeholder="Auto (click map)" />
+              <label class="waypoint-form-label" for="wp-lng">Lng</label>
+              <input type="number" id="wp-lng" class="waypoint-form-input" step="any" placeholder="Auto (click map)" />
+            </div>
+            <p class="waypoint-hint">Click the map to set coords, or leave blank to place at map center. Drag marker after placing.</p>
+            <button type="submit" class="waypoint-submit-btn">Add Waypoint</button>
+          </form>
+        </div>
+
         <div id="full-map"></div>
       </div>
 
@@ -557,7 +617,7 @@
           <div class="settings-group-title">About</div>
           <div class="settings-row">
             <span class="settings-row-label">NodePulse Version</span>
-            <span class="settings-row-value">1.3.0</span>
+            <span class="settings-row-value">1.4.0</span>
           </div>
           <div class="settings-row">
             <span class="settings-row-label">UI Poll Interval</span>

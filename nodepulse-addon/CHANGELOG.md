@@ -2,6 +2,26 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.4.0] - 2026-07-30
+### Added
+- **Waypoints (Mesh + Local)** — Inbound `WAYPOINT_APP` protobuf capture (`_capture_waypoint`), normalised to canonical `from_id-wp_int_id` keys with upsert logic so re-broadcasts update in-place. Persisted to `waypoints.json` on daemon threads. Locally-created waypoints get a UUID-based ID. Expired waypoints filtered at read time.
+- **Waypoint REST API** — `GET /api/waypoints`, `POST /api/waypoints`, `PATCH /api/waypoints/{waypoint_id}` (field updates), `DELETE /api/waypoints/{waypoint_id}`.
+- **Waypoint Web UI** — Floating "📍 Waypoint" panel with name/description/icon/coords inputs. Map click auto-fills lat/lng. lat/lng optional — falls back to map centre. Markers are **draggable**; `dragend` fires `PATCH` to persist position.
+- **Ruler measurement tool** — `MapManager.enableRuler()` / `disableRuler()` toggles click-to-measure mode. Each click adds a point (amber circle). Lines drawn as dashed amber polylines with midpoint distance labels.
+- **Ruler elevation profile** — `_sampleElevationPath()` builds known-altitude points from position history, samples the path at fine granularity (up to 500 steps, one per 5m) using path interpolation, and estimates altitude via IDW from the 4 nearest known fixes. Ruler panel shows total distance, elevation gain, elevation loss, and a canvas-drawn profile chart.
+- **Ruler toolbar collapse** — Activating ruler adds `ruler-active` class to `#view-map`; CSS hides all filter bar children except the ruler button, shrinking it to a compact floating pill.
+- **Ruler position history integration** — Fetch position history every poll while ruler is active to keep elevation data current.
+- **`setPosHistory()` on MapManager** — Updates the elevation reference data from the latest API fetch.
+- **`updateWaypoint()` API function** — New `PATCH` client function in `api.js` for updating waypoint fields.
+
+### Changed
+- **Version bump** — 1.3.0 → 1.4.0.
+- **Waypoint create relaxed** — `handle_add_waypoint` no longer requires `lat`/`lng`; accepts `null` and passes through.
+- **`_add_waypoint_sync`** — Stores `lat`/`lng` as `None` when omitted, allowing front-end to set them on drag.
+
+### Fixed
+- **Missing `handle_set_tags` import** — Added to `main.py` import list to fix `NameError` on startup.
+
 ## [1.3.0] - 2026-07-30
 ### Added
 - **Message History Export (JSON/CSV)** — Download full or per-conversation message history directly as JSON or formatted CSV from the Web UI thread header or via the `GET /api/messages/export` REST API.

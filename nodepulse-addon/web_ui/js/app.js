@@ -13,7 +13,7 @@
  * is easy to trace top-to-bottom.
  */
 
-import { fetchStatus, fetchNodes, fetchChannels, fetchMessages, sendMessage, requestTraceRoute, requestPosition, fetchTrackedNodes, trackNode, clearStaleNodes, fetchTags, setTags, fetchPositionHistory, fetchPackets, fetchSnifferStats } from './api.js';
+import { fetchStatus, fetchNodes, fetchChannels, fetchMessages, sendMessage, requestTraceRoute, requestPosition, fetchTrackedNodes, trackNode, clearStaleNodes, fetchTags, setTags, fetchPositionHistory, fetchPackets, fetchSnifferStats, fetchWaypoints, addWaypoint, updateWaypoint, deleteWaypoint } from './api.js';
 import { MapManager } from './map.js';
 import { ChartManager } from './charts.js';
 import { TopologyManager } from './topology.js';
@@ -66,6 +66,9 @@ const state = {
 
   // tracked-nodes refresh so it does not run on every 15s tick.
   _pollCount:     0,
+
+  // Position history data for trail polylines, heatmap, and ruler elevation sampling.
+  posHistory:     {},
 };
 
 // ============================================================================
@@ -1409,12 +1412,24 @@ async function pollData() {
   // Fetch position history for map trails — first poll, then every 120s (8 cycles).
   // If the heatmap is currently visible, refresh every poll so it stays current.
   const heatmapVisible = fullMap._heatmapVisible || dashMap._heatmapVisible;
-  if (isFirstPoll || state._pollCount % 8 === 0 || heatmapVisible) {
+  if (isFirstPoll || state._pollCount % 8 === 0 || heatmapVisible || fullMap._rulerActive) {
     fetchPositionHistory().then(data => {
+      state.posHistory = data;
       dashMap.updateTrails(data, state.nodes);
       fullMap.updateTrails(data, state.nodes);
+      fullMap.setPosHistory(data);
+      if (fullMap._rulerActive) fullMap._updateRulerPanel();
     }).catch(err => {
       console.warn('Position history fetch failed:', err);
+    });
+  }
+
+  // Fetch waypoints every poll when the map view is active; every 8 polls otherwise.
+  if (state.currentView === 'map' || isFirstPoll || state._pollCount % 8 === 0) {
+    fetchWaypoints().then(wps => {
+      fullMap.updateWaypoints(wps, handleDeleteWaypoint, handleUpdateWaypoint);
+    }).catch(err => {
+      console.warn('Waypoints fetch failed:', err);
     });
   }
 
@@ -1851,6 +1866,98 @@ async function init() {
   const snifferPanel  = document.getElementById('sniffer-panel');
   if (snifferToggle && snifferPanel) snifferToggle.addEventListener('click', () => snifferPanel.classList.toggle('hidden'));
 
+  // Waypoint panel — open/close and form submission.
+  const waypointPanel = document.getElementById('waypoint-panel');
+  const waypointBtn   = document.getElementById('map-add-waypoint-btn');
+  const waypointClose = document.getElementById('waypoint-panel-close');
+  const waypointForm  = document.getElementById('waypoint-form');
+
+  if (waypointBtn && waypointPanel) {
+    waypointBtn.addEventListener('click', () => waypointPanel.classList.toggle('hidden'));
+  }
+  if (waypointClose && waypointPanel) {
+    waypointClose.addEventListener('click', () => waypointPanel.classList.add('hidden'));
+  }
+
+  // Allow clicking the map to auto-fill Lat/Lng in the waypoint form.
+  // We hook into the Leaflet map's click event via a custom listener so we
+  // don't break any other map interactions.
+  fullMap._map?.on('click', (e) => {
+    const latEl = document.getElementById('wp-lat');
+    const lngEl = document.getElementById('wp-lng');
+    if (latEl && lngEl && waypointPanel && !waypointPanel.classList.contains('hidden')) {
+      latEl.value = e.latlng.lat.toFixed(6);
+      lngEl.value = e.latlng.lng.toFixed(6);
+    }
+  });
+
+  if (waypointForm) {
+    waypointForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const name = document.getElementById('wp-name')?.value?.trim();
+      const desc = document.getElementById('wp-desc')?.value?.trim();
+      const icon = document.getElementById('wp-icon')?.value?.trim() || '📍';
+      let lat  = parseFloat(document.getElementById('wp-lat')?.value);
+      let lng  = parseFloat(document.getElementById('wp-lng')?.value);
+      if (!name) return;
+      if (isNaN(lat) || isNaN(lng)) {
+        const center = fullMap._map?.getCenter();
+        if (center) {
+          lat = center.lat;
+          lng = center.lng;
+        } else {
+          lat = 0; lng = 0;
+        }
+      }
+      try {
+        await addWaypoint({ name, description: desc, icon, lat, lng });
+        waypointForm.reset();
+        document.getElementById('wp-icon').value = '📍';
+        waypointPanel.classList.add('hidden');
+        const wps = await fetchWaypoints();
+        fullMap.updateWaypoints(wps, handleDeleteWaypoint, handleUpdateWaypoint);
+      } catch (err) {
+        console.error('Failed to add waypoint:', err);
+      }
+    });
+  }
+
+  // Expose a global so the popup delete button can call back.
+  window._nodepulse_deleteWaypoint = handleDeleteWaypoint;
+
+  // Ruler toggle and panel.
+  const rulerBtn = document.getElementById('map-ruler-btn');
+  const rulerPanel = document.getElementById('ruler-panel');
+  const rulerClose = document.getElementById('ruler-panel-close');
+  const rulerClear = document.getElementById('ruler-clear-btn');
+
+  if (rulerBtn && rulerPanel) {
+    rulerBtn.addEventListener('click', () => {
+      const wasActive = rulerBtn.classList.contains('active');
+      if (wasActive) {
+        rulerBtn.classList.remove('active');
+        rulerPanel.classList.add('hidden');
+        fullMap.disableRuler();
+      } else {
+        rulerBtn.classList.add('active');
+        rulerPanel.classList.remove('hidden');
+        fullMap.enableRuler(state.posHistory || {});
+      }
+    });
+  }
+  if (rulerClose && rulerPanel) {
+    rulerClose.addEventListener('click', () => {
+      rulerBtn?.classList.remove('active');
+      rulerPanel.classList.add('hidden');
+      fullMap.disableRuler();
+    });
+  }
+  if (rulerClear) {
+    rulerClear.addEventListener('click', () => {
+      fullMap.clearRuler();
+    });
+  }
+
   // Header sort on click, filter via icon button.
   const pktThead = document.querySelector('#view-packets thead');
   if (pktThead) {
@@ -2176,6 +2283,32 @@ async function pollPackets() {
     renderPacketTable();
     renderSnifferStats(state.snifferStats);
   } catch (err) { console.warn('Packet poll failed:', err); }
+}
+
+/**
+ * Delete a waypoint by ID, then refresh the map layer.
+ */
+async function handleDeleteWaypoint(waypointId) {
+  try {
+    await deleteWaypoint(waypointId);
+    const wps = await fetchWaypoints();
+    fullMap.updateWaypoints(wps, handleDeleteWaypoint, handleUpdateWaypoint);
+  } catch (err) {
+    console.error('Failed to delete waypoint:', err);
+  }
+}
+
+/**
+ * Update a waypoint's position after a drag, then refresh the map layer.
+ */
+async function handleUpdateWaypoint(waypointId, lat, lng) {
+  try {
+    await updateWaypoint(waypointId, { lat, lng });
+    const wps = await fetchWaypoints();
+    fullMap.updateWaypoints(wps, handleDeleteWaypoint, handleUpdateWaypoint);
+  } catch (err) {
+    console.error('Failed to update waypoint:', err);
+  }
 }
 
 document.addEventListener('DOMContentLoaded', init);

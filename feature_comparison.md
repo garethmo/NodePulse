@@ -52,7 +52,7 @@
 | **Persistent message history (survives restart)** | ❌ | ✅ (via logbook) | ✅ (messages.json) |
 | **Message export (JSON/CSV)** | ❌ | ❌ | ✅ (downloadable JSON & CSV via Web UI & API) |
 | **Message acknowledgement (ACK) status** | ✅ | ✅ | ✅ (tracks sending/sent/delivered/failed ACK status) |
-| **Waypoints (send/receive)** | ❌ | ⚠️ (partial via MQTT) | ❌ |
+| **Waypoints (send/receive)** | ❌ | ⚠️ (partial via MQTT) | ✅ (receive via WAYPOINT_APP + locally create/delete, persisted to waypoints.json) |
 | **Bell / notification on new message** | ✅ | ⚠️ (via HA notify automation) | ✅ (Web UI browser notifications) |
 
 ---
@@ -70,7 +70,7 @@
 | **Map node filter (hops, time)** | ❌ | ❌ | ✅ |
 | **KML / GPX export** | ❌ | ❌ | ✅ |
 | **Map tile customization** | ✅ | ⚠️ (via HA map card settings) | ❌ (dark OSM only) |
-| **Waypoints on map** | ⚠️ (display only, reported) | ❌ | ❌ |
+| **Waypoints on map** | ⚠️ (display only, reported) | ❌ | ✅ (amber teardrop pin markers, emoji icon, popup with delete button) |
 | **Geo-fencing / zone awareness** | ❌ | ✅ (HA zones via device_tracker) | ✅ (via device_tracker) |
 | **Coverage heatmap** | ❌ | ❌ | ✅ |
 | **Network topology force graph** | ✅ | ❌ | ✅ |
@@ -175,7 +175,7 @@ These are features competitors have that NodePulse **does not currently implemen
 
 | Gap | Who has it | Impact |
 |---|---|---|
-| **Waypoints** | Meshtastic ecosystem | Cannot send/display Meshtastic waypoints |
+| **Waypoints** | MeshSense / Meshtastic HA | Both only partially support waypoints; NodePulse now receives, persists, and displays waypoints from the mesh, and supports locally-created pins |
 | **Per-node alert thresholds** | Neither (gap for all) | No way to set "alert if battery < 20%" inside the tool — users must build HA automations manually |
 | **HA Lovelace dashboard blueprint** | Neither | No one-click pre-built dashboard — high barrier to entry for new users |
 | **HA automation blueprints** | Neither | "Node offline" / "low battery" automation blueprints would make the integration much more accessible |

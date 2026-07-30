@@ -2,6 +2,23 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.4.0] - 2026-07-30
+### Added
+- **Waypoints (Mesh + Local)** — Full waypoint support: capture inbound `WAYPOINT_APP` protobuf packets from the mesh, persist to `waypoints.json`, and display as amber teardrop markers with emoji icons on the map. Locally create waypoints via a floating "📍 Waypoint" panel with name, description, icon, and lat/lng (click-to-fill from map click). Delete waypoints from marker popups. Survives addon restarts.
+- **Waypoint REST API** — `GET /api/waypoints` (all active/non-expired), `POST /api/waypoints` (create local), `PATCH /api/waypoints/{id}` (update position/fields), `DELETE /api/waypoints/{id}` (remove). Waypoints broadcast by the mesh are automatically upserted by canonical `from_id` + `wp_int_id`.
+- **Draggable waypoint markers** — Waypoints on the map are draggable; dragging sends a `PATCH` to persist the new lat/lng immediately.
+- **Optional GPS for waypoints** — lat/lng are no longer required when creating a waypoint. If omitted the waypoint is placed at the map centre and can be dragged into position.
+- **Ruler measurement tool** — Click-to-measure point-to-point distances on the map with dashed amber polylines, midpoint distance labels, and amber circle markers at each point. Points appear immediately on each click.
+- **Ruler elevation profile** — Samples elevation along the measured path from node position history altitudes (IDW interpolation). Displays total distance, elevation gain, elevation loss, and a canvas-drawn elevation profile chart (altitude vs distance with gradient fill, grid lines, and axis labels). Profiles sampled at up to 500 points (one per 5m) for smooth rendering.
+- **Ruler minimises map toolbar** — Activating the ruler collapses the map filter bar to a compact floating pill showing only the ruler button, maximising map space for measurement.
+- **feature_comparison.md** — Updated waypoints gap row from ❌ to ✅ for both "Waypoints (send/receive)" and "Waypoints on map". Gap analysis revised to note NodePulse now leads on this capability.
+
+### Changed
+- **Waypoint polling** — Waypoints fetched every poll when map view is active, every 8 polls otherwise, keeping markers fresh without excessive API load.
+
+### Fixed
+- **Missing `handle_set_tags` import** — Added missing `handle_set_tags` to the route import list in `main.py` that caused a `NameError` at startup.
+
 ## [1.3.0] - 2026-07-30
 ### Added
 - **Message History Export (JSON/CSV)** — Download full or per-conversation message history directly as JSON or formatted CSV from the Web UI thread header or via the `GET /api/messages/export` REST API.
