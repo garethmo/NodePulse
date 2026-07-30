@@ -18,6 +18,10 @@ All notable changes to NodePulse are documented here.
 
 ### Fixed
 - **Missing `handle_set_tags` import** — Added missing `handle_set_tags` to the route import list in `main.py` that caused a `NameError` at startup.
+- **Missing `handle_delete_node` import** — Added `handle_delete_node` to route imports in `main.py` and registered `DELETE /api/node/{node_id}`.
+
+### Added
+- **Delete single node** — New `DELETE /api/node/{node_id}` endpoint and `deleteNode()` API function. Each node card now has a "Delete" button (red danger styling) that removes the node from the persistent store with a confirmation prompt.
 
 ## [1.3.0] - 2026-07-30
 ### Added

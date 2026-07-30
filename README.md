@@ -77,6 +77,7 @@ NodePulse is a Home Assistant addon and custom integration that gives you deep v
 | 🔎 **Map Node Filter** | Filter the map by name/ID, max hops away, last-heard window, or cached-only — with a live node count |
 | 🏷️ **Node Tagging** | Comma-separated tags per node stored server-side; visible on node cards |
 | 🧹 **Clear Stale Nodes** | One-click purge of cached (stale) nodes from the store via Settings |
+| 🗑️ **Delete Single Node** | Remove any individual node from the persistent store via the red "Delete" button on its card, with confirmation prompt |
 | 🌓 **Dark/Light Theme** | Persistent theme toggle in the header |
 | 📥 **Map Export (KML/GPX)** | Export visible GPS-fixed nodes as KML or GPX from the Map view |
 | 📍 **Waypoints** | Capture and display mesh-broadcast WAYPOINT_APP packets as amber teardrop markers on the map, plus locally create/delete waypoints with name, description, and emoji icon via a floating panel (GPS optional — defaults to map centre). Markers are draggable to reposition. Persisted in `waypoints.json` and surviving restarts |

@@ -23,14 +23,22 @@ The addon runs as a Home Assistant addon (Docker container) serving a REST API a
 |----------|--------|---------|
 | `/api/status` | GET | Connection state, node identity, runtime config |
 | `/api/nodes` | GET | Full node list with SNR, position, traceroute, neighbors, telemetry |
+| `/api/node/{node_id}` | DELETE | Remove a single node from the persistent store |
+| `/api/nodes/clear-stale` | POST | Purge all cached/stale nodes |
 | `/api/channels` | GET | Configured mesh channels |
 | `/api/messages` | GET | Recent message buffer (capped at 200, oldest first) |
+| `/api/messages/export` | GET | Download message history as JSON or CSV (optional `?format=json|csv` and `?conversation=` filters) |
 | `/api/send` | POST | Send a text message (broadcast or DM) |
 | `/api/traceRoute` | POST | Dispatch a traceroute (fire-and-forget, results on next poll) |
 | `/api/requestPosition` | POST | Request fresh GPS from a specific node |
 | `/api/tags` | GET/PUT | Read and write user-defined node tags |
-| `/api/position-history` | GET | Position fix history for map trails |
-| `/api/nodes/clear-stale` | POST | Purge cached/stale nodes |
+| `/api/position-history` | GET | Position fix history for map trails (optional `/{node_id}` for single-node trail) |
+| `/api/packets` | GET | Packet inspector ring buffer (latest captured packets, optional `?limit=`) |
+| `/api/sniffer/stats` | GET | Live LoRa sniffer statistics (packets/min, unique nodes, portnum distribution) |
+| `/api/waypoints` | GET | All active (non-expired) waypoints |
+| `/api/waypoints` | POST | Create a local waypoint (`name`, `lat`/`lng` optional — defaults to map centre) |
+| `/api/waypoints/{id}` | PATCH | Update waypoint fields (e.g. lat/lng after drag) |
+| `/api/waypoints/{id}` | DELETE | Remove a waypoint |
 | `/api/tracked-nodes` | GET | Proxy to integration — list HA-tracked nodes |
 | `/api/track-node` | POST | Proxy to integration — toggle HA tracking |
 
@@ -44,6 +52,7 @@ The addon runs as a Home Assistant addon (Docker container) serving a REST API a
 | `channels.json` | Channel config | Immediate tab rendering on startup |
 | `tags.json` | User-defined tags per node | `!abc12345` → `["gateway", "roof"]` |
 | `position_history.json` | GPS fix trail per node | Up to 200 fixes/node |
+| `waypoints.json` | Waypoints from mesh + local | Alive/deleted, expires filtered at read time |
 
 ### Web UI — Dashboard View
 
@@ -53,7 +62,7 @@ The default view served under HA Ingress, with a responsive 3-column grid on des
 |-----------|-------------|
 | **Map (mini)** | Leaflet dark-theme map centred on Durban, SA; shows all GPS-fixed nodes with teal markers, self node in blue; permanent name labels; distance-labelled self→node links; peer proximity links; traceroute paths; position history trails |
 | **Node list** | Sidebar list sorted by distance from self; per-node SNR bar, battery %, last heard; click to select and drive charts |
-| **Message feed** | Conversation tabs (per-channel + per-DM) with unread badges; message bubbles with sender name, time, channel indicator; send status (sending/sent/failed); click-to-retry failed messages |
+| **Message feed** | Conversation tabs (per-channel + per-DM) with unread badges; message bubbles with sender name, time, channel indicator; send status (sending/sent/failed); click-to-retry failed messages; export any conversation as JSON or CSV |
 | **Compose box** | Channel selector (broadcast) or implicit DM destination; auto-growing textarea; Enter to send |
 | **Charts row** | 5 rolling charts — SNR (dB), RSSI (dBm), Node Count, Channel Utilization (%), Airtime Utilization (%). Signal charts: 30-point window (~7.5 min). Utilization charts: 120-point window (~30 min) |
 
@@ -67,7 +76,7 @@ Each card shows:
 - **Metrics grid**: SNR, RSSI, hops away, battery, distance, GPS fix, temperature, humidity, pressure
 - **Traceroute**: Forward and return path with hop-by-hop resolved names and timing
 - **Neighbors**: Per-peer SNR chips when NEIGHBORINFO_APP data is available
-- **Actions**: Traceroute, Request Position, Message, Track in HA
+- **Actions**: Traceroute, Request Position, Message, Track in HA, Notify, Delete (red button with confirmation prompt)
 
 Free-text filter across name, short name, hardware model, and ID.
 
@@ -88,13 +97,30 @@ A live `N shown` counter updates on filter change and on every poll.
 - Peer proximity links (amber dashes, within ~15 km or both 1-hop)
 - Traceroute routes (blue, forward and return paths)
 - Node name labels (permanent tooltips)
-- Position history trails (deep orange polylines)
+- Position history trails (deep orange polylines) — last 200 GPS fixes per node
 
 **Export**: KML and GPX download of visible GPS-fixed nodes.
 
+### Web UI — Packet Inspector
+
+A dedicated "Packets" tab showing every inbound Meshtastic packet via a real-time ring buffer (configurable limit). Columns: Portnum, From (short name + hex ID), To, Channel, SNR, Hop Count, ACK status. Click any row to expand the full protobuf JSON detail.
+
+- **Sort/filter**: Click column headers to sort asc/desc or filter by unique values via dropdown
+- **Export**: Download visible packets as JSON or CSV
+- **Sniffer stats**: Collapsible "📊 Stats" panel with packets/min, unique nodes, total captured, and portnum distribution bars
+- **Responsive**: Table collapses gracefully on mobile with `.packet-table` CSS
+
+### Web UI — Waypoints
+
+Waypoints from the mesh (`WAYPOINT_APP` protobuf packets) are captured and persisted. A floating "📍 Waypoint" panel lets you create local waypoints with name, description, emoji icon, and optional lat/lng (click map to fill, or leave blank to place at map centre). Markers are amber teardrop pins with the chosen emoji, **draggable** to reposition (persisted via `PATCH`). Popups show name, description, coordinates, source, and a delete button. Expired waypoints are hidden automatically.
+
+### Web UI — Ruler
+
+Click the "📏 Ruler" button to enter measurement mode. The map filter bar collapses to a compact floating pill. Click the map to place measurement points (amber circles appear instantly). Dashed amber polylines connect points with midpoint distance labels. An elevation profile panel shows total distance, elevation gain, elevation loss, and a canvas-drawn altitude vs distance chart (sampled at up to 500 points from node position history using IDW interpolation). Click **Clear** to reset or close the panel to exit.
+
 ### Web UI — Settings View
 
-Read-only display of runtime configuration: connection type, host/port, node count, ignored nodes, HA base URL, access key status, scan interval, log level. "Clear stale nodes" action button.
+Read-only display of runtime configuration: connection type, host/port, node count, ignored nodes, HA base URL, access key status, scan interval, log level, addon version. "Clear stale nodes" action button.
 
 ### Web UI — Theming
 

@@ -13,7 +13,7 @@
  * is easy to trace top-to-bottom.
  */
 
-import { fetchStatus, fetchNodes, fetchChannels, fetchMessages, sendMessage, requestTraceRoute, requestPosition, fetchTrackedNodes, trackNode, clearStaleNodes, fetchTags, setTags, fetchPositionHistory, fetchPackets, fetchSnifferStats, fetchWaypoints, addWaypoint, updateWaypoint, deleteWaypoint } from './api.js';
+import { fetchStatus, fetchNodes, fetchChannels, fetchMessages, sendMessage, requestTraceRoute, requestPosition, fetchTrackedNodes, trackNode, clearStaleNodes, fetchTags, setTags, fetchPositionHistory, fetchPackets, fetchSnifferStats, fetchWaypoints, addWaypoint, updateWaypoint, deleteWaypoint, deleteNode } from './api.js';
 import { MapManager } from './map.js';
 import { ChartManager } from './charts.js';
 import { TopologyManager } from './topology.js';
@@ -445,6 +445,7 @@ function renderNodesGrid(nodes) {
           <input type="checkbox" data-action="notify" data-node="${escapeHtml(node.id)}" ${state.notifyNodes.has(node.id) ? 'checked' : ''} />
           <span>Notify</span>
         </label>
+        <button class="action-btn action-btn-danger" data-action="delete" data-node="${escapeHtml(node.id)}" title="Remove this node from the store">Delete</button>
       </div>`;
 
     grid.appendChild(card);
@@ -510,6 +511,17 @@ async function handleNodeCardAction(event) {
       `${enabled ? 'Notifications enabled' : 'Notifications disabled'} for ${nodeId}`,
       'success',
     );
+  } else if (action === 'delete') {
+    if (!confirm(`Remove node ${nodeId} from the store?`)) return;
+    try {
+      await deleteNode(nodeId);
+      state.nodes = state.nodes.filter(n => n.id !== nodeId);
+      renderNodesGrid(state.nodes);
+      renderNodeList(state.nodes);
+      showToast(`Removed node ${nodeId}`, 'success');
+    } catch (err) {
+      showToast(`Delete failed: ${err.message}`, 'error');
+    }
   }
 }
 

@@ -335,6 +335,27 @@ async def handle_clear_stale_nodes(request: web.Request) -> web.Response:
 
 
 # ---------------------------------------------------------------------------
+# Route: DELETE /api/node/{node_id}
+# ---------------------------------------------------------------------------
+
+async def handle_delete_node(request: web.Request) -> web.Response:
+    """Remove a single node from the persistent store by its hex ID."""
+    conn: MeshtasticConnection = request.app["connection"]
+    node_id = request.match_info.get("node_id", "")
+    if not node_id:
+        return _error_response("node_id is required", status=400)
+    _apply_access_key(request)
+    try:
+        deleted = await conn.delete_node(node_id)
+        if not deleted:
+            return _error_response("Node not found", status=404)
+        return _json_response({"deleted": node_id})
+    except Exception as exc:
+        logger.error("Error deleting node %s: %s", node_id, exc)
+        return _error_response("Failed to delete node")
+
+
+# ---------------------------------------------------------------------------
 # Route: GET /api/messages
 # ---------------------------------------------------------------------------
 

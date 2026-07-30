@@ -374,6 +374,20 @@ class MeshtasticConnection:
             logger.debug("Cleared %s stale (cached) nodes from the store", removed)
         return removed
 
+    async def delete_node(self, node_id: str) -> bool:
+        """Remove a single node from the store by ID. Returns True if found and removed."""
+        return await asyncio.to_thread(self._delete_node_sync, node_id)
+
+    def _delete_node_sync(self, node_id: str) -> bool:
+        with self._nodes_lock:
+            before = len(self._nodes)
+            self._nodes = [n for n in self._nodes if n.get("id") != node_id]
+            removed = before - len(self._nodes)
+        if removed:
+            self._save_nodes()
+            logger.debug("Removed node %s from the store", node_id)
+        return removed > 0
+
     async def get_channels(self) -> List[Dict[str, Any]]:
         """Return the channel configuration from the connected node."""
         return await asyncio.to_thread(self._get_channels_sync)

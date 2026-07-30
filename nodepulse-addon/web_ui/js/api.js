@@ -175,6 +175,13 @@ export async function fetchSnifferStats() {
   return _apiFetch('/sniffer/stats');
 }
 
+/** Delete a single node from the persistent store by hex ID. */
+export async function deleteNode(nodeId) {
+  return _apiFetch(`/node/${encodeURIComponent(nodeId)}`, {
+    method: 'DELETE',
+  });
+}
+
 /** Fetch all active (non-expired) waypoints from the server. */
 export async function fetchWaypoints() {
   return _apiFetch('/waypoints');

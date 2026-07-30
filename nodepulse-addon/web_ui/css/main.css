@@ -940,6 +940,15 @@ body::before {
   border-color: var(--border-accent);
   color: var(--text-teal);
 }
+.action-btn-danger {
+  color: #ff6b6b;
+  border-color: rgba(255, 60, 60, 0.3);
+}
+.action-btn-danger:hover {
+  background: rgba(255, 60, 60, 0.12);
+  border-color: rgba(255, 60, 60, 0.5);
+  color: #ff4444;
+}
 
 .node-card-traceroute {
   margin-top: var(--space-sm);
