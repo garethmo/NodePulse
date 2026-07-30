@@ -628,7 +628,7 @@ function selectConversation(key) {
   syncChannelSelect();
 
   renderConversationTabs();
-  renderMessageList();
+  renderMessagesThread();
   updateMessagesBadge();
 }
 
@@ -705,102 +705,11 @@ function storeMessage(msg, { skipUnread } = {}) {
   }
 }
 
-function renderMessageList() {
-  const list = document.getElementById('message-list');
-  if (!list) return;
-
-  const thread = (state.messagesByConv[state.activeConversation] || []);
-
-  // Apply the message search filter.
-  const q = state.messageFilter.trim().toLowerCase();
-  const filtered = q
-    ? thread.filter(m =>
-        (m.text || '').toLowerCase().includes(q) ||
-        (m.from_name || '').toLowerCase().includes(q)
-      )
-    : thread;
-
-  // Compute a fingerprint of the thread — IDs + status strings — so we skip
-  // the full DOM rebuild when nothing changed. This prevents the scroll-jump-
-  // to-bottom on every 15s poll when no new messages arrived.
-  const fingerprint = state.activeConversation + '|' + q + '|' + filtered.map(m =>
-    `${m.id}:${m.ack_status || m.status || ''}:${m.text}`
-  ).join('|');
-  if (list.dataset.fingerprint === fingerprint && list.innerHTML !== '') return;
-  list.dataset.fingerprint = fingerprint;
-
-  list.innerHTML = '';
-
-  if (filtered.length === 0) {
-    list.innerHTML = q
-      ? `<div class="message-empty">No messages match "${escapeHtml(q)}".</div>`
-      : `<div class="message-empty">No messages yet in this conversation.</div>`;
-    return;
-  }
-
-  for (const msg of filtered) {
-    const bubble = document.createElement('div');
-    const type = msg.outgoing ? 'outgoing' : 'incoming';
-    bubble.className = `message-bubble ${type}`;
-    const time = formatMessageTime(msg.timestamp);
-
-    // Delivery / ACK status indicator. Uses server ack_status field if present,
-    // falling back to the optimistic local status field.
-    let statusHtml = '';
-    if (msg.outgoing) {
-      const ack = msg.ack_status || msg.status;
-      if (ack === 'sending') {
-        statusHtml = `<span class="msg-status ack-sending" title="Waiting for delivery confirmation">⏳</span>`;
-      } else if (ack === 'delivered' || ack === 'sent') {
-        const label = msg.is_dm ? 'Delivered (ACK received)' : 'Sent to mesh';
-        statusHtml = `<span class="msg-status ack-delivered" title="${label}">✅</span>`;
-      } else if (ack === 'failed') {
-        statusHtml = `<span class="msg-status ack-failed" title="Delivery failed — click to retry">❌</span>`;
-        bubble.classList.add('failed');
-      }
-    }
-
-    // Channel indicator - show channel name for DMs to indicate which channel was used
-    let channelHtml = '';
-    const conv = conversationForKey(state.activeConversation);
-    if (conv.kind === 'dm' && msg.channel != null) {
-      const ch = parseInt(msg.channel, 10) || 0;
-      const cfg = (state.channels || []).find(c => c && c.index === ch);
-      const chName = cfg && cfg.name ? cfg.name : (ch === 0 ? 'Primary' : `Ch ${ch}`);
-      channelHtml = `<span class="message-channel" title="Sent on channel ${ch}">${escapeHtml(chName)}</span>`;
-    }
-
-    const sender = msg.outgoing
-      ? 'Me'
-      : (shortNameFor(msg.from_id) || msg.from_name || nodeName(msg.from_id) || 'Unknown');
-    bubble.innerHTML = `
-      ${msg.outgoing ? '' : `<div class="message-sender">${escapeHtml(sender)}</div>`}
-      <div class="message-text">${escapeHtml(msg.text)}</div>
-      <div class="message-meta">
-        <span class="message-time">${time}</span>${channelHtml}${statusHtml}
-      </div>`;
-
-    // Click a failed message to retry sending it.
-    if (msg.outgoing && msg.status === 'failed') {
-      bubble.style.cursor = 'pointer';
-      bubble.addEventListener('click', () => retryMessage(msg));
-    }
-    list.appendChild(bubble);
-  }
-  // Only auto-scroll to bottom when the list was empty before (new messages),
-  // or when the user was already at the bottom. Otherwise preserve scroll
-  // position so the user can read history without being yanked down.
-  const wasAtBottom =
-    list.scrollHeight - list.scrollTop - list.clientHeight < 40;
-  if (wasAtBottom) {
-    list.scrollTop = list.scrollHeight;
-  }
-}
 
 // Retry a previously-failed outgoing message.
 async function retryMessage(msg) {
   msg.status = 'sending';
-  if (state.activeConversation === msg.conversation) renderMessageList();
+  if (state.activeConversation === msg.conversation) renderMessagesThread();
   try {
     await sendMessage(msg.text, msg.destination ?? null, msg.channel ?? 0);
     msg.status = 'sent';
@@ -808,7 +717,7 @@ async function retryMessage(msg) {
     msg.status = 'failed';
     showToast(`Send failed: ${err.message}`, 'error');
   }
-  if (state.activeConversation === msg.conversation) renderMessageList();
+  if (state.activeConversation === msg.conversation) renderMessagesThread();
 }
 
 // Switch the active conversation to a node's DM thread (used when the user
@@ -850,7 +759,7 @@ async function handleSend() {
     channel,
   };
   storeMessage(optimistic);
-  renderMessageList();
+  renderMessagesThread();
   input.value = '';
   _autoSizeInput(input);
 
@@ -863,7 +772,7 @@ async function handleSend() {
   }
   // Re-render so the status indicator (tick / cross) updates.
   if (state.activeConversation === optimistic.conversation) {
-    renderMessageList();
+    renderMessagesThread();
   }
 }
 
@@ -1016,24 +925,55 @@ function renderMessagesThread() {
 
   const thread = (state.messagesByConv[state.activeConversation] || []);
 
+  if (!state.convHistoryDays) state.convHistoryDays = {};
+  const daysToShow = state.convHistoryDays[state.activeConversation] || 0;
+  
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000;
+  const cutoffTime = startOfToday - (daysToShow * 86400);
+
   const q = state.messageFilter.trim().toLowerCase();
-  const filtered = q
-    ? thread.filter(m =>
-        (m.text || '').toLowerCase().includes(q) ||
-        (m.from_name || '').toLowerCase().includes(q)
-      )
-    : thread;
+  
+  let filtered = thread;
+  let hasMore = false;
+  
+  if (q) {
+    filtered = thread.filter(m =>
+      (m.text || '').toLowerCase().includes(q) ||
+      (m.from_name || '').toLowerCase().includes(q)
+    );
+  } else {
+    const allLen = thread.length;
+    filtered = thread.filter(m => (m.timestamp || (Date.now() / 1000)) >= cutoffTime);
+    hasMore = filtered.length < allLen;
+  }
+
+  const convChanged = list.dataset.lastConv !== state.activeConversation;
+  list.dataset.lastConv = state.activeConversation;
+  const wasAtBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
+  const shouldScroll = wasAtBottom || convChanged;
 
   list.innerHTML = '';
 
+  if (hasMore) {
+    const loadMoreBtn = document.createElement('button');
+    loadMoreBtn.className = 'messages-load-more';
+    loadMoreBtn.textContent = 'Load previous days';
+    loadMoreBtn.onclick = () => {
+      state.convHistoryDays[state.activeConversation] = daysToShow + 1;
+      renderMessagesThread();
+    };
+    list.appendChild(loadMoreBtn);
+  }
+
   if (filtered.length === 0) {
-    list.innerHTML = `
+    list.insertAdjacentHTML('beforeend', `
       <div class="messages-thread-empty">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
         </svg>
-        <div>${q ? `No messages match "${escapeHtml(q)}".` : 'No messages yet.'}</div>
-      </div>`;
+        <div>${q ? `No messages match "${escapeHtml(q)}".` : (hasMore ? 'No messages for this period.' : 'No messages yet.')}</div>
+      </div>`);
     return;
   }
 
@@ -1103,9 +1043,10 @@ function renderMessagesThread() {
     list.appendChild(bubble);
   }
 
-  const wasAtBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
-  if (wasAtBottom) {
-    list.scrollTop = list.scrollHeight;
+  if (shouldScroll) {
+    requestAnimationFrame(() => {
+      list.scrollTop = list.scrollHeight;
+    });
   }
 }
 
@@ -1533,7 +1474,7 @@ function renderIncomingMessages(messages) {
 
   if (changed) {
     renderConversationTabs();
-    renderMessageList();
+    renderMessagesThread();
     renderMessagesSidebar();
     renderMessagesThread();
     updateMessagesBadge();
@@ -1670,7 +1611,7 @@ async function init() {
   if (msgSearch) {
     msgSearch.addEventListener('input', (e) => {
       state.messageFilter = e.target.value;
-      renderMessageList();
+      renderMessagesThread();
     });
   }
 
@@ -1904,6 +1845,8 @@ async function init() {
   document.getElementById('pkt-clear')?.addEventListener('click', () => { state.packetLog=[]; state.packetFilters={}; renderPacketTable(); });
   document.getElementById('pkt-export-json')?.addEventListener('click', exportPacketsJSON);
   document.getElementById('pkt-export-csv')?.addEventListener('click', exportPacketsCSV);
+  document.getElementById('messages-export-json')?.addEventListener('click', exportMessagesJSON);
+  document.getElementById('messages-export-csv')?.addEventListener('click', exportMessagesCSV);
   const snifferToggle = document.getElementById('sniffer-toggle');
   const snifferPanel  = document.getElementById('sniffer-panel');
   if (snifferToggle && snifferPanel) snifferToggle.addEventListener('click', () => snifferPanel.classList.toggle('hidden'));
@@ -2210,6 +2153,18 @@ function exportPacketsCSV() {
   const blob = new Blob([csv],{type:'text/csv'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a'); a.href=url; a.download='nodepulse_packets.csv'; a.click(); URL.revokeObjectURL(url);
+}
+
+function exportMessagesJSON() {
+  const conv = state.activeConversation || 'ch:0';
+  const url = `./api/messages/export?format=json&conversation=${encodeURIComponent(conv)}`;
+  const a = document.createElement('a'); a.href = url; a.click();
+}
+
+function exportMessagesCSV() {
+  const conv = state.activeConversation || 'ch:0';
+  const url = `./api/messages/export?format=csv&conversation=${encodeURIComponent(conv)}`;
+  const a = document.createElement('a'); a.href = url; a.click();
 }
 
 async function pollPackets() {

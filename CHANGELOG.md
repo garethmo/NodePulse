@@ -2,6 +2,20 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.3.0] - 2026-07-30
+### Added
+- **Message History Export (JSON/CSV)** — Download full or per-conversation message history directly as JSON or formatted CSV from the Web UI thread header or via the `GET /api/messages/export` REST API.
+- **Lazy-Loaded Message History UI** — Default view now loads only today's messages with a "Load previous days" pagination trigger to eliminate scroll stutter and heavy DOM loads for long-running threads.
+- **Browser Notifications & Packet Inspector** — Updated feature parity comparison and unique advantages documentation reflecting full real-time packet inspection, LoRa sniffer stats, and Web UI notifications.
+
+### Changed
+- **Scroll Positioning Refactor** — Implemented intelligent pre-render scroll calculation (`list.dataset.lastConv`) in `renderMessagesThread` to automatically scroll to bottom on new messages or conversation switches while preserving scroll position when loading historical days.
+- **Dead Code Cleanup** — Removed legacy `renderMessageList` duplicate function to streamline message thread rendering.
+
+### Documentation
+- Updated `feature_comparison.md` to reflect 1.3.0 capabilities (Packet Inspector, Sniffer, Browser Notifications, Docker Standalone, Signal Quality Rating, CSV/JSON Message Exports).
+- Published comprehensive 4-phase development roadmap in `nodepulse_gap_resolution_plan.md`.
+
 ## [1.2.1] - 2026-07-29
 ### Added
 - **PWA support** — Added missing `apple-mobile-web-app` meta tags and a proper viewport configuration to prevent iOS/Android zooming when tapping input fields.

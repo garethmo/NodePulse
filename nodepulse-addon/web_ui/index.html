@@ -392,7 +392,16 @@
                   <span id="messages-thread-subtitle" class="messages-thread-subtitle"></span>
                 </div>
               </div>
-              <div class="messages-thread-actions"></div>
+              <div class="messages-thread-actions">
+                <button id="messages-export-json" class="msg-export-btn" title="Export conversation as JSON" type="button">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                  JSON
+                </button>
+                <button id="messages-export-csv" class="msg-export-btn" title="Export conversation as CSV" type="button">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                  CSV
+                </button>
+              </div>
             </div>
 
             <div id="messages-thread-list" class="messages-thread-list" role="log" aria-live="polite"></div>
@@ -548,7 +557,7 @@
           <div class="settings-group-title">About</div>
           <div class="settings-row">
             <span class="settings-row-label">NodePulse Version</span>
-            <span class="settings-row-value">1.2.1</span>
+            <span class="settings-row-value">1.3.0</span>
           </div>
           <div class="settings-row">
             <span class="settings-row-label">UI Poll Interval</span>

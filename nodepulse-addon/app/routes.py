@@ -9,6 +9,7 @@ here — that belongs in connection.py.
 All responses use JSON. Error responses always include a human-readable
 "error" key so clients can display a meaningful message.
 """
+import datetime
 import json
 import logging
 import os
@@ -352,6 +353,80 @@ async def handle_messages(request: web.Request) -> web.Response:
     except Exception as exc:
         logger.error("Error fetching messages: %s", exc)
         return _error_response("Failed to retrieve messages")
+
+
+# ---------------------------------------------------------------------------
+# Route: GET /api/messages/export
+# ---------------------------------------------------------------------------
+
+async def handle_export_messages(request: web.Request) -> web.Response:
+    """
+    Export message history as downloadable JSON or CSV file.
+
+    Query params:
+      - format: 'json' or 'csv' (default: 'json')
+      - conversation: optional conversation key (e.g. 'ch:0', 'dm:!12345678')
+    """
+    conn: MeshtasticConnection = request.app["connection"]
+    fmt = request.query.get("format", "json").lower().strip()
+    conv_filter = request.query.get("conversation", "").strip()
+
+    try:
+        messages = await conn.get_messages()
+        if conv_filter:
+            messages = [m for m in messages if m.get("conversation") == conv_filter]
+
+        now_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
+
+        if fmt == "csv":
+            import csv
+            import io
+
+            output = io.StringIO()
+            writer = csv.writer(output)
+            writer.writerow([
+                "id", "timestamp", "datetime", "from_id", "from_name",
+                "conversation", "outgoing", "channel", "ack_status", "text"
+            ])
+
+            for m in messages:
+                ts = m.get("timestamp") or 0
+                dt_str = datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).isoformat() if ts else ""
+                writer.writerow([
+                    m.get("id", ""),
+                    ts,
+                    dt_str,
+                    m.get("from_id", ""),
+                    m.get("from_name", ""),
+                    m.get("conversation", ""),
+                    m.get("outgoing", False),
+                    m.get("channel", ""),
+                    m.get("ack_status") or m.get("status") or "",
+                    m.get("text", ""),
+                ])
+
+            filename = f"nodepulse_messages_{now_str}.csv"
+            return web.Response(
+                body=output.getvalue().encode("utf-8"),
+                content_type="text/csv",
+                headers={
+                    "Content-Disposition": f'attachment; filename="{filename}"'
+                },
+            )
+
+        # Default: JSON
+        filename = f"nodepulse_messages_{now_str}.json"
+        body_str = json.dumps(messages, indent=2)
+        return web.Response(
+            body=body_str.encode("utf-8"),
+            content_type="application/json",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"'
+            },
+        )
+    except Exception as exc:
+        logger.error("Error exporting messages: %s", exc)
+        return _error_response("Failed to export messages")
 
 
 # ---------------------------------------------------------------------------
