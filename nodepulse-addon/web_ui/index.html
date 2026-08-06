@@ -599,6 +599,27 @@
           </div>
         </div>
 
+        <!-- ── MQTT Bridge ── -->
+        <div class="settings-group">
+          <div class="settings-group-title">MQTT Bridge</div>
+          <div class="settings-row">
+            <span class="settings-row-label">Forward to Radio</span>
+            <span class="settings-row-value" id="settings-mqtt-forwarding">—</span>
+          </div>
+          <div class="settings-row">
+            <span class="settings-row-label">Broker Address</span>
+            <span class="settings-row-value" id="settings-mqtt-address">—</span>
+          </div>
+          <div class="settings-row">
+            <span class="settings-row-label">Topic</span>
+            <span class="settings-row-value" id="settings-mqtt-topic">—</span>
+          </div>
+          <div class="settings-row">
+            <span class="settings-row-label">Geo Filter</span>
+            <span class="settings-row-value" id="settings-mqtt-geo">—</span>
+          </div>
+        </div>
+
         <!-- ── Schedule & Logging ── -->
         <div class="settings-group">
           <div class="settings-group-title">Schedule &amp; Logging</div>
@@ -617,7 +638,7 @@
           <div class="settings-group-title">About</div>
           <div class="settings-row">
             <span class="settings-row-label">NodePulse Version</span>
-            <span class="settings-row-value">1.4.0</span>
+            <span class="settings-row-value" id="settings-version">—</span>
           </div>
           <div class="settings-row">
             <span class="settings-row-label">UI Poll Interval</span>

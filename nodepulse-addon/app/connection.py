@@ -432,6 +432,10 @@ class MeshtasticConnection:
         """
         return await asyncio.to_thread(self._send_message_sync, text, destination, channel)
 
+    async def send_mqtt_proxy_message(self, topic: str, data: bytes) -> bool:
+        """Forward an MQTT payload to the local node's radio interface."""
+        return await asyncio.to_thread(self._send_mqtt_proxy_message_sync, topic, data)
+
     async def request_traceroute(self, destination: str) -> bool:
         """Request a traceroute towards a specific destination node.
 
@@ -2254,7 +2258,24 @@ class MeshtasticConnection:
             )
             return False
 
-    def _request_traceroute_sync(self, destination: str) -> bool:
+    def _send_mqtt_proxy_message_sync(self, topic: str, data: bytes) -> bool:
+        # Snapshot the interface under the lock, then release it before the
+        # blocking socket write — holding _lock during sendMqttClientProxyMessage
+        # would stall the health probe, get_nodes, and all API polls for the
+        # duration of the TCP write. Same pattern as _request_traceroute_sync.
+        with self._lock:
+            if not self._interface or not self._connected:
+                return False
+            iface = self._interface
+
+        try:
+            iface.sendMqttClientProxyMessage(topic, data)
+            return True
+        except Exception as exc:
+            logger.error("Failed to send MQTT proxy message to radio: %s", exc)
+            return False
+
+    def _request_traceroute_sync(self, destination: str) -> None:
         # Take a snapshot of the interface under the lock, then release it
         # BEFORE calling sendTraceRoute. sendTraceRoute blocks internally
         # waiting for the firmware RouteDiscovery ack (can take 30 s+);

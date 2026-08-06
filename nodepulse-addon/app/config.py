@@ -6,6 +6,7 @@ This module reads the Home Assistant addon options from the standard
 Centralizing config access here keeps all other modules free of file I/O
 and makes testing easier (just mock this module).
 """
+import dataclasses
 import json
 import logging
 import os
@@ -62,6 +63,22 @@ class Config:
     # injection doesn't work correctly). Default is True to work around token
     # mismatch issues in some environments.
     disable_token_validation: bool = True
+    
+    # MQTT Bridge Settings
+    mqtt_enabled: bool = False
+    mqtt_address: str = "mqtt.meshtastic.org"
+    mqtt_port: int = 1883
+    mqtt_username: str = ""
+    mqtt_password: str = ""
+    mqtt_topic: str = "msh/+"
+    mqtt_geo_filter_enabled: bool = False
+    mqtt_lat_min: float = 0.0
+    mqtt_lat_max: float = 0.0
+    mqtt_lng_min: float = 0.0
+    mqtt_lng_max: float = 0.0
+    mqtt_portnum_allowlist: List[str] = field(default_factory=list)
+    mqtt_node_blocklist: List[str] = field(default_factory=list)
+    mqtt_forwarding_enabled: bool = False
 
 
 def load_config() -> Config:
@@ -106,7 +123,40 @@ def load_config() -> Config:
         ignored_nodes=[n for n in raw.get("ignored_nodes", []) if n],
         ha_base_url=(raw.get("ha_base_url") or "http://homeassistant:8123").rstrip("/"),
         disable_token_validation=bool(raw.get("disable_token_validation", False)),
+        mqtt_enabled=bool(raw.get("mqtt_enabled", False)),
+        mqtt_address=raw.get("mqtt_address", "mqtt.meshtastic.org"),
+        mqtt_port=int(raw.get("mqtt_port", 1883)),
+        mqtt_username=raw.get("mqtt_username", ""),
+        mqtt_password=raw.get("mqtt_password", ""),
+        mqtt_topic=raw.get("mqtt_topic", "msh/+"),
+        mqtt_geo_filter_enabled=bool(raw.get("mqtt_geo_filter_enabled", False)),
+        mqtt_lat_min=float(raw.get("mqtt_lat_min", 0.0)),
+        mqtt_lat_max=float(raw.get("mqtt_lat_max", 0.0)),
+        mqtt_lng_min=float(raw.get("mqtt_lng_min", 0.0)),
+        mqtt_lng_max=float(raw.get("mqtt_lng_max", 0.0)),
+        mqtt_portnum_allowlist=[s for s in raw.get("mqtt_portnum_allowlist", []) if s],
+        mqtt_node_blocklist=[s for s in raw.get("mqtt_node_blocklist", []) if s],
+        mqtt_forwarding_enabled=bool(raw.get("mqtt_forwarding_enabled", False)),
     )
+
+    # Validate geo-filter bounds at load time so misconfigurations surface
+    # immediately with a clear warning rather than silently dropping all packets.
+    if config.mqtt_geo_filter_enabled:
+        bounds_invalid = (
+            config.mqtt_lat_min >= config.mqtt_lat_max
+            or config.mqtt_lng_min >= config.mqtt_lng_max
+        )
+        if bounds_invalid:
+            logger.warning(
+                "mqtt_geo_filter_enabled is True but bounding box is invalid "
+                "(lat %s..%s, lng %s..%s) — geo filter will be DISABLED. "
+                "Set distinct lat_min < lat_max and lng_min < lng_max.",
+                config.mqtt_lat_min, config.mqtt_lat_max,
+                config.mqtt_lng_min, config.mqtt_lng_max,
+            )
+            config = dataclasses.replace(config, mqtt_geo_filter_enabled=False)
+
+    return config
 
 
 def resolve_target(config: "Config") -> tuple[str, int, str]:

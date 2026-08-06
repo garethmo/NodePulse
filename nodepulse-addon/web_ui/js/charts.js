@@ -63,6 +63,7 @@ function _makeDataset(label, color, data) {
     pointHoverRadius: 4,
     tension: 0.4,
     fill: true,
+    spanGaps: true,
   };
 }
 
@@ -73,14 +74,6 @@ function _rollingPush(arr, value, max) {
 
 export class ChartManager {
   constructor() {
-    this._snrData    = [];
-    this._rssiData   = [];
-    this._countData  = [];
-    this._labels     = [];
-    this._chanUtilData = [];
-    this._airUtilData  = [];
-    this._utilLabels    = [];
-
     this._charts = {};
   }
 
@@ -89,7 +82,7 @@ export class ChartManager {
       document.getElementById('chart-snr'),
       {
         type: 'line',
-        data: { labels: this._labels, datasets: [_makeDataset('SNR (dB)', CHART_COLOR_TEAL, this._snrData)] },
+        data: { labels: [], datasets: [_makeDataset('SNR (dB)', CHART_COLOR_TEAL, [])] },
         options: {
           ...SHARED_DEFAULTS,
           scales: { ...SHARED_DEFAULTS.scales, y: { ...SHARED_DEFAULTS.scales.y, title: { display: true, text: 'SNR (dB)', color: '#4a5568', font: { size: 10 } } } },
@@ -101,7 +94,7 @@ export class ChartManager {
       document.getElementById('chart-rssi'),
       {
         type: 'line',
-        data: { labels: this._labels, datasets: [_makeDataset('RSSI (dBm)', CHART_COLOR_BLUE, this._rssiData)] },
+        data: { labels: [], datasets: [_makeDataset('RSSI (dBm)', CHART_COLOR_BLUE, [])] },
         options: {
           ...SHARED_DEFAULTS,
           scales: { ...SHARED_DEFAULTS.scales, y: { ...SHARED_DEFAULTS.scales.y, title: { display: true, text: 'RSSI (dBm)', color: '#4a5568', font: { size: 10 } } } },
@@ -113,7 +106,7 @@ export class ChartManager {
       document.getElementById('chart-count'),
       {
         type: 'line',
-        data: { labels: this._labels, datasets: [_makeDataset('Node count', CHART_COLOR_PURPLE, this._countData)] },
+        data: { labels: [], datasets: [_makeDataset('Node count', CHART_COLOR_PURPLE, [])] },
         options: {
           ...SHARED_DEFAULTS,
           scales: { ...SHARED_DEFAULTS.scales, y: { ...SHARED_DEFAULTS.scales.y, min: 0, ticks: { ...SHARED_DEFAULTS.scales.y.ticks, stepSize: 1 }, title: { display: true, text: 'Nodes', color: '#4a5568', font: { size: 10 } } } },
@@ -125,7 +118,7 @@ export class ChartManager {
       document.getElementById('chart-chan-util'),
       {
         type: 'line',
-        data: { labels: this._utilLabels, datasets: [_makeDataset('Chan Util %', CHART_COLOR_ORANGE, this._chanUtilData)] },
+        data: { labels: [], datasets: [_makeDataset('Chan Util %', CHART_COLOR_ORANGE, [])] },
         options: {
           ...SHARED_DEFAULTS,
           scales: { ...SHARED_DEFAULTS.scales, y: { ...SHARED_DEFAULTS.scales.y, min: 0, max: 100, title: { display: true, text: '%', color: '#4a5568', font: { size: 10 } } } },
@@ -137,7 +130,7 @@ export class ChartManager {
       document.getElementById('chart-air-util'),
       {
         type: 'line',
-        data: { labels: this._utilLabels, datasets: [_makeDataset('Air Util %', CHART_COLOR_PINK, this._airUtilData)] },
+        data: { labels: [], datasets: [_makeDataset('Air Util %', CHART_COLOR_PINK, [])] },
         options: {
           ...SHARED_DEFAULTS,
           scales: { ...SHARED_DEFAULTS.scales, y: { ...SHARED_DEFAULTS.scales.y, min: 0, max: 100, title: { display: true, text: '%', color: '#4a5568', font: { size: 10 } } } },
@@ -156,17 +149,20 @@ export class ChartManager {
    * @param {number|null} airUtil  - Airtime utilization % (from self node).
    */
   addPoint(snr, rssi, count, chanUtil, airUtil) {
+    if (!this._charts.snr) return;
     const label = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
-    _rollingPush(this._labels,   label, SHORT_WINDOW);
-    _rollingPush(this._snrData,  snr  ?? null, SHORT_WINDOW);
-    _rollingPush(this._rssiData, rssi ?? null, SHORT_WINDOW);
-    _rollingPush(this._countData, count, SHORT_WINDOW);
+    const updateChart = (chart, val, windowSize) => {
+      if (!chart) return;
+      _rollingPush(chart.data.labels, label, windowSize);
+      _rollingPush(chart.data.datasets[0].data, val ?? null, windowSize);
+      chart.update('none');
+    };
 
-    _rollingPush(this._utilLabels,   label, LONG_WINDOW);
-    _rollingPush(this._chanUtilData, chanUtil ?? null, LONG_WINDOW);
-    _rollingPush(this._airUtilData,  airUtil  ?? null, LONG_WINDOW);
-
-    Object.values(this._charts).forEach(c => c.update('none'));
+    updateChart(this._charts.snr, snr, SHORT_WINDOW);
+    updateChart(this._charts.rssi, rssi, SHORT_WINDOW);
+    updateChart(this._charts.count, count, SHORT_WINDOW);
+    updateChart(this._charts.chanUtil, chanUtil, LONG_WINDOW);
+    updateChart(this._charts.airUtil, airUtil, LONG_WINDOW);
   }
 }

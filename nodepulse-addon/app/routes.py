@@ -283,7 +283,34 @@ async def handle_status(request: web.Request) -> web.Response:
             "ha_base_url": config.ha_base_url,
             "ignored_nodes": list(getattr(config, "ignored_nodes", [])),
             "access_key_set": bool(config.access_key),
+            # MQTT Bridge settings
+            "mqtt_enabled": config.mqtt_enabled,
+            "mqtt_address": config.mqtt_address,
+            "mqtt_port": config.mqtt_port,
+            "mqtt_topic": config.mqtt_topic,
+            "mqtt_forwarding_enabled": config.mqtt_forwarding_enabled,
+            "mqtt_geo_filter_enabled": config.mqtt_geo_filter_enabled,
+            "mqtt_lat_min": config.mqtt_lat_min,
+            "mqtt_lat_max": config.mqtt_lat_max,
+            "mqtt_lng_min": config.mqtt_lng_min,
+            "mqtt_lng_max": config.mqtt_lng_max,
         }
+        # Embed the addon version from config.json so the UI can display it
+        # without hardcoding it in the HTML template.
+        try:
+            import json as _json, os as _os
+            # HA Supervisor mounts config.json one level above the app/ package.
+            _cfg_candidates = [
+                _os.path.join(_os.path.dirname(__file__), "..", "..", "config.json"),
+                "/data/config.json",
+            ]
+            for _p in _cfg_candidates:
+                if _os.path.exists(_p):
+                    with open(_p) as _f:
+                        status["addon_version"] = _json.load(_f).get("version", "")
+                    break
+        except Exception:
+            status["addon_version"] = ""
         return _json_response(status)
     except Exception as exc:
         logger.error("Error fetching status: %s", exc)

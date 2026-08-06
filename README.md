@@ -89,6 +89,7 @@ NodePulse is a Home Assistant addon and custom integration that gives you deep v
 | 🎛️ **Collapsible Map Controls** | Collapse/expand overlay toggle buttons on the map |
 | 🐳 **Standalone Docker** | Run NodePulse completely independently of Home Assistant using the `Dockerfile.standalone` container |
 | 🎚️ **Node Signal Filter** | Filter the nodes grid by signal strength (Excellent, Good, Fair, Poor) using a stable rolling `snr_avg` calculation |
+| ☁️ **MQTT Bridge** | Built-in bidirectional MQTT bridge. Ingests traffic from external brokers with a robust geospatial/portnum/node-ID filter pipeline. Optionally forwards packets to the local radio. Includes Web UI configuration. |
 
 ---
 
@@ -108,6 +109,7 @@ block-beta
     addonLabel["NodePulse Addon\n(Docker Container)"]
     backend["app/main.py\naiohttp :8099"]
     conn["connection.py\nTCP client + reconnect"]
+    mqtt["mqtt_bridge.py\nMQTT Client + Filter"]
     store["nodes.json, messages.json,\ntags.json, position_history.json\npersistent stores"]
     routes["routes.py\nREST API"]
     ui["web_ui/\nDashboard, Map, Topology,\nPackets, Settings"]

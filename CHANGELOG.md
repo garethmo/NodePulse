@@ -1,7 +1,17 @@
 # Changelog
 
 All notable changes to NodePulse are documented here.
+## [1.7.0] - 2026-08-06
+### Added
+- **Advanced MQTT Bridge** — Integrated a robust, bidirectional MQTT bridge allowing ingestion of external mesh traffic directly from brokers (e.g., mqtt.meshtastic.org). Features a multi-stage filtering pipeline including Node-ID blocklist, PortNum allowlist, and a Geospatial bounding box (which caches node positions to block subsequent non-position packets from out-of-bounds nodes).
+- **Outbound MQTT Forwarding** — Optional forwarding of filtered MQTT traffic to the local radio interface via `MqttClientProxyMessage`.
+- **MQTT Settings UI** — Dedicated Web UI settings panel to view the active MQTT bridge configuration, including broker address, topic, geo-filter bounds, and forwarding status.
 
+## [1.6.0] - 2026-08-06
+- Version bump
+
+## [1.5.0] - 2026-08-06
+- Version bump
 ## [1.4.0] - 2026-07-30
 ### Added
 - **Waypoints (Mesh + Local)** — Full waypoint support: capture inbound `WAYPOINT_APP` protobuf packets from the mesh, persist to `waypoints.json`, and display as amber teardrop markers with emoji icons on the map. Locally create waypoints via a floating "📍 Waypoint" panel with name, description, icon, and lat/lng (click-to-fill from map click). Delete waypoints from marker popups. Survives addon restarts.

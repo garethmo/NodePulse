@@ -15,6 +15,7 @@ Shutdown sequence (on SIGTERM from HA Supervisor):
   2. We cancel the monitor Task and cleanly close the Meshtastic interface.
 """
 import asyncio
+import dataclasses
 import logging
 from pathlib import Path
 
@@ -23,6 +24,7 @@ import aiohttp_cors
 
 from .config import load_config, resolve_target
 from .connection import MeshtasticConnection
+from .mqtt_bridge import MqttBridge
 from .routes import (
     handle_channels,
     handle_clear_stale_nodes,
@@ -96,6 +98,9 @@ async def _on_startup(app: web.Application) -> None:
                 logger.debug("ACK expiry sweep error (ignored): %s", exc)
 
     app["ack_expiry_task"] = asyncio.create_task(_run_ack_expiry_loop())
+    
+    # Launch MQTT Bridge
+    await app["mqtt_bridge"].start()
 
 
 async def _on_shutdown(app: web.Application) -> None:
@@ -131,6 +136,10 @@ async def _on_shutdown(app: web.Application) -> None:
         except asyncio.CancelledError:
             pass  # expected on cancel
 
+    mqtt_bridge = app.get("mqtt_bridge")
+    if mqtt_bridge:
+        await mqtt_bridge.stop()
+
     conn: MeshtasticConnection = app["connection"]
     await conn.disconnect()
     logger.debug("NodePulse addon shutdown complete")
@@ -161,6 +170,16 @@ def build_app(config) -> web.Application:
     )
     app["ignored_nodes"] = set(config.ignored_nodes)
     app["config"] = config
+
+    # Initialize the MQTT Bridge.
+    # Pass the Config object directly rather than a plain dict so that
+    # (a) the bridge gets typed access and (b) the password field is not
+    # duplicated into an additional plain-dict in memory.
+    app["mqtt_bridge"] = MqttBridge(
+        config=config,
+        packet_callback=app["connection"]._on_mesh_receive,
+        forward_callback=app["connection"].send_mqtt_proxy_message,
+    )
 
     # Register lifecycle hooks
     app.on_startup.append(_on_startup)

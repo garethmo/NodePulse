@@ -1283,9 +1283,23 @@ async function renderSettings() {
     _setEl('settings-ha-url',    cfg.ha_base_url || '—');
     _setEl('settings-access-key', cfg.access_key_set ? '••••••• (set)' : 'Not set');
 
+    // MQTT Bridge
+    _setEl('settings-mqtt-forwarding', cfg.mqtt_enabled
+      ? (cfg.mqtt_forwarding_enabled ? '✓ Enabled' : 'Ingestion only')
+      : 'Disabled (mqtt_enabled is false)');
+    _setEl('settings-mqtt-address', cfg.mqtt_enabled ? (cfg.mqtt_address || '—') : '—');
+    _setEl('settings-mqtt-topic',   cfg.mqtt_enabled ? (cfg.mqtt_topic   || '—') : '—');
+    const geoStr = cfg.mqtt_geo_filter_enabled
+      ? `Box: ${(cfg.mqtt_lat_min ?? 0).toFixed(2)},${(cfg.mqtt_lng_min ?? 0).toFixed(2)} → ${(cfg.mqtt_lat_max ?? 0).toFixed(2)},${(cfg.mqtt_lng_max ?? 0).toFixed(2)}`
+      : 'Disabled';
+    _setEl('settings-mqtt-geo', geoStr);
+
     // Schedule & Logging
     _setEl('settings-scan-interval', cfg.scan_interval != null ? `${cfg.scan_interval} s` : '—');
     _setEl('settings-log-level',     cfg.log_level || '—');
+
+    // About
+    _setEl('settings-version', status.addon_version || '—');
 
   } catch (err) {
     // Surface the failure instead of hiding it behind "—" placeholders so the
