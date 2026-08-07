@@ -10,6 +10,7 @@ import dataclasses
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -37,6 +38,52 @@ _CONNECTION_TYPES = (CONNECTION_TYPE_DIRECT, CONNECTION_TYPE_PROXY)
 
 # Default TCP port the official Meshtastic HA integration's proxy listens on.
 DEFAULT_PROXY_PORT = 4403
+
+
+def parse_int_list(value, default) -> List[int]:
+    """
+    Parse a list-of-int config option into a clean list of ints.
+
+    The HA addon config UI has a known frontend bug where list-typed options
+    are serialised as a scalar string instead of a JSON list (see
+    home-assistant/addons#4559), which makes Supervisor reject the save with
+    "Invalid list for option". To work around it the schema for
+    telegram_forward_channels uses a plain string, but we still accept the
+    legacy list form so existing installs are unaffected. Accepts:
+      - "0, 1, 2" / "0 1 2"  (comma or whitespace separated)
+      - [0, 1, 2] / [0, "1", None]  (legacy list form, optional nulls skipped)
+      - "" / None  (falls back to default)
+    """
+    if value is None:
+        return list(default)
+    if isinstance(value, str):
+        parts = [p for p in re.split(r"[,\s]+", value.strip()) if p]
+        if not parts:
+            return list(default)
+        try:
+            return [int(p) for p in parts]
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"Invalid telegram_forward_channels value {value!r}: "
+                "expected channel indices like '0, 1, 2'."
+            ) from exc
+    if isinstance(value, (list, tuple)):
+        channels = []
+        for item in value:
+            if item is None or (isinstance(item, str) and not item.strip()):
+                continue
+            try:
+                channels.append(int(item))
+            except (TypeError, ValueError):
+                raise RuntimeError(
+                    f"Invalid telegram_forward_channels entry {item!r}: "
+                    "expected channel indices like 0, 1, 2."
+                )
+        return channels or list(default)
+    raise RuntimeError(
+        f"Invalid telegram_forward_channels value {value!r}: expected a list "
+        "of channel indices or a comma/space separated string like '0, 1, 2'."
+    )
 
 
 @dataclass
@@ -155,7 +202,7 @@ def load_config() -> Config:
         telegram_chat_id=str(raw.get("telegram_chat_id", "")),
         # Support both old single chat_id and new list of authorized chat IDs
         telegram_authorized_chat_ids=[str(x) for x in raw.get("telegram_authorized_chat_ids", []) if x],
-        telegram_forward_channels=raw.get("telegram_forward_channels", [0]),
+        telegram_forward_channels=parse_int_list(raw.get("telegram_forward_channels", [0]), [0]),
         telegram_forward_dms=bool(raw.get("telegram_forward_dms", True)),
         telegram_allow_commands=bool(raw.get("telegram_allow_commands", True)),
         auto_responder_enabled=bool(raw.get("auto_responder_enabled", False)),

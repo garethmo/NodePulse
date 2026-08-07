@@ -7,6 +7,8 @@ Telegram chat, and provides a callback to forward inbound mesh text messages.
 """
 import asyncio
 import logging
+import threading
+import time
 from typing import Optional, Callable, Dict, Any
 
 import aiohttp
@@ -55,6 +57,12 @@ class TelegramBot:
         # meshtastic receive thread) can schedule coroutines safely via
         # call_soon_threadsafe instead of the non-thread-safe create_task().
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        # Map Telegram message_id -> forwarding metadata (channel / DM node)
+        # for every mesh message we relay to Telegram. Replies are routed by
+        # message_id so we never depend on parsing the displayed text (which
+        # Telegram's Markdown rendering can alter). Guarded by _forward_lock.
+        self._forwarded: Dict[int, Dict[str, Any]] = {}
+        self._forward_lock = threading.Lock()
 
     async def start(self) -> None:
         if not self.enabled:
@@ -160,13 +168,44 @@ class TelegramBot:
             
         # Check if this is a native Telegram reply to a forwarded mesh message
         reply_to = message.get("reply_to_message")
-        if reply_to and "text" in reply_to:
-            orig_text = reply_to["text"]
+        if reply_to:
+            reply_id = reply_to.get("message_id")
+            forwarded = None
+            if reply_id is not None:
+                with self._forward_lock:
+                    forwarded = self._forwarded.get(reply_id)
+            if forwarded is not None:
+                # Preferred path: route by message_id — immune to Markdown
+                # rendering altering the replied-to text.
+                if forwarded.get("is_dm"):
+                    dest_id = forwarded.get("node")
+                    if dest_id:
+                        logger.info("Routing Telegram reply as DM to %s", dest_id)
+                        success = await self.send_message_callback(text, destination=dest_id)
+                        if success:
+                            await self._send_text(f"✅ Reply sent as DM to {dest_id}.")
+                        else:
+                            await self._send_text("❌ Failed to send DM.")
+                    else:
+                        await self._send_text("❌ Cannot determine node ID for DM reply.")
+                else:
+                    ch_idx = forwarded.get("channel", 0)
+                    logger.info("Routing Telegram reply to Channel %d", ch_idx)
+                    success = await self.send_message_callback(text, channel=ch_idx)
+                    if success:
+                        await self._send_text(f"✅ Reply sent to Channel {ch_idx}.")
+                    else:
+                        await self._send_text(f"❌ Failed to send to Channel {ch_idx}.")
+                return
+
+            # Fallback: parse the replied-to text (covers messages forwarded
+            # before the message_id tracking existed).
+            orig_text = reply_to.get("text", "")
             if orig_text.startswith("📩"):
                 import re
                 ch_match = re.search(r"\[Ch (\d+)\]", orig_text)
                 id_match = re.search(r"\((![a-fA-F0-9]+)\)", orig_text)
-                
+
                 if "[DM]" in orig_text:
                     if id_match:
                         dest_id = id_match.group(1)
@@ -276,18 +315,28 @@ class TelegramBot:
             logger.error("Error executing Telegram command %s: %s", command, exc)
             await self._send_text("❌ Error executing command.")
 
-    async def _send_text(self, text: str) -> None:
+    async def _send_text(self, text: str) -> Optional[int]:
+        """
+        Send a Telegram text message and return its message_id (or None).
+
+        The message_id is used to route native Telegram replies back to the
+        correct mesh channel / DM node.
+        """
         try:
             # Use the current chat_id (from the incoming message) or fall back
             # to the configured chat_id / first authorized chat.
             target_chat_id = self._current_chat_id or self._default_forward_chat
-            await self._api_call("sendMessage", {
+            result = await self._api_call("sendMessage", {
                 "chat_id": target_chat_id,
                 "text": text,
                 "parse_mode": "Markdown"
             })
+            if result.get("ok"):
+                return result.get("result", {}).get("message_id")
+            return None
         except Exception as exc:
             logger.error("Failed to send Telegram response to chat %s: %s", target_chat_id, exc)
+            return None
 
     def forward_mesh_message(self, entry: Dict[str, Any]) -> None:
         """
@@ -335,6 +384,29 @@ class TelegramBot:
         # to a running asyncio loop; create_task would silently fail or attach
         # to the wrong loop when called from outside the loop thread.
         if not self._task.done():
+            metadata = {
+                "is_dm": is_dm,
+                "channel": channel,
+                "node": from_id,
+            }
             self._loop.call_soon_threadsafe(
-                lambda m=msg: asyncio.ensure_future(self._send_text(m), loop=self._loop)
+                lambda m=msg, meta=metadata: asyncio.ensure_future(
+                    self._send_forward(m, meta), loop=self._loop
+                )
             )
+
+    async def _send_forward(self, msg: str, metadata: Dict[str, Any]) -> None:
+        """Send a forwarded mesh message and record its message_id so native
+        Telegram replies can be routed back to the originating channel/node."""
+        message_id = await self._send_text(msg)
+        if not message_id:
+            return
+        with self._forward_lock:
+            self._forwarded[message_id] = dict(metadata, ts=time.time())
+            # Cap the map so it can't grow unbounded over a long uptime.
+            if len(self._forwarded) > 500:
+                cutoff = time.time() - 24 * 3600
+                self._forwarded = {
+                    mid: meta for mid, meta in self._forwarded.items()
+                    if meta.get("ts", 0) >= cutoff
+                }

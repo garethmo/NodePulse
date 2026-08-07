@@ -375,7 +375,7 @@ Set these options in the NodePulse addon configuration (HA UI → NodePulse → 
 | `telegram_enabled` | bool | `false` | Enable the Telegram Bot integration |
 | `telegram_bot_token` | string | _(empty)_ | Your BotFather-issued bot token |
 | `telegram_chat_id` | string | _(empty)_ | Numeric ID of the authorized chat or group |
-| `telegram_forward_channels` | list of int | `[0]` | Mesh channel indices whose messages are relayed to Telegram |
+| `telegram_forward_channels` | string | `0` | Mesh channel indices whose messages are relayed to Telegram. Comma or space separated, e.g. `0, 1, 2` |
 | `telegram_forward_dms` | bool | `true` | Whether inbound mesh DMs are also relayed to Telegram |
 | `telegram_allow_commands` | bool | `true` | Allow sending commands from Telegram back to the mesh |
 

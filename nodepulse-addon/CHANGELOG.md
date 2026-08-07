@@ -2,6 +2,14 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.9.2] - 2026-08-07
+### Fixed
+- **Telegram reply routing** — Replies to forwarded mesh messages are now routed by the forwarded message's Telegram `message_id` (tracked at relay time), so they reliably return to the originating channel/DM node instead of the default channel. Text parsing kept as fallback for older messages.
+
+## [1.9.1] - 2026-08-07
+### Fixed
+- **Telegram relay channels config** — `telegram_forward_channels` is now a string field in the addon config UI (e.g. `0, 1, 2`) to work around the HA frontend list serialisation bug that produced "Invalid list for option 'telegram_forward_channels'" on save. Legacy list values are still accepted by `app/config.py`.
+
 ## [1.8.0] - 2026-08-06
 ### Added
 - **Telegram Bot Integration** — Bidirectional Telegram bridge (`app/telegram_bot.py`) using the existing `aiohttp` stack. Inbound mesh text messages are relayed to an authorized Telegram chat; commands from Telegram (`/status`, `/nodes`, `/send`, `/dm`, `/help`) are executed against the live radio.

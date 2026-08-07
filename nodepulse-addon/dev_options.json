@@ -12,7 +12,7 @@
   "telegram_enabled": false,
   "telegram_bot_token": "",
   "telegram_chat_id": "",
-  "telegram_forward_channels": [0],
+  "telegram_forward_channels": [0, 1, 2, 3],
   "telegram_forward_dms": true,
   "telegram_allow_commands": true
 }

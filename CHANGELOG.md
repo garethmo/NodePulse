@@ -1,6 +1,14 @@
 # Changelog
 
 All notable changes to NodePulse are documented here.
+## [1.9.2] - 2026-08-07
+### Fixed
+- **Telegram reply routing** — Replying to a forwarded mesh message in Telegram now reliably routes back to the channel or node the message originated from. Replies are matched by the forwarded message's Telegram `message_id` (tracked when relaying), so routing no longer depends on parsing the displayed text, which Telegram's Markdown rendering could alter and send to the wrong (default) channel. Text-based parsing is kept as a fallback for older messages.
+
+## [1.9.1] - 2026-08-07
+### Fixed
+- **Telegram relay channels config** — `telegram_forward_channels` is now a plain string field in the addon config UI (e.g. `0, 1, 2`) instead of a list. This works around a Home Assistant frontend bug that serialises list-typed options as a scalar string, which Supervisor rejected with "Invalid list for option 'telegram_forward_channels'" and made it impossible to add channels. The legacy list form (e.g. `[0, 1, 2]`) is still accepted.
+
 ## [1.9.0] - 2026-08-07
 ### Added
 - **Auto Responder** — Added a configurable auto-responder that automatically sends a direct message to any newly discovered node on the mesh. You can enable this and set your custom welcome message in the addon Configuration tab.
