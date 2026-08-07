@@ -83,10 +83,15 @@ class Config:
     # Telegram Integration Settings
     telegram_enabled: bool = False
     telegram_bot_token: str = ""
-    telegram_chat_id: str = ""
+    telegram_chat_id: str = ""  # Deprecated: use telegram_authorized_chat_ids
+    telegram_authorized_chat_ids: List[str] = field(default_factory=list)  # List of authorized chat IDs (private and groups)
     telegram_forward_channels: List[int] = field(default_factory=lambda: [0])
     telegram_forward_dms: bool = True
     telegram_allow_commands: bool = True
+
+    # Auto Responder Settings
+    auto_responder_enabled: bool = False
+    auto_responder_message: str = "Welcome to the mesh! You have been discovered by NodePulse."
 
 
 def load_config() -> Config:
@@ -119,7 +124,7 @@ def load_config() -> Config:
             f"Must be one of {_CONNECTION_TYPES}."
         )
 
-    return Config(
+    config = Config(
         log_level=(raw.get("log_level") or "info").upper(),
         connection_type=connection_type,
         meshtastic_host=raw["meshtastic_host"],
@@ -148,9 +153,13 @@ def load_config() -> Config:
         telegram_enabled=bool(raw.get("telegram_enabled", False)),
         telegram_bot_token=raw.get("telegram_bot_token", ""),
         telegram_chat_id=str(raw.get("telegram_chat_id", "")),
+        # Support both old single chat_id and new list of authorized chat IDs
+        telegram_authorized_chat_ids=[str(x) for x in raw.get("telegram_authorized_chat_ids", []) if x],
         telegram_forward_channels=raw.get("telegram_forward_channels", [0]),
         telegram_forward_dms=bool(raw.get("telegram_forward_dms", True)),
         telegram_allow_commands=bool(raw.get("telegram_allow_commands", True)),
+        auto_responder_enabled=bool(raw.get("auto_responder_enabled", False)),
+        auto_responder_message=str(raw.get("auto_responder_message", "Welcome to the mesh! You have been discovered by NodePulse.")),
     )
 
     # Validate geo-filter bounds at load time so misconfigurations surface

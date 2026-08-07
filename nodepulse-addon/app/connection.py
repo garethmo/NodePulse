@@ -21,6 +21,7 @@ import logging
 import os
 import threading
 import time
+import uuid
 from typing import Any, Dict, List, Optional
 
 import meshtastic
@@ -159,11 +160,19 @@ class MeshtasticConnection:
     pool worker via asyncio.to_thread() to keep the event loop unblocked.
     """
 
-    def __init__(self, host: str, port: int, mode: str = "direct", access_key: Optional[str] = None) -> None:
+    def __init__(
+        self, 
+        host: str, 
+        port: int, 
+        mode: str = "direct", 
+        access_key: Optional[str] = None,
+        config: Any = None
+    ) -> None:
         self._host = host
         self._port = port
         self._mode = mode
         self._access_key = (access_key or "").strip() or None
+        self._config = config
 
         # The underlying meshtastic TCP interface — None when disconnected.
         self._interface: Optional[meshtastic.tcp_interface.TCPInterface] = None
@@ -198,11 +207,6 @@ class MeshtasticConnection:
 
         # Restore any previously-persisted messages so history survives restarts.
         self._load_messages()
-
-        # Monotonic message counter for dedup-safe ID generation.
-        # Incremented under _msg_lock alongside the deque append; guaranteed
-        # unique even when two messages arrive on the same millisecond tick.
-        self._msg_counter = 0
 
         # Persisted traceroute results, keyed by node ID. Restored on startup so
         # discovered routes survive restarts; refreshed whenever a new traceroute
@@ -937,8 +941,7 @@ class MeshtasticConnection:
                 "timestamp": int(time.time()),
             }
             with self._msg_lock:
-                entry["id"] = f"{from_id or 'unknown'}-{channel}-{self._msg_counter}"
-                self._msg_counter += 1
+                entry["id"] = f"{from_id or 'unknown'}-{channel}-{uuid.uuid4().hex[:8]}"
                 self._messages.append(entry)
             # Persistence is offloaded to a short-lived daemon thread so we
             # never block the meshtastic receive thread (and never interleave
@@ -2011,6 +2014,23 @@ class MeshtasticConnection:
                     cached[node_id] = entry
                     result.append(entry)
 
+                    # Auto Responder Logic
+                    self_num = getattr(getattr(self._interface, "myInfo", None), "my_node_num", None)
+                    self_id = ("!" + format(self_num, "08x")) if self_num is not None else None
+                    if node_id != self_id and self._config and getattr(self._config, "auto_responder_enabled", False):
+                        msg = getattr(self._config, "auto_responder_message", "")
+                        if msg:
+                            logger.info("Auto-responder triggered: Discovered new node %s", node_id)
+                            # Run in a separate thread to avoid blocking the sync loop
+                            # and to respect lock ordering (cannot acquire _lock while holding _nodes_lock).
+                            import threading
+                            t = threading.Thread(
+                                target=self._send_message_sync,
+                                args=(msg, node_id, 0),
+                                daemon=True
+                            )
+                            t.start()
+
             # Merge persisted traceroute results back onto their nodes so a
             # previously-discovered route is shown even before (or without)
             # a fresh traceroute request this session.
@@ -2242,6 +2262,11 @@ class MeshtasticConnection:
             entry = {
                 "from_id": self_id,
                 "to_id": to_id,
+                # `destination` mirrors what the frontend optimistic message stores so
+                # the client-side echo-dedup in storeMessage() can match the two entries
+                # and suppress the duplicate bubble. Without this field the comparison
+                # `m.destination === msg.destination` always fails (undefined vs string).
+                "destination": to_id,  # None for broadcasts, "!hex" for DMs
                 "from_name": "You",
                 "text": text,
                 "channel": channel,
@@ -2256,17 +2281,16 @@ class MeshtasticConnection:
                 "packet_id": packet_id,
             }
             with self._msg_lock:
-                entry["id"] = f"{self_id or 'unknown'}-{channel}-{self._msg_counter}"
-                self._msg_counter += 1
+                entry["id"] = f"{self_id or 'unknown'}-{channel}-{uuid.uuid4().hex[:8]}"
                 self._messages.append(entry)
             logger.debug(
                 "Message added to store: id=%s, conversation=%s, text=%s, outgoing=%s, timestamp=%s",
                 entry["id"], conversation, text[:50], entry["outgoing"], entry["timestamp"]
             )
-                # Register pending ACK only for DMs with a valid packet ID.
-                if is_dm and packet_id is not None:
-                    self._pending_acks[packet_id] = entry["id"]
-                    self._pending_ack_times[packet_id] = time.time()
+            # Register pending ACK only for DMs with a valid packet ID.
+            if is_dm and packet_id is not None:
+                self._pending_acks[packet_id] = entry["id"]
+                self._pending_ack_times[packet_id] = time.time()
             self._schedule_save(self._messages, _MESSAGES_FILE)
             return True
         except Exception as exc:

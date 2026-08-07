@@ -175,6 +175,7 @@ def build_app(config) -> web.Application:
         port=target_port,
         mode=mode,
         access_key=config.access_key,
+        config=config,
     )
     app["ignored_nodes"] = set(config.ignored_nodes)
     app["config"] = config

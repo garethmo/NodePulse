@@ -1,6 +1,15 @@
 # Changelog
 
 All notable changes to NodePulse are documented here.
+## [1.9.0] - 2026-08-07
+### Added
+- **Auto Responder** — Added a configurable auto-responder that automatically sends a direct message to any newly discovered node on the mesh. You can enable this and set your custom welcome message in the addon Configuration tab.
+
+## [1.8.1] - 2026-08-07
+### Fixed
+- **Telegram Broadcast Syncing** — Plain text messages sent from authorized Telegram chats are now prefixed with the sender's name (e.g. `[Name] Message`) before broadcasting to the mesh. This ensures the messages are visually distinct in the NodePulse Web UI and on receiving mesh radios, rather than appearing as anonymous local broadcasts.
+- **Telegram confirmation** — Added a silent-failure fix where the Telegram bot now replies with a ✅ confirmation when a plain message is successfully forwarded to the mesh.
+
 ## [1.8.0] - 2026-08-06
 ### Added
 - **Telegram Bot Integration** — Bidirectional Telegram Bot bridge using the existing `aiohttp` library (no new dependencies). Inbound mesh text messages are automatically relayed to an authorized Telegram chat with sender name, channel/DM context, and live SNR data. Commands sent from the authorized chat are executed against the live mesh radio.

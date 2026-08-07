@@ -760,13 +760,14 @@ async function handleSend() {
   const conv = conversationForKey(state.activeConversation);
   const destination = conv.kind === 'dm' ? conv.nodeId : null;
   const channel = conv.kind === 'dm' ? 0 : conv.channel;
+  const convKey = state.activeConversation;
 
   // Optimistically render the outgoing message in the active thread.
   const optimistic = {
     id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
     text,
     outgoing: true,
-    conversation: state.activeConversation,
+    conversation: convKey,
     timestamp: Date.now() / 1000,
     from_name: 'Me',
     status: 'sending', // sending -> sent | failed
@@ -781,6 +782,10 @@ async function handleSend() {
   try {
     await sendMessage(text, destination, channel);
     optimistic.status = 'sent';
+    // Register optimistic entry for pending-echo matching (see renderIncomingMessages).
+    const echoKey = `${convKey}:${text}`;
+    state._pendingEchoes = state._pendingEchoes || {};
+    state._pendingEchoes[echoKey] = optimistic;
   } catch (err) {
     optimistic.status = 'failed';
     showToast(`Send failed: ${err.message}`, 'error');
@@ -1073,12 +1078,13 @@ async function handleMessagesSend() {
   const conv = conversationForKey(state.activeConversation || 'ch:0');
   const destination = conv.kind === 'dm' ? conv.nodeId : null;
   const channel = conv.kind === 'dm' ? 0 : conv.channel;
+  const convKey = state.activeConversation || 'ch:0';
 
   const optimistic = {
     id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
     text,
     outgoing: true,
-    conversation: state.activeConversation || 'ch:0',
+    conversation: convKey,
     timestamp: Date.now() / 1000,
     from_name: 'Me',
     status: 'sending',
@@ -1094,6 +1100,12 @@ async function handleMessagesSend() {
   try {
     await sendMessage(text, destination, channel);
     optimistic.status = 'sent';
+    // Register this optimistic entry so renderIncomingMessages can match the
+    // server-side confirmation (which arrives on the next poll, ~15 s later)
+    // and upgrade the existing bubble instead of appending a second one.
+    const echoKey = `${convKey}:${text}`;
+    state._pendingEchoes = state._pendingEchoes || {};
+    state._pendingEchoes[echoKey] = optimistic;
   } catch (err) {
     optimistic.status = 'failed';
     showToast(`Send failed: ${err.message}`, 'error');
@@ -1518,6 +1530,7 @@ function renderIncomingMessages(messages) {
   let changed = false;
 
   const initialBatch = !state._initialBatchComplete;
+  state._pendingEchoes = state._pendingEchoes || {};
 
   for (const msg of messages) {
     if (!msg.id) continue;
@@ -1537,6 +1550,27 @@ function renderIncomingMessages(messages) {
       continue;
     }
 
+    // When a server-confirmed outgoing message arrives, check if we already have
+    // an optimistic local bubble for it. If so, upgrade the optimistic entry
+    // in-place (swap its id and ack_status) rather than appending a second bubble.
+    // This handles the case where the server echo arrives on the next poll
+    // (~15 s later), well outside the 3-second firmware-echo dedup window.
+    if (msg.outgoing) {
+      const echoKey = `${msg.conversation || ''}:${msg.text || ''}`;
+      const pending = state._pendingEchoes[echoKey];
+      if (pending) {
+        // Upgrade the existing optimistic entry to the real server-confirmed one.
+        pending.id = msg.id;
+        pending.ack_status = msg.ack_status || pending.ack_status;
+        pending.ack_at = msg.ack_at ?? pending.ack_at;
+        // Register the real id so future polls can patch ack status on it.
+        state.seenMessageIds.add(msg.id);
+        delete state._pendingEchoes[echoKey];
+        changed = true;
+        continue;
+      }
+    }
+
     state.seenMessageIds.add(msg.id);
     storeMessage(msg, { skipUnread: initialBatch });
     changed = true;
@@ -1548,7 +1582,6 @@ function renderIncomingMessages(messages) {
 
   if (changed) {
     renderConversationTabs();
-    renderMessagesThread();
     renderMessagesSidebar();
     renderMessagesThread();
     updateMessagesBadge();
