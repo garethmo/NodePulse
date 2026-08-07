@@ -196,6 +196,7 @@ def build_app(config) -> web.Application:
         send_message_callback=app["connection"].send_message,
         get_status_callback=app["connection"].get_status,
         get_nodes_callback=app["connection"].get_nodes,
+        get_channels_callback=app["connection"].get_channels,
     )
     # Register the forward_mesh_message callback with the connection
     app["connection"]._telegram_forward_callback = app["telegram_bot"].forward_mesh_message

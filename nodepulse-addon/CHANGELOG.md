@@ -2,6 +2,11 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.9.3] - 2026-08-07
+### Added
+- **Telegram channel selection** — `/send` accepts an optional channel index (`/send 1 <msg>` or `/send #1 <msg>`); bare numeric messages still default to Ch 0.
+- **`/channels` command** — Lists the radio's configured channels with indices, marking which are relayed to Telegram.
+
 ## [1.9.2] - 2026-08-07
 ### Fixed
 - **Telegram reply routing** — Replies to forwarded mesh messages are now routed by the forwarded message's Telegram `message_id` (tracked at relay time), so they reliably return to the originating channel/DM node instead of the default channel. Text parsing kept as fallback for older messages.

@@ -399,7 +399,9 @@ Once the bot is running, send these commands from your authorized Telegram chat:
 | `/help` | List all available commands |
 | `/status` | Show radio connection state, visible node count, and battery level |
 | `/nodes` | List the top 20 nodes by last-heard time, with their SNR |
+| `/channels` | List the radio's configured channels with their indices |
 | `/send <message>` | Broadcast a text message to the primary mesh channel (Ch 0) |
+| `/send <ch> <message>` | Broadcast to a specific channel, e.g. `/send 1 Hello!` (or `/send #1 Hello!`) |
 | `/dm !nodeid <message>` | Send a direct message to a specific node (e.g. `/dm !a1b2c3d4 Hello!`) |
 
 #### Security Notes

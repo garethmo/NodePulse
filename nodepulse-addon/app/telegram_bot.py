@@ -23,6 +23,7 @@ class TelegramBot:
         send_message_callback: Callable,
         get_status_callback: Callable,
         get_nodes_callback: Callable,
+        get_channels_callback: Optional[Callable] = None,
     ):
         self._config = config
         self.enabled = config.telegram_enabled
@@ -48,6 +49,7 @@ class TelegramBot:
         self.send_message_callback = send_message_callback
         self.get_status_callback = get_status_callback
         self.get_nodes_callback = get_nodes_callback
+        self.get_channels_callback = get_channels_callback
         
         self._task: Optional[asyncio.Task] = None
         self._session: Optional[aiohttp.ClientSession] = None
@@ -273,16 +275,51 @@ class TelegramBot:
                     lines.append(f"...and {len(nodes) - 20} more.")
                 await self._send_text("\n".join(lines)[:4000])
                 
+            elif command == "/channels":
+                if self.get_channels_callback is None:
+                    await self._send_text("❌ Channel listing unavailable.")
+                    return
+                channels = await self.get_channels_callback()
+                if not channels:
+                    await self._send_text("No channels found on the node.")
+                    return
+                lines = ["*Configured Channels:*"]
+                for ch in channels:
+                    idx = ch.get("index", "?")
+                    name = ch.get("name", "") or "Unnamed"
+                    role = ch.get("role", "").lower().capitalize()
+                    active = "✓" if idx in self.forward_channels else "—"
+                    lines.append(f"{active} Ch {idx} - {name} ({role})")
+                await self._send_text("\n".join(lines)[:4000])
+
             elif command == "/send":
                 if not args:
-                    await self._send_text("Usage: `/send <message>`")
+                    await self._send_text("Usage: `/send [channel] <message>`")
                     return
-                # Send to channel 0 by default
-                logger.info("Telegram /send command: sending '%s' to channel 0", args[:50])
-                success = await self.send_message_callback(args, channel=0)
+                # Optional channel selector: "/send 1 hello" or "/send #1 hello"
+                # send to channel 1; otherwise fall back to channel 0. A bare
+                # numeric message like "/send 5" is still treated as text so it
+                # goes to the default channel.
+                first, _, rest = args.partition(" ")
+                channel = 0
+                msg = args.strip()
+                if first.startswith("#") and first[1:].isdigit():
+                    channel = int(first[1:])
+                    msg = rest.strip()
+                elif first.isdigit() and rest.strip():
+                    channel = int(first)
+                    msg = rest.strip()
+                if not msg:
+                    await self._send_text(f"Usage: `/send [{channel}] <message>`")
+                    return
+                if channel < 0 or channel > 15:
+                    await self._send_text(f"❌ Invalid channel {channel}. Use 0-15.")
+                    return
+                logger.info("Telegram /send command: sending '%s' to channel %d", msg[:50], channel)
+                success = await self.send_message_callback(msg, channel=channel)
                 if success:
                     logger.info("Telegram /send command: message sent successfully")
-                    await self._send_text("✅ Message sent to mesh.")
+                    await self._send_text(f"✅ Message sent to Channel {channel}.")
                 else:
                     logger.warning("Telegram /send command: message send failed")
                     await self._send_text("❌ Failed to send message.")
@@ -305,7 +342,9 @@ class TelegramBot:
                     "Commands:\n"
                     "`/status` - Radio status\n"
                     "`/nodes` - List top nodes\n"
+                    "`/channels` - List configured channels\n"
                     "`/send <msg>` - Broadcast to primary channel\n"
+                    "`/send <ch> <msg>` or `/send #<ch> <msg>` - Broadcast to a specific channel\n"
                     "`/dm !node <msg>` - Direct message"
                 )
                 
