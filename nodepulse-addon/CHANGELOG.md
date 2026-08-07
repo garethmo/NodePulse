@@ -2,6 +2,13 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.8.0] - 2026-08-06
+### Added
+- **Telegram Bot Integration** — Bidirectional Telegram bridge (`app/telegram_bot.py`) using the existing `aiohttp` stack. Inbound mesh text messages are relayed to an authorized Telegram chat; commands from Telegram (`/status`, `/nodes`, `/send`, `/dm`, `/help`) are executed against the live radio.
+- **`_telegram_forward_callback` hook** — Registered on `MeshtasticConnection` in `main.py` after both objects are created, keeping `connection.py` decoupled from the Telegram module.
+- **Telegram Settings UI** — New panel in the Web UI Settings tab showing enabled state, token presence, chat ID, relay channels, DM relay, and command permission.
+- **Config schema** — Six new options: `telegram_enabled`, `telegram_bot_token`, `telegram_chat_id`, `telegram_forward_channels`, `telegram_forward_dms`, `telegram_allow_commands`.
+
 ## [1.7.0] - 2026-08-06
 ### Added
 - **Advanced MQTT Bridge** — Integrated a robust, bidirectional MQTT bridge allowing ingestion of external mesh traffic directly from brokers (e.g., mqtt.meshtastic.org). Features a multi-stage filtering pipeline including Node-ID blocklist, PortNum allowlist, and a Geospatial bounding box (which caches node positions to block subsequent non-position packets from out-of-bounds nodes).

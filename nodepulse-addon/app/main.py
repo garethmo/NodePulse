@@ -25,6 +25,7 @@ import aiohttp_cors
 from .config import load_config, resolve_target
 from .connection import MeshtasticConnection
 from .mqtt_bridge import MqttBridge
+from .telegram_bot import TelegramBot
 from .routes import (
     handle_channels,
     handle_clear_stale_nodes,
@@ -102,6 +103,9 @@ async def _on_startup(app: web.Application) -> None:
     # Launch MQTT Bridge
     await app["mqtt_bridge"].start()
 
+    # Launch Telegram Bot
+    await app["telegram_bot"].start()
+
 
 async def _on_shutdown(app: web.Application) -> None:
     """
@@ -139,6 +143,10 @@ async def _on_shutdown(app: web.Application) -> None:
     mqtt_bridge = app.get("mqtt_bridge")
     if mqtt_bridge:
         await mqtt_bridge.stop()
+
+    telegram_bot = app.get("telegram_bot")
+    if telegram_bot:
+        await telegram_bot.stop()
 
     conn: MeshtasticConnection = app["connection"]
     await conn.disconnect()
@@ -180,6 +188,16 @@ def build_app(config) -> web.Application:
         packet_callback=app["connection"]._on_mesh_receive,
         forward_callback=app["connection"].send_mqtt_proxy_message,
     )
+    
+    # Initialize the Telegram Bot Integration.
+    app["telegram_bot"] = TelegramBot(
+        config=config,
+        send_message_callback=app["connection"].send_message,
+        get_status_callback=app["connection"].get_status,
+        get_nodes_callback=app["connection"].get_nodes,
+    )
+    # Register the forward_mesh_message callback with the connection
+    app["connection"]._telegram_forward_callback = app["telegram_bot"].forward_mesh_message
 
     # Register lifecycle hooks
     app.on_startup.append(_on_startup)

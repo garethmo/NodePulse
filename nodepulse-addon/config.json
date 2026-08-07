@@ -1,6 +1,6 @@
 {
   "name": "NodePulse",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "slug": "nodepulse",
   "description": "Comprehensive dashboard and integration for monitoring Meshtastic networks directly within Home Assistant",
   "url": "https://github.com/garethmo/NodePulse",
@@ -30,8 +30,8 @@
     "mqtt_enabled": false,
     "mqtt_address": "mqtt.meshtastic.org",
     "mqtt_port": 1883,
-    "mqtt_username": "",
-    "mqtt_password": "",
+    "mqtt_username": "meshdev",
+    "mqtt_password": "large4cats",
     "mqtt_topic": "msh/+",
     "mqtt_geo_filter_enabled": false,
     "mqtt_lat_min": 0.0,
@@ -40,7 +40,13 @@
     "mqtt_lng_max": 0.0,
     "mqtt_portnum_allowlist": [],
     "mqtt_node_blocklist": [],
-    "mqtt_forwarding_enabled": false
+    "mqtt_forwarding_enabled": false,
+    "telegram_enabled": false,
+    "telegram_bot_token": "",
+    "telegram_chat_id": "",
+    "telegram_forward_channels": [0],
+    "telegram_forward_dms": true,
+    "telegram_allow_commands": true
   },
   "schema": {
     "log_level": "list(trace|debug|info|notice|warning|error|fatal)",
@@ -67,7 +73,13 @@
     "mqtt_lng_max": "float?",
     "mqtt_portnum_allowlist": ["str?"],
     "mqtt_node_blocklist": ["str?"],
-    "mqtt_forwarding_enabled": "bool?"
+    "mqtt_forwarding_enabled": "bool?",
+    "telegram_enabled": "bool?",
+    "telegram_bot_token": "str?",
+    "telegram_chat_id": "str?",
+    "telegram_forward_channels": ["int?"],
+    "telegram_forward_dms": "bool?",
+    "telegram_allow_commands": "bool?"
   },
   "map": {},
   "environment": {}

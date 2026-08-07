@@ -90,6 +90,7 @@ NodePulse is a Home Assistant addon and custom integration that gives you deep v
 | 🐳 **Standalone Docker** | Run NodePulse completely independently of Home Assistant using the `Dockerfile.standalone` container |
 | 🎚️ **Node Signal Filter** | Filter the nodes grid by signal strength (Excellent, Good, Fair, Poor) using a stable rolling `snr_avg` calculation |
 | ☁️ **MQTT Bridge** | Built-in bidirectional MQTT bridge. Ingests traffic from external brokers with a robust geospatial/portnum/node-ID filter pipeline. Optionally forwards packets to the local radio. Includes Web UI configuration. |
+| 🤖 **Telegram Bot** | Bidirectional Telegram Bot bridge. Inbound mesh text messages are automatically forwarded to an authorized Telegram chat. Send broadcasts or DMs back to the mesh from Telegram using bot commands. Includes `/status`, `/nodes`, `/send`, and `/dm` commands. Zero extra dependencies — uses the built-in `aiohttp` library. |
 
 ---
 
@@ -304,6 +305,108 @@ The official Meshtastic integration can expose a **TCP Proxy** that owns the nod
 | `ignored_nodes` | list | `[]` | List of node hex IDs to exclude from all API responses |
 | `ha_base_url` | string | _(auto)_ | Override the Home Assistant base URL for track-in-HA relay |
 | `disable_token_validation` | bool | `false` | Skip supervisor token validation (needed for some custom Docker setups) |
+
+### MQTT Bridge Configuration
+
+NodePulse includes an advanced, bidirectional MQTT Bridge capable of ingesting mesh traffic from an external broker (e.g., `mqtt.meshtastic.org`) and acting as a selective firewall to prevent distant public nodes from polluting your local mesh database.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `mqtt_enabled` | bool | `false` | Enable the MQTT Bridge |
+| `mqtt_address` | string | `mqtt.meshtastic.org` | Hostname/IP of the MQTT broker |
+| `mqtt_port` | int | `1883` | TCP port of the broker |
+| `mqtt_username` | string | `meshdev` | Username for authentication (leave empty for anonymous) |
+| `mqtt_password` | string | `large4cats` | Password for authentication |
+| `mqtt_topic` | string | `msh/+` | The topic to subscribe to |
+| `mqtt_forwarding_enabled` | bool | `false` | **⚠️ ADVANCED:** Forward inbound MQTT packets out over your local radio link |
+
+#### MQTT Filtering ("Mesh Firewall")
+
+Because public brokers like `mqtt.meshtastic.org` carry thousands of global nodes, blindly ingesting all traffic will quickly overwhelm both NodePulse and your local radio if forwarding is enabled. NodePulse provides a 3-stage filter pipeline (processed in order of cost):
+
+1. **Node Blocklist (`mqtt_node_blocklist`)**: A list of explicit node IDs (e.g., `!abcd1234`) to permanently ignore.
+2. **PortNum Allowlist (`mqtt_portnum_allowlist`)**: Only packets matching these app types are permitted. For example, setting this to `["TEXT_MESSAGE_APP", "POSITION_APP", "NODEINFO_APP"]` drops all routing, telemetry, and neighbor-info packets. If left empty, all types are allowed.
+3. **Geospatial Bounding Box (`mqtt_geo_filter_enabled`)**: 
+   - Define a geographic fence using `mqtt_lat_min`, `mqtt_lat_max`, `mqtt_lng_min`, and `mqtt_lng_max`.
+   - When a `POSITION_APP` packet arrives, it is dropped if it falls outside the box.
+   - **Crucially**, NodePulse caches this "out-of-bounds" status per node. If a node is out-of-bounds, NodePulse drops *all subsequent packets* (messages, telemetry, etc.) from that node until it moves back inside the box. This prevents distant nodes from bypassing the geo-fence by sending non-position packets.
+
+*(Note: The bounding box must be valid — `lat_min < lat_max` and `lng_min < lng_max` — or the geo-filter will automatically disable itself with a warning).*
+
+---
+
+### Telegram Bot Configuration
+
+NodePulse includes a built-in Telegram Bot that bridges your Meshtastic mesh to a private Telegram chat. When enabled, inbound mesh messages are automatically forwarded to your Telegram chat and you can send messages back to the mesh using bot commands.
+
+> ℹ️ **No extra dependencies required.** The bot uses `aiohttp`, which is already part of NodePulse's existing stack.
+
+#### Step 1 — Create a Bot via BotFather
+
+1. Open Telegram and search for **@BotFather**.
+2. Send `/newbot` and follow the prompts to choose a name and username.
+3. BotFather will reply with your **Bot Token** — it looks like: `7123456789:AAFxxxxxxxx_xxxxxxxxxxxxxxxxxx`.
+4. Copy this token — you'll need it in the addon config.
+
+#### Step 2 — Find Your Chat ID
+
+Your **Chat ID** is the unique numeric identifier of your Telegram account or group that the bot is authorized to talk to.
+
+**For a private chat (recommended):**
+1. Start a conversation with your new bot by searching for its username and clicking **Start**.
+2. Open a browser and visit:
+   ```
+   https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates
+   ```
+3. Send any message to your bot from Telegram, then refresh the page.
+4. Look for `"chat":{"id":XXXXXXXXX}` — that number is your Chat ID.
+
+**For a group chat:**
+1. Add the bot to the group.
+2. Send a message in the group, then use the `getUpdates` URL above.
+3. The group Chat ID will be a **negative** number (e.g. `-1001234567890`).
+
+#### Step 3 — Configure the Addon
+
+Set these options in the NodePulse addon configuration (HA UI → NodePulse → Configuration):
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `telegram_enabled` | bool | `false` | Enable the Telegram Bot integration |
+| `telegram_bot_token` | string | _(empty)_ | Your BotFather-issued bot token |
+| `telegram_chat_id` | string | _(empty)_ | Numeric ID of the authorized chat or group |
+| `telegram_forward_channels` | list of int | `[0]` | Mesh channel indices whose messages are relayed to Telegram |
+| `telegram_forward_dms` | bool | `true` | Whether inbound mesh DMs are also relayed to Telegram |
+| `telegram_allow_commands` | bool | `true` | Allow sending commands from Telegram back to the mesh |
+
+**Minimal working config:**
+```json
+{
+  "telegram_enabled": true,
+  "telegram_bot_token": "7123456789:AAFxxxxxxxx_xxxxxxxxxxxxxxxxxx",
+  "telegram_chat_id": "123456789"
+}
+```
+
+After saving, restart the addon. The Settings tab in the NodePulse Web UI will show **Telegram Bot: ✓ Enabled**.
+
+#### Bot Command Reference
+
+Once the bot is running, send these commands from your authorized Telegram chat:
+
+| Command | Description |
+|---|---|
+| `/help` | List all available commands |
+| `/status` | Show radio connection state, visible node count, and battery level |
+| `/nodes` | List the top 20 nodes by last-heard time, with their SNR |
+| `/send <message>` | Broadcast a text message to the primary mesh channel (Ch 0) |
+| `/dm !nodeid <message>` | Send a direct message to a specific node (e.g. `/dm !a1b2c3d4 Hello!`) |
+
+#### Security Notes
+
+- The bot **only processes messages from the configured `telegram_chat_id`**. Any message from any other chat is silently discarded. This means even if someone finds your bot's username, they cannot send commands to your radio.
+- The `telegram_bot_token` is stored as an addon option. Keep it private and regenerate it with BotFather if it is ever leaked.
+- Outgoing messages from the local node are **not** echoed back to Telegram to prevent relay loops.
 
 ---
 

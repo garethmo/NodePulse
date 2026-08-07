@@ -48,6 +48,12 @@ _OPTIONS_SCHEMA = vol.Schema({
     vol.Optional(CONF_IGNORED_NODES, default=""): str,
 })
 
+# Extra validation to ensure only supported keys are present
+def _validate_options_data(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Filter to only allow known integration options."""
+    allowed_keys = {CONF_SCAN_INTERVAL, CONF_IGNORED_NODES}
+    return {k: v for k, v in data.items() if k in allowed_keys}
+
 
 async def _validate_connection(session: aiohttp.ClientSession, host: str) -> str | None:
     """
@@ -144,6 +150,10 @@ class NodePulseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_ACCESS_KEY: user_input.get(CONF_ACCESS_KEY, ""),
                         CONF_SCAN_INTERVAL: user_input.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
                     },
+                    options={
+                        CONF_SCAN_INTERVAL: user_input.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
+                        CONF_IGNORED_NODES: [],
+                    },
                 )
 
             errors["base"] = "cannot_connect"
@@ -171,14 +181,25 @@ class NodePulseOptionsFlow(config_entries.OptionsFlow):
         self, user_input: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         if user_input is not None:
+            # Validate and filter to only allow known integration options.
+            # This prevents addon-specific fields (e.g., telegram_forward_channels)
+            # from being saved to the integration config entry.
+            user_input = _validate_options_data(user_input)
+            
             # Normalise the comma-separated ignored_nodes string into a clean
             # list (stripped, canonical "!hex" form) so the coordinator can
             # filter by direct membership rather than re-parsing a string.
             raw_ignored = (user_input.get(CONF_IGNORED_NODES) or "").strip()
             ignored = _normalise_node_ids(raw_ignored)
+            # Only save the integration-specific options we support.
+            # Filter out any addon-specific fields that may have been included.
+            options_data = {
+                CONF_SCAN_INTERVAL: user_input.get(CONF_SCAN_INTERVAL),
+                CONF_IGNORED_NODES: ignored,
+            }
             return self.async_create_entry(
                 title="",
-                data={**user_input, CONF_IGNORED_NODES: ignored},
+                data=options_data,
             )
 
         # Pre-populate the form with the current option values.

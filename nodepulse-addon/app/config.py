@@ -68,8 +68,8 @@ class Config:
     mqtt_enabled: bool = False
     mqtt_address: str = "mqtt.meshtastic.org"
     mqtt_port: int = 1883
-    mqtt_username: str = ""
-    mqtt_password: str = ""
+    mqtt_username: str = "meshdev"
+    mqtt_password: str = "large4cats"
     mqtt_topic: str = "msh/+"
     mqtt_geo_filter_enabled: bool = False
     mqtt_lat_min: float = 0.0
@@ -79,6 +79,14 @@ class Config:
     mqtt_portnum_allowlist: List[str] = field(default_factory=list)
     mqtt_node_blocklist: List[str] = field(default_factory=list)
     mqtt_forwarding_enabled: bool = False
+
+    # Telegram Integration Settings
+    telegram_enabled: bool = False
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    telegram_forward_channels: List[int] = field(default_factory=lambda: [0])
+    telegram_forward_dms: bool = True
+    telegram_allow_commands: bool = True
 
 
 def load_config() -> Config:
@@ -137,6 +145,12 @@ def load_config() -> Config:
         mqtt_portnum_allowlist=[s for s in raw.get("mqtt_portnum_allowlist", []) if s],
         mqtt_node_blocklist=[s for s in raw.get("mqtt_node_blocklist", []) if s],
         mqtt_forwarding_enabled=bool(raw.get("mqtt_forwarding_enabled", False)),
+        telegram_enabled=bool(raw.get("telegram_enabled", False)),
+        telegram_bot_token=raw.get("telegram_bot_token", ""),
+        telegram_chat_id=str(raw.get("telegram_chat_id", "")),
+        telegram_forward_channels=raw.get("telegram_forward_channels", [0]),
+        telegram_forward_dms=bool(raw.get("telegram_forward_dms", True)),
+        telegram_allow_commands=bool(raw.get("telegram_allow_commands", True)),
     )
 
     # Validate geo-filter bounds at load time so misconfigurations surface

@@ -1,6 +1,15 @@
 # Changelog
 
 All notable changes to NodePulse are documented here.
+## [1.8.0] - 2026-08-06
+### Added
+- **Telegram Bot Integration** — Bidirectional Telegram Bot bridge using the existing `aiohttp` library (no new dependencies). Inbound mesh text messages are automatically relayed to an authorized Telegram chat with sender name, channel/DM context, and live SNR data. Commands sent from the authorized chat are executed against the live mesh radio.
+- **Bot commands** — `/status` (radio state + node count + battery), `/nodes` (top 20 by last-heard with SNR), `/send <text>` (broadcast to primary channel), `/dm !nodeid <text>` (direct message to a specific node), `/help` (command reference).
+- **Security controls** — All incoming Telegram messages are filtered against the configured `telegram_chat_id`. Any message from an unauthorized chat is silently discarded, preventing unauthorized users from issuing mesh commands even if they know the bot's username. Outgoing (self-originated) mesh messages are never echoed back to Telegram to prevent relay loops.
+- **Telegram Settings UI** — New "Telegram Bot" panel in the Web UI Settings tab displaying integration status, token presence, authorized chat ID, channel relay filter, DM relay state, and command permission state.
+- **Config schema** — Six new addon options: `telegram_enabled`, `telegram_bot_token`, `telegram_chat_id`, `telegram_forward_channels`, `telegram_forward_dms`, `telegram_allow_commands`. All optional with safe defaults so existing installs are unaffected.
+- **`app/telegram_bot.py`** — New `TelegramBot` class following the same lifecycle pattern as `MqttBridge` (start/stop managed in `main.py`).
+
 ## [1.7.0] - 2026-08-06
 ### Added
 - **Advanced MQTT Bridge** — Integrated a robust, bidirectional MQTT bridge allowing ingestion of external mesh traffic directly from brokers (e.g., mqtt.meshtastic.org). Features a multi-stage filtering pipeline including Node-ID blocklist, PortNum allowlist, and a Geospatial bounding box (which caches node positions to block subsequent non-position packets from out-of-bounds nodes).

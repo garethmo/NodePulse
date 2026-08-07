@@ -38,3 +38,10 @@ session-ses_079d.md
 .pytest_cache/
 node_modules/
 MQTT_PROXY.md
+
+# Addon specific generated artefacts
+nodepulse-addon/venv/
+nodepulse-addon/.venv/
+nodepulse-addon/__pycache__/
+nodepulse-addon/.pytest_cache/
+nodepulse-addon/.ruff_cache/

@@ -20,6 +20,7 @@ import asyncio
 import logging
 from typing import Callable, Optional
 
+import uuid
 import aiomqtt
 from meshtastic.protobuf.mqtt_pb2 import ServiceEnvelope
 from google.protobuf.json_format import MessageToDict
@@ -97,6 +98,7 @@ class MqttBridge:
                     port=self.port,
                     username=self.username,
                     password=self.password,
+                    identifier=f"nodepulse-{uuid.uuid4().hex[:12]}",
                 ) as client:
                     self.client = client
                     logger.info("Connected to MQTT broker (address=%s)", self.address)

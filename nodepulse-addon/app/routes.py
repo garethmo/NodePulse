@@ -294,6 +294,13 @@ async def handle_status(request: web.Request) -> web.Response:
             "mqtt_lat_max": config.mqtt_lat_max,
             "mqtt_lng_min": config.mqtt_lng_min,
             "mqtt_lng_max": config.mqtt_lng_max,
+            # Telegram Bot settings
+            "telegram_enabled": config.telegram_enabled,
+            "telegram_chat_id": config.telegram_chat_id,
+            "telegram_forward_channels": config.telegram_forward_channels,
+            "telegram_forward_dms": config.telegram_forward_dms,
+            "telegram_allow_commands": config.telegram_allow_commands,
+            "telegram_bot_token_set": bool(config.telegram_bot_token),
         }
         # Embed the addon version from config.json so the UI can display it
         # without hardcoding it in the HTML template.

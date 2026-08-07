@@ -8,5 +8,11 @@
   "access_key": "",
   "scan_interval": 30,
   "ignored_nodes": [],
-  "ha_base_url": "http://homeassistant:8123"
+  "ha_base_url": "http://homeassistant:8123",
+  "telegram_enabled": false,
+  "telegram_bot_token": "",
+  "telegram_chat_id": "",
+  "telegram_forward_channels": [0],
+  "telegram_forward_dms": true,
+  "telegram_allow_commands": true
 }

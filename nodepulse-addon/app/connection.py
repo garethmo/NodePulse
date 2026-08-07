@@ -944,6 +944,17 @@ class MeshtasticConnection:
             # never block the meshtastic receive thread (and never interleave
             # writes — _save_messages takes _persist_lock).
             self._schedule_save(self._messages, _MESSAGES_FILE)
+
+            # Forward inbound messages to the Telegram bot if configured.
+            # The callback is set by main.py after both objects are created.
+            # We call it synchronously here (it's a fire-and-forget scheduler
+            # internally), so we don't need to await it on this thread.
+            callback = getattr(self, "_telegram_forward_callback", None)
+            if callback is not None:
+                try:
+                    callback(entry)
+                except Exception as exc:  # defensive: never crash the receive thread
+                    logger.debug("Telegram forward callback error (ignored): %s", exc)
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("Error handling received packet (ignored): %s", exc)
 
@@ -1799,7 +1810,9 @@ class MeshtasticConnection:
 
     def _get_messages_sync(self) -> List[Dict[str, Any]]:
         with self._msg_lock:
-            return list(self._messages)
+            messages = list(self._messages)
+            logger.debug("Returning %d messages from store", len(messages))
+            return messages
 
     def _is_interface_healthy(self) -> bool:
         """
@@ -2246,6 +2259,10 @@ class MeshtasticConnection:
                 entry["id"] = f"{self_id or 'unknown'}-{channel}-{self._msg_counter}"
                 self._msg_counter += 1
                 self._messages.append(entry)
+            logger.debug(
+                "Message added to store: id=%s, conversation=%s, text=%s, outgoing=%s, timestamp=%s",
+                entry["id"], conversation, text[:50], entry["outgoing"], entry["timestamp"]
+            )
                 # Register pending ACK only for DMs with a valid packet ID.
                 if is_dm and packet_id is not None:
                     self._pending_acks[packet_id] = entry["id"]

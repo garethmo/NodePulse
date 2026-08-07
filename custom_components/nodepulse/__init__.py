@@ -122,6 +122,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """
     Set up NodePulse from a config entry.
     """
+    # Clean up any invalid options that may have been added (e.g., addon-specific fields)
+    # This can happen if addon config was incorrectly merged with integration config.
+    allowed_keys = {CONF_SCAN_INTERVAL, CONF_IGNORED_NODES, CONF_TRACKED_NODES}
+    if entry.options:
+        current_options = dict(entry.options)
+        cleaned_options = {k: v for k, v in current_options.items() if k in allowed_keys}
+        if len(cleaned_options) != len(current_options):
+            logger.info(
+                "Cleaning invalid options from NodePulse config entry %s: removed %s",
+                entry.entry_id,
+                set(current_options.keys()) - allowed_keys
+            )
+            hass.config_entries.async_update_entry(entry, options=cleaned_options)
+    
     coordinator = NodePulseCoordinator(hass, entry)
 
     await coordinator.async_config_entry_first_refresh()

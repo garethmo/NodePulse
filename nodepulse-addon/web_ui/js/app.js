@@ -1294,6 +1294,22 @@ async function renderSettings() {
       : 'Disabled';
     _setEl('settings-mqtt-geo', geoStr);
 
+    // Telegram Bot
+    const tgEnabled = cfg.telegram_enabled;
+    _setEl('settings-telegram-status', tgEnabled ? '✓ Enabled' : 'Disabled');
+    _setEl('settings-telegram-token',
+      tgEnabled
+        ? (cfg.telegram_bot_token_set ? '●●●●●●●● (set)' : '⚠ Not set')
+        : '—');
+    _setEl('settings-telegram-chat-id',
+      tgEnabled ? (cfg.telegram_chat_id || '⚠ Not set') : '—');
+    _setEl('settings-telegram-channels',
+      tgEnabled ? `Ch ${(cfg.telegram_forward_channels || [0]).join(', Ch ')}` : '—');
+    _setEl('settings-telegram-dms',
+      tgEnabled ? (cfg.telegram_forward_dms ? '✓ Yes' : 'No') : '—');
+    _setEl('settings-telegram-commands',
+      tgEnabled ? (cfg.telegram_allow_commands ? '✓ Yes' : 'No') : '—');
+
     // Schedule & Logging
     _setEl('settings-scan-interval', cfg.scan_interval != null ? `${cfg.scan_interval} s` : '—');
     _setEl('settings-log-level',     cfg.log_level || '—');
@@ -1393,13 +1409,30 @@ async function pollData() {
       topology.updateData(state);
     }
 
-    // Push a chart point using the selected node's metrics, or the first node
-    // in the list if no node is explicitly selected.
-    const chartNode = state.nodes.find(n => n.id === state.selectedNodeId) ?? state.nodes[0];
-    // For utilization trends, read from the self node (the connected gateway).
+    // Pick the best node for SNR/RSSI charts. When the user has explicitly
+    // selected a node, use that. Otherwise fall back to the first remote node
+    // that actually reports signal data — the self (gateway) node never has
+    // inbound SNR/RSSI because you don't receive packets from yourself.
+    let chartNode = state.nodes.find(n => n.id === state.selectedNodeId);
+    if (!chartNode) {
+      chartNode = state.nodes.find(n => n.id !== state.selfId && (n.snr != null || n.rssi != null))
+                  ?? state.nodes.find(n => n.id !== state.selfId)
+                  ?? state.nodes[0];
+    }
+
+    // For utilization trends, prefer the self (gateway) node's device metrics,
+    // but fall back to any node that reports them — the library may not always
+    // populate deviceMetrics on the local node (e.g. no telemetry received yet).
     const selfNode = state.nodes.find(n => n.id === state.selfId);
-    const chanUtil = selfNode?.channel_utilization ?? null;
-    const airUtil  = selfNode?.air_util_tx ?? null;
+    let chanUtil = selfNode?.channel_utilization ?? null;
+    let airUtil  = selfNode?.air_util_tx ?? null;
+    if (chanUtil == null && airUtil == null) {
+      const utilNode = state.nodes.find(n => n.channel_utilization != null || n.air_util_tx != null);
+      if (utilNode) {
+        chanUtil = utilNode.channel_utilization ?? null;
+        airUtil  = utilNode.air_util_tx ?? null;
+      }
+    }
     charts.addPoint(chartNode?.snr ?? null, chartNode?.rssi ?? null, state.nodes.length, chanUtil, airUtil);
   } else {
     console.warn('Nodes fetch failed:', nodesResult.reason);

@@ -169,7 +169,10 @@ class NodePulseCoordinator(DataUpdateCoordinator):
                 self._config_entry.entry_id,
             )
             return
-        new_options = dict(entry.options)
+        # Filter to only allow known integration options to prevent
+        # addon-specific fields from being persisted.
+        allowed_keys = {CONF_SCAN_INTERVAL, CONF_IGNORED_NODES, CONF_TRACKED_NODES}
+        new_options = {k: v for k, v in entry.options.items() if k in allowed_keys}
         new_options[CONF_TRACKED_NODES] = list(self.tracked_nodes)
         try:
             hass.config_entries.async_update_entry(entry, options=new_options)
