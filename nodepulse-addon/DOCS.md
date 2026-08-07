@@ -14,10 +14,13 @@ NodePulse is a Home Assistant addon and custom integration that gives you deep v
 |---|---|
 | 🟢 **Connection Status** | Binary sensor — know immediately if your mesh link drops |
 | 📡 **Node Count** | Live count of all visible mesh nodes |
-| 📶 **Per-Node Metrics** | SNR, RSSI, hops away, battery level, last heard — one HA device per node |
+| 📶 **Per-Node Metrics** | SNR, hops away, battery level, last heard, voltage, utilization, uptime, role — one HA device per node |
 | 🗺️ **GPS Mapping** | Device trackers plotted on the native HA map card |
 | 💬 **Messaging** | Send broadcast or DM messages via the Web UI |
 | 🔍 **Traceroute** | Dispatch traceroutes to any node from the Web UI |
+| ☁️ **MQTT Bridge** | Bidirectional MQTT bridge with geospatial/portnum/node-ID filtering and optional radio forwarding |
+| 🤖 **Telegram Bot** | Bidirectional Telegram bridge with `/status`, `/nodes`, `/send`, and `/dm` commands |
+| 🎛️ **Comprehensive Settings Page** | Web UI Settings tab reflecting every addon configuration option — connection, mesh, HA integration, MQTT, Telegram, auto responder, and logging — with secrets masked |
 | 🖥️ **Web UI Dashboard** | Full-featured dashboard served via HA Ingress (no port forwarding) |
 
 ---
@@ -38,8 +41,11 @@ block-beta
     addonLabel["NodePulse Addon\n(Docker Container)"]
     backend["app/main.py\naiohttp :8099"]
     conn["connection.py\nTCP client + reconnect"]
+    mqtt["mqtt_bridge.py\nMQTT bridge + filter"]
+    telegram["telegram_bot.py\nTelegram bridge"]
+    store["nodes.json, messages.json,\ntraceroutes.json, tags.json,\nposition_history.json, channels.json,\nwaypoints.json persistent stores"]
     routes["routes.py\nREST API"]
-    ui["web_ui/\nDashboard"]
+    ui["web_ui/\nDashboard, Nodes, Map,\nTopology, Messages, Packets, Settings"]
   end
 
   space:3
@@ -50,10 +56,15 @@ block-beta
     bs["binary_sensor.py"]
     sens["sensor.py"]
     dt["device_tracker.py"]
+    notify["notify.py\nMesh notify platform"]
   end
 
   Node -->|"TCP stream"| conn
+  conn --> store
+  store --> routes
   conn --> routes
+  conn -->|"packet callbacks"| mqtt
+  conn -->|"packet callbacks"| telegram
   routes --> ui
   routes -->|"REST /api/*"| coord
   coord --> bs
@@ -125,18 +136,30 @@ erDiagram
   }
 
   NODE_DEVICE ||--|| SNR_SENSOR : has
-  NODE_DEVICE ||--|| RSSI_SENSOR : has
   NODE_DEVICE ||--|| HOPS_SENSOR : has
   NODE_DEVICE ||--|| LAST_HEARD_SENSOR : has
   NODE_DEVICE ||--|| BATTERY_SENSOR : has
+  NODE_DEVICE ||--|| VOLTAGE_SENSOR : has
+  NODE_DEVICE ||--|| CHANNEL_UTIL_SENSOR : has
+  NODE_DEVICE ||--|| AIR_UTIL_SENSOR : has
+  NODE_DEVICE ||--|| UPTIME_SENSOR : has
+  NODE_DEVICE ||--|| ROLE_SENSOR : has
   NODE_DEVICE ||--o| GPS_TRACKER : "has (if GPS fix)"
+  NODE_DEVICE ||--|| ONLINE_BINARY_SENSOR : has
+  NODE_DEVICE ||--o| LAST_MESSAGE_RECEIVED_SENSOR : has
+  NODE_DEVICE ||--o| LAST_MESSAGE_SENT_SENSOR : has
 
-  SNR_SENSOR        { string unit "dB" }
-  RSSI_SENSOR       { string unit "dBm" }
-  HOPS_SENSOR       { string unit "hops" }
-  LAST_HEARD_SENSOR { string device_class "timestamp" }
-  BATTERY_SENSOR    { string unit "%" }
-  GPS_TRACKER       { string source_type "gps" }
+  SNR_SENSOR           { string unit "dB" }
+  HOPS_SENSOR          { string unit "hops" }
+  LAST_HEARD_SENSOR    { string device_class "timestamp" }
+  BATTERY_SENSOR       { string unit "%" }
+  VOLTAGE_SENSOR       { string unit "V" }
+  CHANNEL_UTIL_SENSOR  { string unit "%" }
+  AIR_UTIL_SENSOR      { string unit "%" }
+  UPTIME_SENSOR        { string unit "s" }
+  ROLE_SENSOR          { string unit "" }
+  ONLINE_BINARY_SENSOR { string device_class "connectivity" }
+  GPS_TRACKER          { string source_type "gps" }
 ```
 
 ---

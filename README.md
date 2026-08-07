@@ -91,6 +91,7 @@ NodePulse is a Home Assistant addon and custom integration that gives you deep v
 | 🎚️ **Node Signal Filter** | Filter the nodes grid by signal strength (Excellent, Good, Fair, Poor) using a stable rolling `snr_avg` calculation |
 | ☁️ **MQTT Bridge** | Built-in bidirectional MQTT bridge. Ingests traffic from external brokers with a robust geospatial/portnum/node-ID filter pipeline. Optionally forwards packets to the local radio. Includes Web UI configuration. |
 | 🤖 **Telegram Bot** | Bidirectional Telegram Bot bridge. Inbound mesh text messages are automatically forwarded to an authorized Telegram chat. Send broadcasts or DMs back to the mesh from Telegram using bot commands. Includes `/status`, `/nodes`, `/send`, and `/dm` commands. Zero extra dependencies — uses the built-in `aiohttp` library. |
+| 🎛️ **Comprehensive Settings Page** | The Web UI Settings tab reflects every addon configuration option in real time — connection & mesh status, HA integration keys and token validation, the full MQTT bridge config (broker port, credential status, topic, geo filter, portnum allowlist, node blocklist), the Telegram bot (status, token, authorized chats, relay channels/DMs, commands), the auto responder, scan interval, and log level. Secrets are always masked |
 
 ---
 
@@ -110,10 +111,11 @@ block-beta
     addonLabel["NodePulse Addon\n(Docker Container)"]
     backend["app/main.py\naiohttp :8099"]
     conn["connection.py\nTCP client + reconnect"]
-    mqtt["mqtt_bridge.py\nMQTT Client + Filter"]
-    store["nodes.json, messages.json,\ntags.json, position_history.json\npersistent stores"]
+    mqtt["mqtt_bridge.py\nMQTT bridge + filter"]
+    telegram["telegram_bot.py\nTelegram bridge"]
+    store["nodes.json, messages.json,\ntraceroutes.json, tags.json,\nposition_history.json, channels.json,\nwaypoints.json persistent stores"]
     routes["routes.py\nREST API"]
-    ui["web_ui/\nDashboard, Map, Topology,\nPackets, Settings"]
+    ui["web_ui/\nDashboard, Nodes, Map,\nTopology, Messages, Packets, Settings"]
   end
 
   space:3
@@ -131,6 +133,8 @@ block-beta
   conn --> store
   store --> routes
   conn --> routes
+  conn -->|"packet callbacks"| mqtt
+  conn -->|"packet callbacks"| telegram
   routes --> ui
   routes -->|"REST relay"| coord
 ```
@@ -409,6 +413,25 @@ Once the bot is running, send these commands from your authorized Telegram chat:
 - The bot **only processes messages from the configured `telegram_chat_id`**. Any message from any other chat is silently discarded. This means even if someone finds your bot's username, they cannot send commands to your radio.
 - The `telegram_bot_token` is stored as an addon option. Keep it private and regenerate it with BotFather if it is ever leaked.
 - Outgoing messages from the local node are **not** echoed back to Telegram to prevent relay loops.
+
+---
+
+## Web UI Settings Page
+
+The **Settings** tab in the NodePulse dashboard reflects every addon configuration option in real time. It is read-only — values are edited in the Home Assistant add-on Configuration tab — but shows the complete live state so you can verify what the addon actually loaded. Settings are grouped into:
+
+| Group | Contents |
+|---|---|
+| **Connection** | Link status, connection mode (Direct/Proxy), Meshtastic host & port, and proxy host & port (only shown in `proxy` mode) |
+| **Mesh** | Visible node count, ignored node IDs, and a one-click **Clear stale nodes** action |
+| **Home Assistant Integration** | HA base URL, access key (masked), and token-validation toggle |
+| **MQTT Bridge** | Forwarding mode, broker address & port, username/password presence (masked), topic, geo-filter bounds, portnum allowlist, and node blocklist |
+| **Telegram Bot** | Status, bot token (masked), authorized chat ID(s), relay channels, DM relay, and command permission |
+| **Auto Responder** | Status and configured welcome message |
+| **Schedule & Logging** | Scan interval and log level |
+| **About** | NodePulse version |
+
+Secrets are always masked (`●●●●●● (set)` / `Not set`), and rows for disabled features render as `—` rather than leaking empty config values.
 
 ---
 

@@ -2,6 +2,12 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.9.4] - 2026-08-07
+### Added
+- **Full config in Settings tab** — The Web UI Settings view now mirrors every addon option: MQTT broker port, username/password presence (masked), portnum allowlist and node blocklist; the HA token-validation toggle; the Telegram authorized-chat-IDs list; and the Auto Responder panel (status + welcome message).
+- **`/api/status` exposes complete config** — Added `disable_token_validation`, `mqtt_port`, `mqtt_username_set`, `mqtt_password_set`, `mqtt_portnum_allowlist`, `mqtt_node_blocklist`, `telegram_authorized_chat_ids`, `auto_responder_enabled`, and `auto_responder_message` to the status payload.
+- **Settings rendering polish** — Secrets always render masked (`●●●●●● (set)`), MQTT/Telegram rows show values only when enabled (else `—`), proxy rows appear only in proxy mode, and the legacy `telegram_chat_id` is shown beside the authorized-chat-IDs list.
+
 ## [1.9.3] - 2026-08-07
 ### Added
 - **Telegram channel selection** — `/send` accepts an optional channel index (`/send 1 <msg>` or `/send #1 <msg>`); bare numeric messages still default to Ch 0.

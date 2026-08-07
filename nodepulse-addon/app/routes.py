@@ -281,12 +281,15 @@ async def handle_status(request: web.Request) -> web.Response:
             "scan_interval": config.scan_interval,
             "log_level": config.log_level,
             "ha_base_url": config.ha_base_url,
+            "disable_token_validation": config.disable_token_validation,
             "ignored_nodes": list(getattr(config, "ignored_nodes", [])),
             "access_key_set": bool(config.access_key),
             # MQTT Bridge settings
             "mqtt_enabled": config.mqtt_enabled,
             "mqtt_address": config.mqtt_address,
             "mqtt_port": config.mqtt_port,
+            "mqtt_username_set": bool(config.mqtt_username),
+            "mqtt_password_set": bool(config.mqtt_password),
             "mqtt_topic": config.mqtt_topic,
             "mqtt_forwarding_enabled": config.mqtt_forwarding_enabled,
             "mqtt_geo_filter_enabled": config.mqtt_geo_filter_enabled,
@@ -294,13 +297,19 @@ async def handle_status(request: web.Request) -> web.Response:
             "mqtt_lat_max": config.mqtt_lat_max,
             "mqtt_lng_min": config.mqtt_lng_min,
             "mqtt_lng_max": config.mqtt_lng_max,
+            "mqtt_portnum_allowlist": list(config.mqtt_portnum_allowlist),
+            "mqtt_node_blocklist": list(config.mqtt_node_blocklist),
             # Telegram Bot settings
             "telegram_enabled": config.telegram_enabled,
             "telegram_chat_id": config.telegram_chat_id,
+            "telegram_authorized_chat_ids": list(config.telegram_authorized_chat_ids),
             "telegram_forward_channels": config.telegram_forward_channels,
             "telegram_forward_dms": config.telegram_forward_dms,
             "telegram_allow_commands": config.telegram_allow_commands,
             "telegram_bot_token_set": bool(config.telegram_bot_token),
+            # Auto Responder settings
+            "auto_responder_enabled": config.auto_responder_enabled,
+            "auto_responder_message": config.auto_responder_message,
         }
         # Embed the addon version from config.json so the UI can display it
         # without hardcoding it in the HTML template.

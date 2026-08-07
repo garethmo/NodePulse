@@ -1294,17 +1294,31 @@ async function renderSettings() {
     // Home Assistant
     _setEl('settings-ha-url',    cfg.ha_base_url || '—');
     _setEl('settings-access-key', cfg.access_key_set ? '••••••• (set)' : 'Not set');
+    _setEl('settings-token-validation',
+      cfg.disable_token_validation ? 'Disabled (accept any token)' : 'Enabled');
 
     // MQTT Bridge
-    _setEl('settings-mqtt-forwarding', cfg.mqtt_enabled
+    const mqttOn = cfg.mqtt_enabled;
+    _setEl('settings-mqtt-forwarding', mqttOn
       ? (cfg.mqtt_forwarding_enabled ? '✓ Enabled' : 'Ingestion only')
       : 'Disabled (mqtt_enabled is false)');
-    _setEl('settings-mqtt-address', cfg.mqtt_enabled ? (cfg.mqtt_address || '—') : '—');
-    _setEl('settings-mqtt-topic',   cfg.mqtt_enabled ? (cfg.mqtt_topic   || '—') : '—');
+    _setEl('settings-mqtt-address', mqttOn ? (cfg.mqtt_address || '—') : '—');
+    _setEl('settings-mqtt-port',    mqttOn ? (cfg.mqtt_port ?? '—') : '—');
+    _setEl('settings-mqtt-username', mqttOn
+      ? (cfg.mqtt_username_set ? '••••••• (set)' : 'None') : '—');
+    _setEl('settings-mqtt-password', mqttOn
+      ? (cfg.mqtt_password_set ? '•••••••• (set)' : 'None') : '—');
+    _setEl('settings-mqtt-topic',   mqttOn ? (cfg.mqtt_topic   || '—') : '—');
     const geoStr = cfg.mqtt_geo_filter_enabled
       ? `Box: ${(cfg.mqtt_lat_min ?? 0).toFixed(2)},${(cfg.mqtt_lng_min ?? 0).toFixed(2)} → ${(cfg.mqtt_lat_max ?? 0).toFixed(2)},${(cfg.mqtt_lng_max ?? 0).toFixed(2)}`
       : 'Disabled';
     _setEl('settings-mqtt-geo', geoStr);
+    const portnums = cfg.mqtt_portnum_allowlist || [];
+    _setEl('settings-mqtt-portnums',
+      mqttOn ? ((portnums.length > 0) ? portnums.join(', ') : 'All (no filter)') : '—');
+    const blocklist = cfg.mqtt_node_blocklist || [];
+    _setEl('settings-mqtt-blocklist',
+      mqttOn ? ((blocklist.length > 0) ? blocklist.join(', ') : 'None') : '—');
 
     // Telegram Bot
     const tgEnabled = cfg.telegram_enabled;
@@ -1315,12 +1329,23 @@ async function renderSettings() {
         : '—');
     _setEl('settings-telegram-chat-id',
       tgEnabled ? (cfg.telegram_chat_id || '⚠ Not set') : '—');
+    const chatIds = cfg.telegram_authorized_chat_ids || [];
+    _setEl('settings-telegram-chat-ids',
+      tgEnabled
+        ? ((chatIds.length > 0) ? chatIds.join(', ') : (cfg.telegram_chat_id || '⚠ Not set'))
+        : '—');
     _setEl('settings-telegram-channels',
       tgEnabled ? `Ch ${(cfg.telegram_forward_channels || [0]).join(', Ch ')}` : '—');
     _setEl('settings-telegram-dms',
       tgEnabled ? (cfg.telegram_forward_dms ? '✓ Yes' : 'No') : '—');
     _setEl('settings-telegram-commands',
       tgEnabled ? (cfg.telegram_allow_commands ? '✓ Yes' : 'No') : '—');
+
+    // Auto Responder
+    _setEl('settings-auto-responder-status',
+      cfg.auto_responder_enabled ? '✓ Enabled' : 'Disabled');
+    _setEl('settings-auto-responder-message',
+      cfg.auto_responder_enabled ? (cfg.auto_responder_message || '—') : '—');
 
     // Schedule & Logging
     _setEl('settings-scan-interval', cfg.scan_interval != null ? `${cfg.scan_interval} s` : '—');
