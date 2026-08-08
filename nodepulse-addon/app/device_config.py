@@ -1,7 +1,6 @@
 import logging
 from typing import Dict, Any, Tuple
 from google.protobuf.descriptor import FieldDescriptor
-from google.protobuf.json_format import MessageToDict
 import meshtastic.protobuf.config_pb2 as config_pb2
 import meshtastic.protobuf.module_config_pb2 as module_config_pb2
 
@@ -89,16 +88,20 @@ def read_device_config(interface) -> Dict[str, Any]:
         if hasattr(source_proto, section_name):
             section_obj = getattr(source_proto, section_name)
             
-            section_dict_full = MessageToDict(
-                section_obj, 
-                preserving_proto_field_name=True, 
-                including_default_value_fields=True
-            )
-            
             filtered_dict = {}
-            for field_name in section_info["fields"].keys():
-                if field_name in section_dict_full:
-                    filtered_dict[field_name] = section_dict_full[field_name]
+            for field_name, field_info in section_info["fields"].items():
+                if hasattr(section_obj, field_name):
+                    val = getattr(section_obj, field_name)
+                    if field_info["type"] == "enum":
+                        # Convert enum integer to string name
+                        try:
+                            enum_descriptor = section_obj.DESCRIPTOR.fields_by_name[field_name].enum_type
+                            enum_name = enum_descriptor.values_by_number[val].name
+                            filtered_dict[field_name] = enum_name
+                        except KeyError:
+                            filtered_dict[field_name] = str(val)
+                    else:
+                        filtered_dict[field_name] = val
             
             config_dict[section_name] = filtered_dict
 
