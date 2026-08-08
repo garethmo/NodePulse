@@ -258,6 +258,11 @@ class MeshtasticConnection:
         self._trace_dispatch_lock = asyncio.Lock()
         self._send_trace_lock = threading.Lock()
 
+        # Serialises concurrent config writes (writeConfig / setOwner) so that
+        # two simultaneous saves (e.g. two tabs open) never interleave their
+        # radio write calls. Never held during _lock to avoid deadlock.
+        self._config_write_lock = threading.Lock()
+
         # Destination node IDs of in-flight traceroute requests. The reply
         # packet only carries the origin (the responding node), not the original
         # request target, so we remember the destinations to attribute the
@@ -525,6 +530,128 @@ class MeshtasticConnection:
     async def update_waypoint(self, waypoint_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Update a waypoint's fields (e.g. lat/lng after drag). Returns updated waypoint or None."""
         return await asyncio.to_thread(self._update_waypoint_sync, waypoint_id, updates)
+
+    # ------------------------------------------------------------------
+    # Device Configuration
+    # ------------------------------------------------------------------
+
+    async def get_device_config(self) -> Dict[str, Any]:
+        """
+        Read the connected node's full configuration from the radio and return
+        it as a JSON-serialisable dict keyed by config section name.
+
+        The interface must be connected and its localNode config must already
+        be populated (requestConfig is triggered in _connect_sync, so under
+        normal operation this is already available). If the config is not yet
+        populated we request it inline with a 10-second bounded wait.
+        """
+        return await asyncio.to_thread(self._get_device_config_sync)
+
+    def _get_device_config_sync(self) -> Dict[str, Any]:
+        """Synchronous config reader — runs in a thread pool worker."""
+        from .device_config import read_device_config
+
+        with self._lock:
+            iface = self._interface
+
+        if not iface:
+            raise ConnectionError("Node is not connected")
+
+        # If localConfig is still empty (e.g. reconnect in progress), wait for it.
+        local_node = iface.localNode
+        if local_node is None:
+            raise ConnectionError("localNode is not available — radio may still be handshaking")
+
+        config_loaded = (
+            local_node.localConfig is not None
+            and len(local_node.localConfig.DESCRIPTOR.fields) > 0
+        )
+        if not config_loaded:
+            # Try to request config explicitly and wait a bounded time.
+            try:
+                for meth in ("requestConfig", "requestConfigCompressed"):
+                    fn = getattr(iface, meth, None)
+                    if callable(fn):
+                        fn()
+                        logger.debug("Requested node config via %s() for device-config read", meth)
+                        break
+                local_node.waitForConfig(timeout=10)
+            except Exception as exc:
+                logger.warning("waitForConfig failed (continuing with partial config): %s", exc)
+
+        return read_device_config(iface)
+
+    async def set_device_config(
+        self, section: str, patch: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Validate and apply a config patch for a single section (or 'owner').
+
+        Returns ``{ applied: True, section: str, reboot_required: bool }``.
+        Raises ``ValueError`` on validation errors, ``ConnectionError`` when not
+        connected.
+
+        IMPORTANT — blocking radio I/O (writeConfig / setOwner) is executed
+        OUTSIDE _lock (same hygiene as traceroute dispatch) so slow radio
+        round-trips never stall the event loop or node-list polling.
+        """
+        return await asyncio.to_thread(self._set_device_config_sync, section, patch)
+
+    def _set_device_config_sync(
+        self, section: str, patch: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Synchronous config writer — runs in a thread pool worker."""
+        from .device_config import validate_and_apply_patch
+
+        with self._lock:
+            iface = self._interface
+
+        if not iface:
+            raise ConnectionError("Node is not connected")
+
+        local_node = iface.localNode
+        if local_node is None:
+            raise ConnectionError("localNode is not available")
+
+        # Serialize concurrent writes — never hold _lock during radio I/O.
+        with self._config_write_lock:
+            success, reboot_required = validate_and_apply_patch(
+                section, patch, local_node, iface
+            )
+
+        logger.info(
+            {"section": section, "reboot_required": reboot_required},
+            "Device config section saved"
+        )
+        return {"applied": success, "section": section, "reboot_required": reboot_required}
+
+    async def reload_device_config(self) -> bool:
+        """
+        Force a requestConfig() call to refresh the in-memory config from the radio.
+        Called by the 'Refresh' button in the Configuration view.
+        Returns True on success, False when not connected.
+        """
+        return await asyncio.to_thread(self._reload_device_config_sync)
+
+    def _reload_device_config_sync(self) -> bool:
+        with self._lock:
+            iface = self._interface
+
+        if not iface:
+            return False
+
+        for meth in ("requestConfig", "requestConfigCompressed"):
+            fn = getattr(iface, meth, None)
+            if callable(fn):
+                try:
+                    fn()
+                    logger.debug("Device config reload requested via %s()", meth)
+                    return True
+                except Exception as exc:
+                    logger.warning("Device config reload via %s() failed: %s", meth, exc)
+                break
+
+        return False
 
     async def get_packet_log(self, limit: int = 200) -> List[Dict[str, Any]]:
         """Return the most recent captured packets (newest first, up to limit)."""

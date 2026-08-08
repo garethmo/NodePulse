@@ -2,6 +2,14 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.10.0] - 2026-08-08
+### Added
+- **Remote Device Configuration** — A brand new "Configure" tab in the Web UI that allows you to view and edit your mesh radio's configuration directly.
+- **Dynamic Schema Generation** — Configuration schemas are live-introspected from the connected radio's firmware, ensuring compatibility across different Meshtastic versions without hardcoding fields.
+- **Danger Zone Confirmations** — Advanced changes (like setting role to ROUTER or disabling LoRa TX) now prompt for confirmation to prevent accidental misconfigurations that could strand the node.
+- **Reboot Banners** — The UI detects when you make a change that requires a reboot (e.g., LoRa or Network settings) and alerts you.
+- **Safe Write Path** — Thread-safe radio configuration writes ensure that reading and writing configuration don't interfere with live message streams or background radio operations.
+
 ## [1.9.4] - 2026-08-07
 ### Added
 - **Full config in Settings tab** — The Web UI Settings view now mirrors every addon option: MQTT broker port, username/password presence (masked), portnum allowlist and node blocklist; the HA token-validation toggle; the Telegram authorized-chat-IDs list; and the Auto Responder panel (status + welcome message).

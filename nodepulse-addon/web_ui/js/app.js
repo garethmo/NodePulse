@@ -1253,6 +1253,12 @@ function switchView(viewName) {
       if (window.innerWidth <= 768) {
         document.body.classList.add('messages-sidebar-open');
       }
+    } else if (viewName === 'config') {
+      // device_config.js registers itself on the window so we can call it
+      // from here without a circular import.
+      if (typeof window.renderDeviceConfig === 'function') {
+        window.renderDeviceConfig();
+      }
     }
   });
 }

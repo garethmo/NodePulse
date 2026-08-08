@@ -48,6 +48,9 @@ from .routes import (
     handle_add_waypoint,
     handle_update_waypoint,
     handle_delete_waypoint,
+    handle_get_device_config,
+    handle_put_device_config_section,
+    handle_reload_device_config,
 )
 
 # Configure structured logging early so all subsequent imports can log.
@@ -228,6 +231,10 @@ def build_app(config) -> web.Application:
     app.router.add_post("/api/waypoints", handle_add_waypoint)
     app.router.add_patch("/api/waypoints/{waypoint_id}", handle_update_waypoint)
     app.router.add_delete("/api/waypoints/{waypoint_id}", handle_delete_waypoint)
+    # Device configuration endpoints
+    app.router.add_get("/api/device-config", handle_get_device_config)
+    app.router.add_put("/api/device-config/{section}", handle_put_device_config_section)
+    app.router.add_post("/api/device-config/reload", handle_reload_device_config)
 
     # --- Static Web UI ---
     # Serve the dashboard from the root path. Under HA Ingress the addon is

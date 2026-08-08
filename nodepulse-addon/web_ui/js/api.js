@@ -221,3 +221,39 @@ export async function updateWaypoint(waypointId, updates) {
     body: JSON.stringify(updates),
   });
 }
+
+// ---------------------------------------------------------------------------
+// Device Configuration API
+// ---------------------------------------------------------------------------
+
+/** Fetch the full device configuration snapshot from the connected node. */
+export async function fetchDeviceConfig() {
+  return _apiFetch('/device-config');
+}
+
+/**
+ * Patch a single config section on the device.
+ * @param {string} section - Section name (e.g. 'lora', 'device', 'owner').
+ * @param {Record<string, unknown>} data - Partial field → value map.
+ * @param {boolean} [confirm=false] - Required for danger-zone changes (ROUTER role, TX disabled).
+ */
+export async function saveDeviceConfig(section, data, confirm = false) {
+  const body = confirm ? { ...data, confirm: true } : data;
+  return _apiFetch(`/device-config/${encodeURIComponent(section)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+/**
+ * Force a config re-read from the radio (Refresh button).
+ */
+export async function reloadDeviceConfig() {
+  return _apiFetch('/device-config/reload', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+}
+

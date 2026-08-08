@@ -45,3 +45,4 @@ nodepulse-addon/.venv/
 nodepulse-addon/__pycache__/
 nodepulse-addon/.pytest_cache/
 nodepulse-addon/.ruff_cache/
+DEVICE_CONFIGURATION.md

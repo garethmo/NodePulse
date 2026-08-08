@@ -924,3 +924,86 @@ async def handle_sniffer_stats(request: web.Request) -> web.Response:
     except Exception as exc:
         logger.error("Error fetching sniffer stats: %s", exc)
         return _error_response("Failed to retrieve sniffer stats")
+
+
+# ---------------------------------------------------------------------------
+# Routes: /api/device-config
+# ---------------------------------------------------------------------------
+
+async def handle_get_device_config(request: web.Request) -> web.Response:
+    """
+    Return the full device configuration as a JSON snapshot.
+
+    The response is shaped by the section registry in device_config.py and
+    includes all Config + ModuleConfig sections plus a pseudo 'owner' section.
+    Returns 503 when the node is not connected.
+    """
+    conn: MeshtasticConnection = request.app["connection"]
+    try:
+        config_data = await conn.get_device_config()
+        return _json_response(config_data)
+    except ConnectionError as exc:
+        return _error_response(str(exc), status=503)
+    except Exception as exc:
+        logger.error("Error reading device config: %s", exc)
+        return _error_response("Failed to read device configuration")
+
+
+async def handle_put_device_config_section(request: web.Request) -> web.Response:
+    """
+    Patch one config section on the connected node.
+
+    Path parameter:
+        section — one of the registry section names (device, lora, position,
+                  power, display, network, bluetooth, telemetry, neighbor_info,
+                  mqtt, canned_message, store_forward) or 'owner'.
+
+    Body: a partial dict of field → value pairs.  For dangerous changes
+    (role → ROUTER, lora tx_enabled → false) the body must also include
+    ``"confirm": true`` or the request is rejected with HTTP 400.
+
+    Returns:
+        { applied: true, section: str, reboot_required: bool }
+    """
+    conn: MeshtasticConnection = request.app["connection"]
+    section = request.match_info.get("section", "").strip()
+    if not section:
+        return _error_response("section is required in the URL path", status=400)
+
+    try:
+        body: Dict[str, Any] = await request.json()
+    except Exception:
+        return _error_response("Request body must be valid JSON", status=400)
+
+    if not isinstance(body, dict) or not body:
+        return _error_response("Request body must be a non-empty JSON object", status=400)
+
+    try:
+        result = await conn.set_device_config(section, body)
+        return _json_response(result)
+    except ValueError as exc:
+        # Validation errors from the registry (unknown section/field, out of range, etc.)
+        return _error_response(str(exc), status=400)
+    except ConnectionError as exc:
+        return _error_response(str(exc), status=503)
+    except Exception as exc:
+        logger.error("Error writing device config section %s: %s", section, exc)
+        return _error_response("Failed to apply configuration")
+
+
+async def handle_reload_device_config(request: web.Request) -> web.Response:
+    """
+    Force a requestConfig() call to refresh the in-memory config from the radio.
+    Used by the Configuration view's 'Refresh' button.
+
+    Returns { reloaded: true } on success, 503 if not connected.
+    """
+    conn: MeshtasticConnection = request.app["connection"]
+    try:
+        reloaded = await conn.reload_device_config()
+        if reloaded:
+            return _json_response({"reloaded": True})
+        return _error_response("Node is not connected", status=503)
+    except Exception as exc:
+        logger.error("Error reloading device config: %s", exc)
+        return _error_response("Failed to reload device configuration")

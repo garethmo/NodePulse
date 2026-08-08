@@ -105,6 +105,17 @@
         Settings
       </div>
 
+      <div class="nav-item" data-view="config" role="button" tabindex="0">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <line x1="4" y1="6" x2="20" y2="6"/>
+          <line x1="8" y1="12" x2="20" y2="12"/>
+          <line x1="4" y1="12" x2="5" y2="12"/>
+          <line x1="4" y1="18" x2="20" y2="18"/>
+          <circle cx="6" cy="12" r="2"/>
+        </svg>
+        Configure
+      </div>
+
       <!-- Node count badge -->
       <div id="sidebar-footer">
         <div id="node-count-badge">
@@ -132,6 +143,7 @@
           <button class="tab-btn" data-view="messages">Messages<span class="nav-badge" id="tab-messages-badge"></span></button>
           <button class="tab-btn" data-view="packets">Packets</button>
           <button class="tab-btn" data-view="settings">Settings</button>
+          <button class="tab-btn" data-view="config">Configure</button>
         </div>
       </div>
       <div id="header-status">
@@ -718,6 +730,27 @@
         </div><!-- /settings-grid -->
       </div>
 
+      <!-- ---- CONFIGURATION VIEW ----------------------------------------- -->
+      <div id="view-config" class="view">
+        <div class="cfg-header">
+          <h1 class="cfg-title">Device Configuration</h1>
+          <div class="cfg-header-actions">
+            <span id="cfg-reboot-banner" class="cfg-reboot-banner hidden">
+              ⚠️ Reboot the node for changes to take effect
+              <button id="cfg-reboot-dismiss" class="cfg-reboot-dismiss" type="button">✕</button>
+            </span>
+            <button id="cfg-refresh-btn" class="action-btn" type="button">⟳ Refresh</button>
+          </div>
+        </div>
+        <!-- Content rendered by device_config.js -->
+        <div id="cfg-content">
+          <div class="cfg-loading">
+            <div class="spinner"></div>
+            Loading device configuration…
+          </div>
+        </div>
+      </div>
+
     </main><!-- /main -->
 
     <!-- Mobile sidebar backdrop (toggled by JS on small screens) -->
@@ -729,5 +762,7 @@
 
   <!-- Main application module — defer ensures CDN scripts (Leaflet, Chart.js) load first -->
   <script type="module" src="js/app.js" defer></script>
+  <!-- Device Configuration view controller -->
+  <script type="module" src="js/device_config.js" defer></script>
 </body>
 </html>
