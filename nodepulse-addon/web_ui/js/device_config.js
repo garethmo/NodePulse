@@ -49,6 +49,12 @@ const LORA_PRESET_LOCKED = new Set([
   'bandwidth', 'spread_factor', 'coding_rate', 'frequency_offset',
 ]);
 
+// Node Identity fields that are read-only (hardware/firmware info set by the
+// device — not editable from the configure screen).
+const IDENTITY_READONLY = new Set([
+  'hw_model', 'firmware_version', 'region', 'role',
+]);
+
 // ---------------------------------------------------------------------------
 // Module state
 // ---------------------------------------------------------------------------
@@ -143,10 +149,12 @@ function _restoreRebootBanner() {
 }
 
 function _renderSections(container, data) {
-  // Build registry from the returned data (the backend includes field types).
-  // We determine types from the values themselves when registry isn't returned.
-  // (Phase 0: the backend currently returns flat values; Phase 1 enhancement:
-  // return field meta alongside values in a future pass.)
+  // The backend returns a `_schema` block with per-field metadata (types,
+  // enum options, min/max, max_length). It is used to render selects and
+  // constrain inputs. Fall back to value-derived types if absent.
+  const schema = (data && data._schema) || {};
+  delete data._schema;
+
   container.innerHTML = '';
 
   const grid = document.createElement('div');
@@ -163,14 +171,14 @@ function _renderSections(container, data) {
       danger: false,
     };
 
-    const card = _buildSectionCard(sectionKey, sectionData, meta);
+    const card = _buildSectionCard(sectionKey, sectionData, meta, schema[sectionKey]);
     grid.appendChild(card);
   }
 
   container.appendChild(grid);
 }
 
-function _buildSectionCard(sectionKey, sectionData, meta) {
+function _buildSectionCard(sectionKey, sectionData, meta, sectionSchema = null) {
   const card = document.createElement('div');
   card.className = `cfg-card${meta.danger ? ' cfg-card-danger' : ''}`;
   card.id = `cfg-card-${sectionKey}`;
@@ -193,7 +201,8 @@ function _buildSectionCard(sectionKey, sectionData, meta) {
 
   // Build fields
   for (const [fieldKey, fieldValue] of Object.entries(sectionData)) {
-    const row = _buildFieldRow(sectionKey, fieldKey, fieldValue);
+    const fieldSchema = (sectionSchema && sectionSchema.fields)?.[fieldKey] || null;
+    const row = _buildFieldRow(sectionKey, fieldKey, fieldValue, fieldSchema);
     if (row) form.appendChild(row);
   }
 
@@ -297,9 +306,12 @@ function _buildSectionCard(sectionKey, sectionData, meta) {
 
 /**
  * Build a single field row (label + input/select/checkbox).
+ * `fieldSchema` is the per-field metadata block returned by the backend
+ * (type, enum options, min/max, max_length) — used to render selects and
+ * constrain inputs. Falls back to value-derived types when absent.
  * Returns null for fields we can't render (nested messages, etc.).
  */
-function _buildFieldRow(sectionKey, fieldKey, fieldValue) {
+function _buildFieldRow(sectionKey, fieldKey, fieldValue, fieldSchema = null) {
   // Skip complex nested objects (repeated fields like available_pins)
   if (fieldValue !== null && typeof fieldValue === 'object' && !Array.isArray(fieldValue)) {
     return null;
@@ -316,6 +328,9 @@ function _buildFieldRow(sectionKey, fieldKey, fieldValue) {
   const inputId = `cfg-${sectionKey}-${fieldKey}`;
   let input;
 
+  const isEnum   = fieldSchema?.type === 'enum' && Array.isArray(fieldSchema.options);
+  const isSensitive = SENSITIVE_FIELDS.has(fieldKey);
+
   if (typeof fieldValue === 'boolean') {
     // Checkbox
     input = document.createElement('input');
@@ -325,7 +340,7 @@ function _buildFieldRow(sectionKey, fieldKey, fieldValue) {
     input.dataset.fieldKey = fieldKey;
     input.dataset.fieldType = 'bool';
     input.className = 'cfg-checkbox';
-  } else if (SENSITIVE_FIELDS.has(fieldKey)) {
+  } else if (isSensitive) {
     // Password field
     input = document.createElement('input');
     input.type        = 'password';
@@ -335,19 +350,42 @@ function _buildFieldRow(sectionKey, fieldKey, fieldValue) {
     input.dataset.fieldKey  = fieldKey;
     input.dataset.fieldType = 'string';
     input.autocomplete = 'new-password';
+  } else if (isEnum) {
+    // Enum field → dropdown from schema options
+    input = document.createElement('select');
+    input.id            = inputId;
+    input.className     = 'cfg-input cfg-input-select';
+    input.dataset.fieldKey  = fieldKey;
+    input.dataset.fieldType = 'enum';
+    for (const opt of fieldSchema.options) {
+      const option = document.createElement('option');
+      option.value = opt;
+      option.textContent = _labelify(opt);
+      if (String(fieldValue) === opt) option.selected = true;
+      input.appendChild(option);
+    }
+    // Read-only Node Identity info fields (region/role) render as selects too
+    if (sectionKey === 'owner' && IDENTITY_READONLY.has(fieldKey)) {
+      input.disabled = true;
+      input.className = 'cfg-input cfg-input-disabled';
+      input.title = 'Set by the device — read-only';
+    }
   } else if (typeof fieldValue === 'number') {
-    // Number input
+    // Number input — apply schema min/max when available
     input = document.createElement('input');
     input.type    = 'number';
     input.id      = inputId;
     input.value   = fieldValue;
     input.step    = Number.isInteger(fieldValue) ? '1' : 'any';
+    if (fieldSchema) {
+      if (fieldSchema.min != null) input.min = fieldSchema.min;
+      if (fieldSchema.max != null) input.max = fieldSchema.max;
+    }
     input.className = 'cfg-input cfg-input-number';
     input.dataset.fieldKey  = fieldKey;
     input.dataset.fieldType = Number.isInteger(fieldValue) ? 'int' : 'float';
   } else if (typeof fieldValue === 'string') {
-    // Text input (may be an enum value — we don't have enum options here
-    // without registry meta, so fall back to text for now)
+    // Text input — apply schema max_length when available
     input = document.createElement('input');
     input.type  = 'text';
     input.id    = inputId;
@@ -355,6 +393,16 @@ function _buildFieldRow(sectionKey, fieldKey, fieldValue) {
     input.className = 'cfg-input';
     input.dataset.fieldKey  = fieldKey;
     input.dataset.fieldType = 'string';
+    if (fieldSchema?.max_length) {
+      input.maxLength = fieldSchema.max_length;
+      input.title = `Max ${fieldSchema.max_length} characters`;
+    }
+    // Node Identity info fields are read-only
+    if (sectionKey === 'owner' && IDENTITY_READONLY.has(fieldKey)) {
+      input.disabled = true;
+      input.className = 'cfg-input cfg-input-disabled';
+      input.title = 'Set by the device — read-only';
+    }
     if (sectionKey === 'owner') {
       if (fieldKey === 'long_name')  { input.maxLength = 39; }
       if (fieldKey === 'short_name') { input.maxLength = 4;  }
@@ -443,6 +491,11 @@ function _revertForm(form, original, sectionKey) {
 function _patchNeedsConfirm(section, patch) {
   if (section === 'device' && patch.role === 'ROUTER') return true;
   if (section === 'lora'   && 'tx_enabled' in patch && !patch.tx_enabled) return true;
+  // Region change cuts your node off a different radio frequency band
+  if (section === 'lora' && 'region' in patch) return true;
+  // Credentials are sensitive — confirm before sending to the device
+  if (section === 'network' && 'wifi_psk' in patch) return true;
+  if (section === 'mqtt' && ('username' in patch || 'password' in patch)) return true;
   return false;
 }
 
@@ -452,9 +505,19 @@ function _showDangerConfirm(section, patch) {
     message = '⚠️ Setting the device role to ROUTER significantly increases airtime ' +
               'and battery consumption. This is intended for mains-powered installs only.\n\n' +
               'Are you sure you want to change the role to ROUTER?';
-  } else if (section === 'lora' && !patch.tx_enabled) {
+  } else if (section === 'lora' && 'tx_enabled' in patch && !patch.tx_enabled) {
     message = '⚠️ Disabling LoRa TX will make this node receive-only — it will be ' +
               'invisible to the rest of the mesh.\n\nAre you sure you want to disable TX?';
+  } else if (section === 'lora' && 'region' in patch) {
+    message = '⚠️ Changing the LoRa region will retune the radio to a different ' +
+              'frequency band (which may be illegal in your country).\n\n' +
+              'Are you sure you want to change the region?';
+  } else if (section === 'network' && 'wifi_psk' in patch) {
+    message = '🔑 The WiFi password will be stored on the device and used to ' +
+              'join an access point.\n\nAre you sure you want to update the WiFi credentials?';
+  } else if (section === 'mqtt' && ('username' in patch || 'password' in patch)) {
+    message = '🔑 MQTT credentials will be sent to and stored on the device.\n\n' +
+              'Are you sure you want to update MQTT credentials?';
   }
   return message ? confirm(message) : true;
 }
@@ -497,6 +560,10 @@ function _labelify(fieldKey) {
     sx126x_rx_boosted_gain: 'SX126x RX Boosted Gain',
     long_name:    'Long Name',
     short_name:   'Short Name',
+    hw_model:     'Hardware Model',
+    firmware_version: 'Firmware Version',
+    region:       'Region',
+    role:         'Role',
     is_power_saving: 'Power Saving Mode',
   };
   return overrides[fieldKey] || _titleCase(fieldKey);

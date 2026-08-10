@@ -3131,6 +3131,7 @@ body.nav-open #sidebar-backdrop { display: block; }
   cursor: not-allowed;
 }
 .cfg-input-number { width: 100px; }
+.cfg-input-select { width: 170px; }
 .cfg-input-disabled { opacity: 0.4; }
 
 /* Checkbox — align right like other inputs */

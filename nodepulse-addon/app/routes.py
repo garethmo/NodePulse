@@ -1000,10 +1000,14 @@ async def handle_reload_device_config(request: web.Request) -> web.Response:
     """
     conn: MeshtasticConnection = request.app["connection"]
     try:
-        reloaded = await conn.reload_device_config()
+        reloaded, reason = await conn.reload_device_config()
         if reloaded:
             return _json_response({"reloaded": True})
-        return _error_response("Node is not connected", status=503)
+        if reason == "not_connected":
+            return _error_response("Node is not connected", status=503)
+        if reason.startswith("request_failed"):
+            return _error_response(f"Config reload failed: {reason}", status=503)
+        return _error_response(f"Config reload failed: {reason}", status=503)
     except Exception as exc:
         logger.error("Error reloading device config: %s", exc)
         return _error_response("Failed to reload device configuration")

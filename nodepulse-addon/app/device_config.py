@@ -19,6 +19,29 @@ _PROTO_TYPE_MAP = {
     FieldDescriptor.TYPE_ENUM: "enum",
 }
 
+# Semantic min/max constraints not expressible in the protobuf descriptors.
+# Keyed by (section, field) with optional min/max/max_length. Used for both
+# backend validation and for the schema returned to the Web UI.
+_FIELD_CONSTRAINTS = {
+    # Device
+    ("device", "node_info_broadcast_secs"): {"min": 1, "max": 2**32 - 1},
+    # LoRa
+    ("lora", "bandwidth"):        {"min": 31,   "max": 500},
+    ("lora", "spread_factor"):    {"min": 7,    "max": 12},
+    ("lora", "coding_rate"):      {"min": 5,    "max": 8},
+    ("lora", "frequency_offset"): {"min": -0.5, "max": 0.5},  # MHz
+    ("lora", "hop_limit"):        {"min": 0,    "max": 7},
+    ("lora", "channel_num"):      {"min": 0,    "max": 255},
+    ("lora", "tx_power"):         {"min": -1,   "max": 30},
+    # Network
+    ("network", "wifi_ssid"): {"max_length": 32},
+    ("network", "wifi_psk"):  {"max_length": 64},
+    ("network", "ntp_server"): {"max_length": 128},
+    ("position", "position_broadcast_secs"): {"min": 0, "max": 2**32 - 1},
+    ("position", "gps_update_interval"):     {"min": 0, "max": 2**32 - 1},
+    ("power", "wait_bluetooth_secs"):        {"min": 0, "max": 24 * 3600},
+}
+
 def build_config_registry() -> Dict[str, Any]:
     """
     Builds a registry of all editable config fields by introspecting the
@@ -47,7 +70,13 @@ def build_config_registry() -> Dict[str, Any]:
                     if field.type == FieldDescriptor.TYPE_ENUM:
                         field_def["enum_type"] = field.enum_type.name
                         field_def["options"] = [v.name for v in field.enum_type.values]
-                        
+
+                    # Merge semantic constraints (min/max/max_length) so the
+                    # schema mirrors backend validation.
+                    constraint = _FIELD_CONSTRAINTS.get((section_name, field.name))
+                    if constraint:
+                        field_def.update(constraint)
+
                     registry[section_name]["fields"][field.name] = field_def
 
     # Add pseudo-section for owner
@@ -65,6 +94,118 @@ def build_config_registry() -> Dict[str, Any]:
 CONFIG_REGISTRY = build_config_registry()
 
 
+def _normalize_role(raw: Any) -> str:
+    """
+    Normalise a Meshtastic device role to a clean string.
+
+    The library may expose the role as a string ("CLIENT"), a protobuf enum
+    object (str form "Role.CLIENT"), or an int (the enum value). Strip the
+    enum prefix and return the bare name (or "" when unknown).
+    """
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw.split(".")[-1] if raw else ""
+    name = getattr(raw, "name", None)
+    if name:
+        return str(name).split(".")[-1]
+    return str(raw).split(".")[-1]
+
+
+def _resolve_role(interface, user_info: Dict[str, Any]) -> str:
+    """
+    Resolve the connected node's role.
+
+    The most authoritative source is the device config's role field, read
+    directly from the protobuf (``localNode.localConfig.device.role``) — it is
+    always present and never subject to the MessageToDict default-omission
+    problem. The serialised user dict can omit the role when it holds the
+    default CLIENT (0), so fall back through: user dict role, then the device
+    metadata role, then the default CLIENT.
+    """
+    # 1) Device config role (authoritative, always present)
+    try:
+        local_config = getattr(interface.localNode, "localConfig", None)
+        if local_config is not None:
+            cfg_role = getattr(local_config.device, "role", 0)
+            if cfg_role != 0:
+                return config_pb2.Config.DeviceConfig.Role.Name(cfg_role)
+    except Exception:
+        pass
+
+    # 2) User dict role
+    role = _normalize_role(user_info.get("role"))
+    if role:
+        return role
+
+    # 3) Device metadata role
+    metadata = getattr(interface, "metadata", None)
+    if metadata is not None:
+        meta_role = getattr(metadata, "role", 0)
+        if meta_role != 0:
+            try:
+                return config_pb2.Config.DeviceConfig.Role.Name(meta_role)
+            except Exception:
+                pass
+    return "CLIENT"
+
+
+def _lookup_node(interface, node_num) -> Dict[str, Any]:
+    """
+    Look up a node's cached info dict by its integer node number.
+
+    The meshtastic library keeps node DB access in two parallel maps:
+    ``interface.nodesByNum`` keyed by the integer node number, and
+    ``interface.nodes`` keyed by the "!xxxxxxxx" hex node ID string. Node
+    numbers that haven't received a User packet yet only appear in
+    ``nodesByNum``, so we have to try that first (an integer key), falling
+    back to the hex-ID key in ``nodes``.
+    """
+    if node_num is None:
+        return {}
+    try:
+        nodes_by_num = getattr(interface, "nodesByNum", None)
+        if nodes_by_num:
+            hit = nodes_by_num.get(node_num)
+            if hit:
+                return hit
+        node_id = "!" + format(int(node_num) & 0xFFFFFFFF, "08x")
+        nodes = getattr(interface, "nodes", None) or {}
+        return (
+            nodes.get(node_id)
+            or nodes.get(node_num)
+            or nodes.get(str(node_num))
+            or {}
+        )
+    except (TypeError, ValueError):
+        return {}
+
+
+def request_full_config(iface) -> None:
+    """
+    Ask the radio to re-send every Config + ModuleConfig section, refreshing
+    the in-memory ``localNode.localConfig`` / ``localNode.moduleConfig``.
+
+    On meshtastic >= 2.5.0 ``requestConfig`` lives on the Node (not the
+    interface) and takes a config field descriptor, so we iterate over the
+    protobuf field descriptors and request each one. Sections that fail are
+    logged and skipped rather than aborting the whole refresh.
+    """
+    local_node = iface.localNode
+    if local_node is None:
+        raise ValueError("localNode is not available — radio may still be handshaking")
+    request = getattr(local_node, "requestConfig", None)
+    if not callable(request):
+        raise ValueError("requestConfig is not available on this library version")
+
+    for descriptor in (config_pb2.Config.DESCRIPTOR, module_config_pb2.ModuleConfig.DESCRIPTOR):
+        for field in descriptor.fields:
+            try:
+                request(field)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug("requestConfig(%s) failed (skipped): %s", field.name, exc)
+
+
 def read_device_config(interface) -> Dict[str, Any]:
     """
     Reads the configuration from the interface and serializes it to JSON,
@@ -77,6 +218,10 @@ def read_device_config(interface) -> Dict[str, Any]:
     module_config = interface.localNode.moduleConfig
 
     config_dict = {}
+
+    # Field schema the UI needs to render inputs (types, enum options, ranges).
+    # Keyed by section name — includes sections that may be absent values-wise.
+    config_dict["_schema"] = _serialize_schema()
 
     # Serialize sections
     for section_name, section_info in CONFIG_REGISTRY.items():
@@ -105,20 +250,75 @@ def read_device_config(interface) -> Dict[str, Any]:
             
             config_dict[section_name] = filtered_dict
 
-    # Add owner
+    # Add owner (Node Identity — includes read-only identity info alongside the
+    # editable names)
     try:
         my_node_num = interface.myInfo.my_node_num
-        node_info = interface.nodes.get(my_node_num) or interface.nodes.get(str(my_node_num)) or {}
+        node_info = _lookup_node(interface, my_node_num)
         user_info = node_info.get("user", {})
+
+        # Firmware version lives in interface.metadata (DeviceMetadata), not the
+        # User protobuf — read it defensively.
+        firmware_version = ""
+        metadata = getattr(interface, "metadata", None)
+        if metadata is not None:
+            firmware_version = getattr(metadata, "firmware_version", "") or ""
+
+        # Region lives in the LoRa config, not the User protobuf.
+        region = ""
+        try:
+            lora = interface.localNode.localConfig.lora
+            if lora is not None and lora.region != 0:
+                region = config_pb2.Config.LoRaConfig.RegionCode.Name(lora.region)
+        except Exception:
+            pass
+
         config_dict["owner"] = {
             "long_name": user_info.get("longName", ""),
-            "short_name": user_info.get("shortName", "")
+            "short_name": user_info.get("shortName", ""),
+            "hw_model": user_info.get("hwModel", ""),
+            "firmware_version": firmware_version,
+            "region": region,
+            "role": _resolve_role(interface, user_info),
         }
     except Exception as e:
         logger.warning(f"Failed to read owner info: {e}")
-        config_dict["owner"] = {"long_name": "", "short_name": ""}
+        config_dict["owner"] = {
+            "long_name": "", "short_name": "", "hw_model": "",
+            "firmware_version": "", "region": "", "role": "",
+        }
     
     return config_dict
+
+
+def _serialize_schema() -> Dict[str, Any]:
+    """
+    Serialise the section/field registry into a JSON-safe schema the Web UI
+    can use to render inputs (types, enum options, min/max, max_length).
+    """
+    schema = {}
+    for section_name, section_info in CONFIG_REGISTRY.items():
+        fields = {}
+        for field_name, field_def in section_info["fields"].items():
+            fields[field_name] = {
+                "type": field_def.get("type"),
+                "label": field_def.get("label", field_name),
+                "options": field_def.get("options"),
+                "min": field_def.get("min"),
+                "max": field_def.get("max"),
+                "max_length": field_def.get("max_length"),
+            }
+        schema[section_name] = {
+            "category": section_info.get("category"),
+            "fields": fields,
+        }
+    return schema
+
+
+def read_device_config_schema() -> Dict[str, Any]:
+    """Public accessor for the field schema consumed by the Web UI."""
+    return _serialize_schema()
+
 
 def validate_and_apply_patch(section_name: str, patch: Dict[str, Any], local_node, interface) -> Tuple[bool, bool]:
     """
@@ -165,7 +365,20 @@ def validate_and_apply_patch(section_name: str, patch: Dict[str, Any], local_nod
     if section_name == "lora" and "tx_enabled" in patch and not patch["tx_enabled"]:
         if not patch.pop("confirm", False):
             raise ValueError("Disabling LoRa TX requires 'confirm': true")
-            
+
+    # Manual LoRa parameter gating: when use_preset is true (the default and
+    # the value applied by any modem preset), the manual radio params are
+    # derived from the preset and must not be patched directly.
+    if section_name == "lora":
+        use_preset = patch.get("use_preset", getattr(section_obj, "use_preset", True))
+        manual_params = {"bandwidth", "spread_factor", "coding_rate", "frequency_offset"}
+        touched_manual = manual_params & set(patch.keys())
+        if use_preset and touched_manual:
+            raise ValueError(
+                "Manual LoRa parameters (bandwidth/spread_factor/coding_rate/"
+                "frequency_offset) require 'use_preset': false"
+            )
+
     # Validate and apply fields
     for field_name, value in patch.items():
         if field_name not in section_info["fields"]:
@@ -173,6 +386,12 @@ def validate_and_apply_patch(section_name: str, patch: Dict[str, Any], local_nod
             continue
             
         field_info = section_info["fields"][field_name]
+
+        # Field-level constraints from the registry (PII/danger zones aside),
+        # enforce min/max for numerics and max_length for strings.
+        fmin = field_info.get("min")
+        fmax = field_info.get("max")
+        flen = field_info.get("max_length")
         
         if field_info["type"] == "enum":
             if value not in field_info["options"]:
@@ -182,13 +401,25 @@ def validate_and_apply_patch(section_name: str, patch: Dict[str, Any], local_nod
             setattr(section_obj, field_name, enum_val)
             
         elif field_info["type"] in ["int", "float"]:
-            setattr(section_obj, field_name, type(value)(value))
+            try:
+                cast = float if field_info["type"] == "float" else int
+                value = cast(value)
+            except (TypeError, ValueError):
+                raise ValueError(f"'{field_name}' must be a number")
+            if fmin is not None and value < fmin:
+                raise ValueError(f"'{field_name}' must be >= {fmin}")
+            if fmax is not None and value > fmax:
+                raise ValueError(f"'{field_name}' must be <= {fmax}")
+            setattr(section_obj, field_name, value)
             
         elif field_info["type"] == "bool":
             setattr(section_obj, field_name, bool(value))
             
         elif field_info["type"] == "string":
-            setattr(section_obj, field_name, str(value))
+            value = str(value)
+            if flen is not None and len(value) > flen:
+                raise ValueError(f"'{field_name}' exceeds max length {flen}")
+            setattr(section_obj, field_name, value)
             
     # Write to device
     local_node.writeConfig(section_name)

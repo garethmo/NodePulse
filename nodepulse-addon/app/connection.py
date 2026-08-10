@@ -28,6 +28,7 @@ import meshtastic
 import meshtastic.tcp_interface
 from pubsub import pub
 import re
+import meshtastic.protobuf.config_pb2 as config_pb2
 
 # Persistent storage directory. Under HA Supervisor this is /data, which
 # survives addon restarts (unlike the container's ephemeral filesystem). We
@@ -549,7 +550,7 @@ class MeshtasticConnection:
 
     def _get_device_config_sync(self) -> Dict[str, Any]:
         """Synchronous config reader — runs in a thread pool worker."""
-        from .device_config import read_device_config
+        from .device_config import read_device_config, request_full_config
 
         with self._lock:
             iface = self._interface
@@ -569,12 +570,7 @@ class MeshtasticConnection:
         if not config_loaded:
             # Try to request config explicitly and wait a bounded time.
             try:
-                for meth in ("requestConfig", "requestConfigCompressed"):
-                    fn = getattr(iface, meth, None)
-                    if callable(fn):
-                        fn()
-                        logger.debug("Requested node config via %s() for device-config read", meth)
-                        break
+                request_full_config(iface)
                 local_node.waitForConfig(timeout=10)
             except Exception as exc:
                 logger.warning("waitForConfig failed (continuing with partial config): %s", exc)
@@ -625,33 +621,31 @@ class MeshtasticConnection:
         )
         return {"applied": success, "section": section, "reboot_required": reboot_required}
 
-    async def reload_device_config(self) -> bool:
+    async def reload_device_config(self) -> tuple[bool, str]:
         """
         Force a requestConfig() call to refresh the in-memory config from the radio.
         Called by the 'Refresh' button in the Configuration view.
-        Returns True on success, False when not connected.
+        Returns (True, "") on success, (False, reason) on failure.
         """
         return await asyncio.to_thread(self._reload_device_config_sync)
 
-    def _reload_device_config_sync(self) -> bool:
+    def _reload_device_config_sync(self) -> tuple[bool, str]:
+        from .device_config import request_full_config
+
         with self._lock:
             iface = self._interface
+            connected = self._connected
 
-        if not iface:
-            return False
+        if not connected or iface is None:
+            return False, "not_connected"
 
-        for meth in ("requestConfig", "requestConfigCompressed"):
-            fn = getattr(iface, meth, None)
-            if callable(fn):
-                try:
-                    fn()
-                    logger.debug("Device config reload requested via %s()", meth)
-                    return True
-                except Exception as exc:
-                    logger.warning("Device config reload via %s() failed: %s", meth, exc)
-                break
-
-        return False
+        try:
+            request_full_config(iface)
+            logger.debug("Device config reload requested")
+            return True, ""
+        except Exception as exc:
+            logger.warning("Device config reload failed: %s", exc)
+            return False, f"request_failed: {exc}"
 
     async def get_packet_log(self, limit: int = 200) -> List[Dict[str, Any]]:
         """Return the most recent captured packets (newest first, up to limit)."""
@@ -890,16 +884,13 @@ class MeshtasticConnection:
         if iface is None:
             return
 
+        from .device_config import request_full_config
+
         # 1) Request the full config (also prompts a node-info push).
-        for meth in ("requestConfig", "requestConfigCompressed"):
-            fn = getattr(iface, meth, None)
-            if callable(fn):
-                try:
-                    fn()
-                    logger.debug("Requested node config via %s()", meth)
-                except Exception as exc:  # pragma: no cover - defensive
-                    logger.debug("requestConfig (%s) failed (ignored): %s", meth, exc)
-                break
+        try:
+            request_full_config(iface)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("requestConfig failed (ignored): %s", exc)
 
         # 2) Explicitly fetch the node DB if the library exposes it.
         fetch_db = getattr(iface, "fetchNodeDB", None)
@@ -924,6 +915,18 @@ class MeshtasticConnection:
                 except Exception as exc:  # pragma: no cover - defensive
                     logger.debug("%s() failed (ignored): %s", meth, exc)
                 break
+
+        # 4) Request device metadata (firmware version) if available. The library
+        #    only populates interface.metadata when a metadata admin response
+        #    arrives, so trigger it explicitly here.
+        local_node = getattr(iface, "localNode", None)
+        get_meta = getattr(local_node, "getMetadata", None)
+        if callable(get_meta):
+            try:
+                get_meta()
+                logger.debug("Requested device metadata via localNode.getMetadata()")
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug("getMetadata() failed (ignored): %s", exc)
 
     def _close_sync(self) -> None:
         """Close the current interface, suppressing errors (already closed, etc.).
@@ -1977,16 +1980,109 @@ class MeshtasticConnection:
     def _get_status_sync(self) -> Dict[str, Any]:
         with self._lock:
             if not self._connected or self._interface is None:
-                return {"connected": False, "my_info": None}
+                return {"connected": False, "my_info": None, "status_timestamp": int(time.time())}
 
             my_info = getattr(self._interface, "myInfo", None)
+            my_node_num = getattr(my_info, "my_node_num", None)
+
+            node_id = None
+            long_name = ""
+            short_name = ""
+            hw_model = ""
+            firmware_version = ""
+            region = ""
+            role = ""
+
+            if my_node_num is not None:
+                try:
+                    node_id = "!" + format(int(my_node_num) & 0xFFFFFFFF, "08x")
+                except (TypeError, ValueError):
+                    pass
+
+                # User info (longName, shortName, hwModel, role) is stored in
+                # interface.nodesByNum[my_node_num].user (int key); interface.nodes
+                # is keyed by "!hex", so we must resolve via the int-keyed map.
+                node_data = self._lookup_node(self._interface, my_node_num)
+                user = node_data.get("user", {})
+                long_name = user.get("longName", "")
+                short_name = user.get("shortName", "")
+                hw_model = user.get("hwModel", "")
+                # Firmware version is NOT in the User protobuf — it lives in
+                # interface.metadata (DeviceMetadata).
+                metadata = getattr(self._interface, "metadata", None)
+                firmware_version = getattr(metadata, "firmware_version", "") if metadata is not None else ""
+                # Region is NOT in the User protobuf — it lives in the LoRa config.
+                region = ""
+                try:
+                    lora = getattr(self._interface.localNode, "localConfig", None)
+                    if lora is not None and lora.lora.region != 0:
+                        region = config_pb2.Config.LoRaConfig.RegionCode.Name(lora.lora.region)
+                except Exception:
+                    pass
+                # Role — prefer the device config role (authoritative, always
+                # present); the serialised user dict can omit the default CLIENT.
+                role = ""
+                try:
+                    local_config = getattr(self._interface.localNode, "localConfig", None)
+                    if local_config is not None and local_config.device.role != 0:
+                        role = self._normalize_role(config_pb2.Config.DeviceConfig.Role.Name(local_config.device.role))
+                except Exception:
+                    pass
+                if not role:
+                    role = self._normalize_role(user.get("role"))
+                if not role:
+                    meta_role = getattr(metadata, "role", 0) if metadata is not None else 0
+                    if meta_role != 0:
+                        try:
+                            role = self._normalize_role(config_pb2.Config.DeviceConfig.Role.Name(meta_role))
+                        except Exception:
+                            role = ""
+                if not role:
+                    role = "CLIENT"
+
             return {
                 "connected": True,
                 "my_info": {
-                    "my_node_num": getattr(my_info, "my_node_num", None),
+                    "my_node_num": my_node_num,
+                    "node_id": node_id,
+                    "long_name": long_name,
+                    "short_name": short_name,
+                    "hw_model": hw_model,
+                    "firmware_version": firmware_version,
+                    "region": region,
+                    "role": role,
                 } if my_info else None,
                 "node_count": len(self._interface.nodes or {}),
+                "status_timestamp": int(time.time()),
             }
+
+    def _lookup_node(self, iface, node_num) -> Dict[str, Any]:
+        """
+        Look up a node's cached info dict by its integer node number.
+        The meshtastic library keeps the node DB in two maps: ``nodesByNum``
+        keyed by the integer node number, and ``nodes`` keyed by the
+        "!xxxxxxxx" hex node ID string. Nodes that haven't received a User
+        packet yet only exist in ``nodesByNum``, so try that integer key
+        first, falling back to the hex-ID key in ``nodes``.
+        """
+        if node_num is None:
+            return {}
+        try:
+            nodes_by_num = getattr(iface, "nodesByNum", None)
+            if nodes_by_num:
+                hit = nodes_by_num.get(node_num)
+                if hit:
+                    return hit
+            node_id = "!" + format(int(node_num) & 0xFFFFFFFF, "08x")
+            nodes = getattr(iface, "nodes", None) or {}
+            return (
+                nodes.get(node_id)
+                or nodes.get(node_num)
+                or nodes.get(str(node_num))
+                or {}
+            )
+        except (TypeError, ValueError):
+            return {}
 
     @staticmethod
     def _normalize_role(raw: Any) -> str:

@@ -1296,6 +1296,24 @@ async function renderSettings() {
     _setEl('settings-count',   status.node_count ?? '—');
     const ignored = cfg.ignored_nodes;
     _setEl('settings-ignored', (ignored && ignored.length > 0) ? ignored.join(', ') : 'None');
+    _setEl('settings-status-updated', status.status_timestamp
+      ? new Date(status.status_timestamp * 1000).toLocaleTimeString()
+      : '—');
+
+    // Node Identity
+    const myInfo = status.my_info || {};
+    const isConnected = status.connected;
+    const nodeIdentityGroup = document.getElementById('settings-node-identity-group');
+    if (nodeIdentityGroup) {
+      nodeIdentityGroup.style.display = isConnected ? '' : 'none';
+    }
+    _setEl('settings-node-id',       isConnected ? (myInfo.node_id || '—') : '—');
+    _setEl('settings-node-long-name', isConnected ? (myInfo.long_name || '—') : '—');
+    _setEl('settings-node-short-name', isConnected ? (myInfo.short_name || '—') : '—');
+    _setEl('settings-node-hw-model',  isConnected ? (myInfo.hw_model || '—') : '—');
+    _setEl('settings-node-fw-version', isConnected ? (myInfo.firmware_version || '—') : '—');
+    _setEl('settings-node-region',    isConnected ? (myInfo.region || '—') : '—');
+    _setEl('settings-node-role',      isConnected ? (myInfo.role || '—') : '—');
 
     // Home Assistant
     _setEl('settings-ha-url',    cfg.ha_base_url || '—');

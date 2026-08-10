@@ -2,6 +2,24 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.12.0] - 2026-08-10
+### Added
+- **Field validation on configuration** — The configuration API now validates numeric ranges, string lengths, and enum values against firmware-derived constraints (e.g. LoRa bandwidth 31–500 kHz, spread factor 7–12, coding rate 5–8) before writing to the radio. Out-of-range or malformed values are rejected with a clear 400 error.
+- **Enum dropdowns in the Configure tab** — Fields backed by protobuf enums (modem presets, regions, roles, etc.) now render as proper dropdowns populated from the radio's firmware schema instead of free-text inputs, so invalid values can't be typed.
+- **Manual LoRa parameter gating** — Backend now rejects direct edits to the manual radio params (`bandwidth` / `spread_factor` / `coding_rate` / `frequency_offset`) while `use_preset` is enabled, matching the UI's greyed-out fields and preventing preset override.
+- **Extra danger confirmations** — Changing the LoRa region or updating WiFi/MQTT credentials now prompts for confirmation in the UI before being sent to the device.
+
+### Fixed
+- **Configuration form no longer relies on value types** — The Configure tab uses the backend's per-field schema (types, enum options, min/max, max length) so enum and numeric fields render correctly regardless of the serialised value.
+
+## [1.11.0] - 2026-08-10
+### Added
+- **Node Identity in Settings** — New "Node Identity" section in the Web UI Settings tab displays the connected Meshtastic node's ID, long/short names, hardware model, firmware version, region, and role when connected.
+- **Enhanced `/api/status`** — Now returns full node identity (`my_info.node_id`, `long_name`, `short_name`, `hw_model`, `firmware_version`, `region`, `role`) instead of just the node number.
+
+### Fixed
+- **Settings refresh showing "not connected"** — The UI now properly surfaces connection status and hides the Node Identity group when the Meshtastic node is not reachable, making it clear when the TCP link is down.
+
 ## [1.10.0] - 2026-08-08
 ### Added
 - **Remote Device Configuration** — A brand new "Configure" tab in the Web UI that allows you to view and edit your mesh radio's configuration directly.
