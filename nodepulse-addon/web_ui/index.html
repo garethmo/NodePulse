@@ -488,12 +488,19 @@
                 rows="1"
                 aria-label="Message text"
               ></textarea>
+              <button id="messages-schedule-toggle" class="messages-schedule-toggle" title="Schedule message" aria-label="Schedule message" type="button">🕐</button>
               <button id="messages-send-btn" class="messages-send-btn" aria-label="Send message">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <line x1="22" y1="2" x2="11" y2="13"></line>
                   <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
                 </svg>
               </button>
+            </div>
+            <!-- Scheduler row (hidden until clock button toggled) -->
+            <div id="messages-schedule-row" class="messages-schedule-row hidden">
+              <label for="messages-schedule-dt">📅 Send at:</label>
+              <input type="datetime-local" id="messages-schedule-dt" class="messages-schedule-dt" />
+              <button id="messages-schedule-clear" class="messages-schedule-clear" type="button" title="Clear schedule">✕</button>
             </div>
           </div>
         </div>
@@ -521,6 +528,17 @@
               <div><strong>Total captured:</strong> <span id="sniffer-total">0</span></div>
             </div>
             <div id="sniffer-dist-bars" style="margin-top:12px;display:flex;flex-direction:column;gap:4px"></div>
+
+            <!-- Channel Security sub-section -->
+            <div id="security-scan-section">
+              <div class="sec-header">
+                <strong>🔐 Channel Security</strong>
+                <button id="security-scan-btn" type="button" class="action-btn sec-scan-btn">Scan</button>
+              </div>
+              <div id="security-findings">
+                <span class="sec-placeholder">Press Scan to check channel encryption keys.</span>
+              </div>
+            </div>
           </div>
           <!-- Packet table -->
           <div style="overflow-x:auto;position:relative">
@@ -736,6 +754,19 @@
           <div class="settings-row">
             <span class="settings-row-label">Welcome Message</span>
             <span class="settings-row-value" id="settings-auto-responder-message">—</span>
+          </div>
+        </div>
+
+        <!-- ── Scheduled Messages ── -->
+        <div class="settings-group" id="settings-scheduled-messages-group">
+          <div class="settings-group-title">Scheduled Messages</div>
+          <div class="settings-row">
+            <span class="settings-row-label">Enabled</span>
+            <span class="settings-row-value" id="settings-scheduled-enabled">—</span>
+          </div>
+          <div class="settings-row">
+            <span class="settings-row-label">Next Scheduled</span>
+            <span class="settings-row-value" id="settings-scheduled-next">—</span>
           </div>
         </div>
 

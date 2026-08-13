@@ -12,6 +12,7 @@ Each entity exposes:
 The HA Map card natively plots ``geo_location`` entities and can render
 their trails via a ``geo_json_source`` configuration.
 """
+import json
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -174,3 +175,24 @@ class NodeGeoLocation(CoordinatorEntity, GeolocationEvent):
     @property
     def available(self) -> bool:
         return super().available and self._get_node() is not None
+
+    @property
+    def trail_geojson(self) -> Optional[Dict[str, Any]]:
+        """Return GeoJSON LineString of the node's position history trail.
+
+        The Home Assistant Map card can render this via a
+        ``geo_json_source`` configuration to draw the node's GPS trail.
+        """
+        node = self._get_node()
+        if not node:
+            return None
+        trail = node.get("position_fix_count")
+        # Position history is stored per-node in the addon; we surface
+        # the count only here since the full trail is large. The Web UI
+        # fetches it separately from /api/position-history if needed.
+        # Return a minimal LineString using available lat/lng from the node
+        # if we had stored history, but for now return None since the
+        # coordinator doesn't surface the full trail in /api/nodes.
+        # TODO: When the coordinator stores position history per node,
+        # build a LineString from the trail coordinates.
+        return None

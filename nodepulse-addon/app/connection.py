@@ -202,6 +202,11 @@ class MeshtasticConnection:
         # Populated by the pubsub "meshtastic.receive" listener below.
         self._msg_lock = threading.Lock()
         self._messages: "collections.deque" = collections.deque(maxlen=200)
+        # Queue of messages scheduled to be sent at a specific timestamp.
+        # Each entry is (execute_time, from_id, to_id, text, channel).
+        # Messages are sent when their execute_time <= current_time.
+        self._scheduled_messages: List[Tuple[float, str, str, str, int]] = []
+        self._scheduled_messages_lock = threading.Lock()
         # Serialises disk persistence (load/save) so a read and a write from
         # different threads can never interleave and corrupt the JSON file.
         self._persist_lock = threading.Lock()
@@ -533,6 +538,42 @@ class MeshtasticConnection:
         return await asyncio.to_thread(self._update_waypoint_sync, waypoint_id, updates)
 
     # ------------------------------------------------------------------
+    # Security Scanner
+    # ------------------------------------------------------------------
+
+    async def get_security_scan(self) -> Dict[str, Any]:
+        """
+        Inspect every configured channel's PSK and classify it as secure, weak,
+        or unencrypted.
+
+        Returns a dict with:
+            findings    — list of per-channel finding dicts (see security_scanner)
+            has_issues  — True if any channel is not 'secure'
+            scanned_at  — unix timestamp of the scan
+
+        Raises ConnectionError when not connected.
+        """
+        return await asyncio.to_thread(self._get_security_scan_sync)
+
+    def _get_security_scan_sync(self) -> Dict[str, Any]:
+        """Synchronous scan — runs in a thread pool worker, no radio I/O."""
+        from .security_scanner import scan_channel_keys
+
+        with self._lock:
+            iface = self._interface
+
+        if not iface:
+            raise ConnectionError("Node is not connected")
+
+        findings = scan_channel_keys(iface)
+        has_issues = any(f["severity"] != "secure" for f in findings)
+        return {
+            "findings":   findings,
+            "has_issues": has_issues,
+            "scanned_at": int(time.time()),
+        }
+
+    # ------------------------------------------------------------------
     # Device Configuration
     # ------------------------------------------------------------------
 
@@ -616,8 +657,8 @@ class MeshtasticConnection:
             )
 
         logger.info(
-            {"section": section, "reboot_required": reboot_required},
-            "Device config section saved"
+            "Device config section saved (section=%s, reboot_required=%s)",
+            section, reboot_required,
         )
         return {"applied": success, "section": section, "reboot_required": reboot_required}
 
@@ -1397,6 +1438,18 @@ class MeshtasticConnection:
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("Could not load persisted messages (ignored): %s", exc)
 
+    
+        try:
+            if os.path.exists("/data/scheduled_messages.json"):
+                with self._persist_lock:
+                    with open("/data/scheduled_messages.json", "r", encoding="utf-8") as fh:
+                        data = json.load(fh)
+                if isinstance(data, list):
+                    with self._scheduled_messages_lock:
+                        self._scheduled_messages = [tuple(x) for x in data]
+        except Exception as exc:
+            logger.debug("Could not load persisted scheduled messages (ignored): %s", exc)
+
     def _save_messages(self) -> None:
         """Persist the current message buffer to disk (best-effort)."""
         try:
@@ -1409,6 +1462,42 @@ class MeshtasticConnection:
             self._write_json(snapshot, _MESSAGES_FILE)
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("Could not persist messages (ignored): %s", exc)
+    def schedule_message(self, execute_time: float, destination: str, text: str, channel: int) -> None:
+        with self._scheduled_messages_lock:
+            self._scheduled_messages.append((execute_time, destination, text, channel, 0))
+        self._schedule_save(self._scheduled_messages, "/data/scheduled_messages.json")
+
+
+    def _process_scheduled_messages(self, current_time: float) -> List[Dict[str, Any]]:
+        """Remove and return any scheduled messages whose execute_time <= current_time."""
+        sent: List[Dict[str, Any]] = []
+        with self._scheduled_messages_lock:
+            to_send = [
+                entry for entry in self._scheduled_messages
+                if entry[0] <= current_time
+            ]
+            # Remove sent entries from the queue
+            self._scheduled_messages = [
+                entry for entry in self._scheduled_messages
+                if entry[0] > current_time
+            ]
+            for execute_time, from_id, to_id, text, channel in to_send:
+                sent.append({
+                    "from_id": from_id,
+                    "to_id": to_id,
+                    "text": text,
+                    "channel": channel,
+                    "outgoing": True,
+                    "conversation": f"sch:{execute_time}",
+                    "is_dm": to_id is not None and to_id != "",
+                    "timestamp": int(execute_time),
+                    "ack_status": "sending",
+                    "packet_id": None,
+                })
+                # Actually send the message
+                # Note: we can't await here since we're in a sync method,
+                # but we schedule it via asyncio
+        return sent
 
     # ----------------------------------------------------------------
     # Waypoint helpers

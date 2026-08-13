@@ -2,6 +2,23 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.14.0] - 2026-08-13
+### Added
+- **Security Scanner** — Auto-detect weak or duplicate encryption keys across mesh channels. Displays visual warnings and classification (secure/weak/unencrypted) directly in the Packets view, plus a 🔓 badge on packet rows from flagged channels. Uses zero radio I/O for instantaneous scanning.
+
+### Fixed
+- **Device Configuration Bugs** — Fixed a routing bug in `main.py` where a parameterized route shadowed the reload endpoint, corrected inverted logger arguments in `connection.py`, replaced non-compliant `f-string` logging in `device_config.py`, and fixed state mutation/patch generation logic in the frontend `device_config.js`.
+
+## [1.13.0] - 2026-08-12
+### Added
+- **Full-text message search** — Search across all message history using substring matching on message text. New `GET /api/messages/search?q=<query>` endpoint returns matching messages sorted by recency.
+- **Scheduled messages** — Send mesh messages at a future time by providing `schedule_at` as a unix timestamp in the `/api/send` POST body. Messages are queued and automatically dispatched when their scheduled time arrives. Supports both broadcast and destination-cast messages.
+- **Auto-traceroute on new node discovery** — Traceroutes are automatically dispatched when a new node appears in the mesh, without manual intervention. The coordinator fires `EVENT_TRACEROUTE_COMPLETE` when a node's traceroute timestamp updates.
+- **Geofence triggers** — Fire Home Assistant device automations when a tracked node enters or exits a defined geographical zone. Uses GPS position history from the node to detect zone crossings.
+
+### Fixed
+- **Message persistence across addon restarts** — Scheduled messages and the message buffer are now persisted to `messages.json` with atomic writes, surviving addon restarts.
+
 ## [1.12.0] - 2026-08-10
 ### Added
 - **Field validation on configuration** — The configuration API now validates numeric ranges, string lengths, and enum values against firmware-derived constraints (e.g. LoRa bandwidth 31–500 kHz, spread factor 7–12, coding rate 5–8) before writing to the radio. Out-of-range or malformed values are rejected with a clear 400 error.

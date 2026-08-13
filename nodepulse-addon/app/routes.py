@@ -284,6 +284,7 @@ async def handle_status(request: web.Request) -> web.Response:
             "disable_token_validation": config.disable_token_validation,
             "ignored_nodes": list(getattr(config, "ignored_nodes", [])),
             "access_key_set": bool(config.access_key),
+            "scheduled_messages_enabled": getattr(config, "scheduled_messages_enabled", True),
             # MQTT Bridge settings
             "mqtt_enabled": config.mqtt_enabled,
             "mqtt_address": config.mqtt_address,
@@ -327,6 +328,14 @@ async def handle_status(request: web.Request) -> web.Response:
                     break
         except Exception:
             status["addon_version"] = ""
+        # Attach scheduled messages stats
+        with conn._scheduled_messages_lock:
+            status["scheduled_count"] = len(conn._scheduled_messages)
+            if conn._scheduled_messages:
+                status["next_scheduled_time"] = min(m[0] for m in conn._scheduled_messages)
+            else:
+                status["next_scheduled_time"] = None
+
         return _json_response(status)
     except Exception as exc:
         logger.error("Error fetching status: %s", exc)
@@ -396,6 +405,49 @@ async def handle_delete_node(request: web.Request) -> web.Response:
     except Exception as exc:
         logger.error("Error deleting node %s: %s", node_id, exc)
         return _error_response("Failed to delete node")
+
+
+# ---------------------------------------------------------------------------
+# Route: GET /api/messages/search
+# ---------------------------------------------------------------------------
+
+async def handle_search_messages(request: web.Request) -> web.Response:
+    """
+    Search message text across all conversations.
+
+    Query parameters:
+      - q: search query string (substring match on message text)
+      - limit: max results to return (default 50, max 200)
+
+    Returns matching messages sorted by timestamp (newest first).
+    """
+    conn: MeshtasticConnection = request.app["connection"]
+    try:
+        q = request.query.get("q", "").strip()
+        if not q:
+            return _error_response("'q' query parameter is required", status=400)
+
+        limit = min(int(request.query.get("limit", 50)), 200)
+
+        messages = await conn.get_messages()
+
+        # Case-insensitive substring match on message text
+        matched = [
+            m for m in messages
+            if q.lower() in (m.get("text") or "").lower()
+        ]
+
+        # Sort by timestamp descending (newest first)
+        matched.sort(key=lambda m: m.get("timestamp", 0), reverse=True)
+
+        matched = matched[:limit]
+
+        return _json_response(matched)
+    except ValueError:
+        return _error_response("'limit' must be an integer", status=400)
+    except Exception as exc:
+        logger.error("Error searching messages: %s", exc)
+        return _error_response("Failed to search messages")
 
 
 # ---------------------------------------------------------------------------
@@ -647,18 +699,35 @@ async def handle_send(request: web.Request) -> web.Response:
     if channel < 0 or channel > 7:
         return _error_response("'channel' must be between 0 and 7", status=400)
 
-    try:
-        success = await conn.send_message(text, destination=destination, channel=channel)
-        if success:
-            return _json_response({"sent": True})
-        return _error_response("Message was not accepted by the Meshtastic interface", status=502)
-    except Exception as exc:
-        logger.error(
-            "Unhandled error in send handler (destination=%s): %s", destination, exc
-        )
-        return _error_response("Failed to send message")
+    # Check if scheduling is requested (provide 'schedule_at' as a unix timestamp)
+    schedule_at = body.get("schedule_at")
+    if schedule_at is not None:
+        try:
+            schedule_at = float(schedule_at)
+        except (TypeError, ValueError):
+            return _error_response("'schedule_at' must be a unix timestamp", status=400)
+        if not getattr(request.app["config"], "scheduled_messages_enabled", True):
+            return _error_response("Scheduled messages are disabled in config", status=403)
+        # Add to the scheduled messages queue via connection manager
+        conn.schedule_message(float(schedule_at), (body.get("destination") or "").strip(), text, channel)
+        return _json_response({"scheduled": True, "schedule_at": schedule_at})
+    else:
+        destination = body.get("destination")  # None → broadcast
+
+        try:
+            success = await conn.send_message(text, destination=destination, channel=channel)
+            if success:
+                return _json_response({"sent": True})
+            return _error_response("Message was not accepted by the Meshtastic interface", status=502)
+        except Exception as exc:
+            logger.error(
+                "Unhandled error in send handler (destination=%s): %s", destination, exc
+            )
+            return _error_response("Failed to send message")
 
 
+# ---------------------------------------------------------------------------
+# Route: GET /api/messages/search
 # ---------------------------------------------------------------------------
 # Route: POST /api/traceRoute
 # ---------------------------------------------------------------------------
@@ -1011,3 +1080,43 @@ async def handle_reload_device_config(request: web.Request) -> web.Response:
     except Exception as exc:
         logger.error("Error reloading device config: %s", exc)
         return _error_response("Failed to reload device configuration")
+
+
+# ---------------------------------------------------------------------------
+# Route: GET /api/security/scan
+# ---------------------------------------------------------------------------
+
+async def handle_get_security_scan(request: web.Request) -> web.Response:
+    """
+    Inspect every configured channel's PSK and return a list of security
+    findings — severity classification, human-readable reason, and duplicate-
+    key detection.
+
+    Response shape:
+        {
+          "findings": [
+            {
+              "channel_index": 0,
+              "channel_name":  "Primary",
+              "severity":      "weak",
+              "reason":        "Using the Meshtastic default key …",
+              "duplicate_of":  null
+            },
+            …
+          ],
+          "has_issues": true,
+          "scanned_at": 1723571234
+        }
+
+    Returns 503 when the node is not connected.
+    """
+    conn: MeshtasticConnection = request.app["connection"]
+    try:
+        result = await conn.get_security_scan()
+        return _json_response(result)
+    except ConnectionError as exc:
+        return _error_response(str(exc), status=503)
+    except Exception as exc:
+        logger.error("Error running security scan: %s", exc)
+        return _error_response("Security scan failed")
+

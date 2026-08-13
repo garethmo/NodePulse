@@ -149,11 +149,11 @@ function _restoreRebootBanner() {
 }
 
 function _renderSections(container, data) {
-  // The backend returns a `_schema` block with per-field metadata (types,
-  // enum options, min/max, max_length). It is used to render selects and
-  // constrain inputs. Fall back to value-derived types if absent.
-  const schema = (data && data._schema) || {};
-  delete data._schema;
+  // Work on a shallow clone so we don't mutate _configData's _schema —
+  // renderDeviceConfig() may be called again without a fresh fetch.
+  const dataClone = { ...data };
+  const schema = (dataClone._schema) || {};
+  delete dataClone._schema;
 
   container.innerHTML = '';
 
@@ -161,8 +161,8 @@ function _renderSections(container, data) {
   grid.className = 'cfg-grid';
 
   for (const sectionKey of SECTION_ORDER) {
-    if (!(sectionKey in data)) continue;
-    const sectionData = data[sectionKey];
+    if (!(sectionKey in dataClone)) continue;
+    const sectionData = dataClone[sectionKey];
     if (!sectionData || typeof sectionData !== 'object') continue;
 
     const meta = SECTION_META[sectionKey] || {
@@ -437,6 +437,8 @@ function _buildFieldRow(sectionKey, fieldKey, fieldValue, fieldSchema = null) {
 function _currentFormValues(form, sectionKey) {
   const values = {};
   form.querySelectorAll('[data-field-key]').forEach(el => {
+    // Skip disabled/read-only inputs — they are never part of a patch.
+    if (el.disabled) return;
     const key  = el.dataset.fieldKey;
     const type = el.dataset.fieldType;
     if (type === 'bool') {

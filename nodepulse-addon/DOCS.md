@@ -21,6 +21,7 @@ NodePulse is a Home Assistant addon and custom integration that gives you deep v
 | ☁️ **MQTT Bridge** | Bidirectional MQTT bridge with geospatial/portnum/node-ID filtering and optional radio forwarding |
 | 🤖 **Telegram Bot** | Bidirectional Telegram bridge with `/status`, `/nodes`, `/send`, and `/dm` commands |
 | 🎛️ **Comprehensive Settings Page** | Web UI Settings tab reflecting every addon configuration option — connection, mesh, HA integration, MQTT, Telegram, auto responder, and logging — with secrets masked |
+| ⚙️ **Remote Device Configuration** | Configure tab to view and edit the connected mesh radio's config (roles, LoRa, WiFi, MQTT, telemetry, owner names) with danger confirmations and reboot-required feedback |
 | 🖥️ **Web UI Dashboard** | Full-featured dashboard served via HA Ingress (no port forwarding) |
 
 ---

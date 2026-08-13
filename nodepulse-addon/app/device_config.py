@@ -281,8 +281,8 @@ def read_device_config(interface) -> Dict[str, Any]:
             "region": region,
             "role": _resolve_role(interface, user_info),
         }
-    except Exception as e:
-        logger.warning(f"Failed to read owner info: {e}")
+    except Exception as exc:
+        logger.warning("Failed to read owner info: %s", exc)
         config_dict["owner"] = {
             "long_name": "", "short_name": "", "hw_model": "",
             "firmware_version": "", "region": "", "role": "",

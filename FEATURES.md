@@ -35,6 +35,7 @@ The addon runs as a Home Assistant addon (Docker container) serving a REST API a
 | `/api/position-history` | GET | Position fix history for map trails (optional `/{node_id}` for single-node trail) |
 | `/api/packets` | GET | Packet inspector ring buffer (latest captured packets, optional `?limit=`) |
 | `/api/sniffer/stats` | GET | Live LoRa sniffer statistics (packets/min, unique nodes, portnum distribution) |
+| `/api/security/scan` | GET | Auto-detect weak or duplicate encryption keys across mesh channels |
 | `/api/waypoints` | GET | All active (non-expired) waypoints |
 | `/api/waypoints` | POST | Create a local waypoint (`name`, `lat`/`lng` optional — defaults to map centre) |
 | `/api/waypoints/{id}` | PATCH | Update waypoint fields (e.g. lat/lng after drag) |
@@ -108,6 +109,7 @@ A dedicated "Packets" tab showing every inbound Meshtastic packet via a real-tim
 - **Sort/filter**: Click column headers to sort asc/desc or filter by unique values via dropdown
 - **Export**: Download visible packets as JSON or CSV
 - **Sniffer stats**: Collapsible "📊 Stats" panel with packets/min, unique nodes, total captured, and portnum distribution bars
+- **Security scanner**: Server-side classification of channel PSKs (secure/weak/unencrypted), duplicate key detection, and inline 🔓 badges on flagged packet rows
 - **Responsive**: Table collapses gracefully on mobile with `.packet-table` CSS
 
 ### Web UI — Waypoints
@@ -121,6 +123,18 @@ Click the "📏 Ruler" button to enter measurement mode. The map filter bar coll
 ### Web UI — Settings View
 
 Read-only display of runtime configuration: connection type, host/port, node count, ignored nodes, HA base URL, access key status, scan interval, log level, addon version. "Clear stale nodes" action button.
+
+### Web UI — Configuration View (Device Configuration)
+
+A **Configure** tab for viewing and editing the connected mesh radio's configuration (shipped 1.10.0+, refined in 1.11.0/1.12.0). Backed by `GET/PUT /api/device-config` + `POST /api/device-config/reload`.
+
+- **Schema-driven forms** — The field schema (types, enum options, min/max, max length) is introspected live from the radio's installed protobuf descriptors, so forms render correctly across firmware versions. Sectioned cards: Node Identity (owner), Device, LoRa Radio, Position, Power, Display, Network/WiFi, Bluetooth, Telemetry, Neighbor Info, MQTT, Canned Messages, Store & Forward.
+- **Backend validation** — Numeric ranges, string lengths, and enum values are validated against firmware-derived constraints; invalid values are rejected with HTTP 400.
+- **Enum dropdowns** — Enum-backed fields render as `<select>`s populated from the radio's firmware schema.
+- **Danger-zone confirmations** — Role→ROUTER, LoRa TX disabled, region change, and credential updates prompt for confirmation in the UI *and* are rejected server-side without `"confirm": true`.
+- **LoRa preset gating** — Manual radio params (bandwidth/spread factor/coding rate/frequency offset) are greyed out and rejected while `use_preset` is enabled.
+- **Reboot feedback** — Writes requiring a reboot show a dismissible "reboot the node to apply" banner; a Refresh button force re-reads config from the radio.
+- **Thread-safe writes** — Writes run in a thread-pool worker under a config-write lock, never holding the connection lock during radio I/O.
 
 ### Web UI — Theming
 
@@ -176,6 +190,9 @@ The `custom_components/nodepulse/` package registers entities, services, device 
 | Uptime | `_{node_id}_uptime` | `duration` | s | Node uptime |
 | Role | `_{node_id}_role` | — | — | `CLIENT`, `ROUTER`, `ROUTER_CLIENT`, etc. |
 | Gas Resistance | `_{node_id}_gas_resistance` | — | MΩ | Gas sensor resistance (e.g. MQ-135) |
+| Distance | `_{node_id}_distance` | — | km | Haversine distance from self/gateway node |
+| Neighbor Count | `_{node_id}_neighbor_count` | — | — | Number of peers this node sees from NEIGHBORINFO_APP |
+| Scheduled Message | `_{node_id}_scheduled` | — | — | Message queued for future delivery |
 | Message Received | `_{node_id}_message_received` | — | — | Text of last received message |
 | Message Sent | `_{node_id}_message_sent` | — | — | Text of last sent message |
 

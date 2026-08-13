@@ -169,7 +169,7 @@ function createMap(elementId) {
       // Node name labels                                 — key "N"
       makeToggle('nodepulse:togglenames',     'Toggle node names (N)',           '🏷', true);
        // Position history trails                          — key "H"
-       makeToggle('nodepulse:toggletrails',    'Toggle position trails (H)',      '⏳', true);
+       makeToggle('nodepulse:toggletrails',    'Toggle position trails (H)',      '⏳', false);
        // Coverage heatmap (signal strength)               — key "M"
        makeToggle('nodepulse:toggleheatmap',  'Toggle signal heatmap (M)',      '🌡', false);
 
@@ -271,7 +271,7 @@ export class MapManager {
     this._selfLinksVisible = false; // self -> node connectors
     this._peerLinksVisible = false; // node <-> node proximity links
     this._tracesVisible = true;     // discovered traceroute paths
-    this._trailsVisible = true;     // position history trails
+    this._trailsVisible = false;    // position history trails (default off)
     this._heatmapVisible = false;   // coverage heatmap
     this._lastHeatPoints = [];      // last computed heat points (for immediate redraw)
     this._lastHeatSig = '';         // serialised heatPoints — skip setLatLngs when unchanged

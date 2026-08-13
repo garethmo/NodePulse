@@ -2009,6 +2009,88 @@ body::before {
   transform: scale(0.97);
 }
 
+/* Schedule toggle button — sits between the textarea and the send button */
+.messages-schedule-toggle {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--border-subtle);
+  background: var(--card-bg);
+  color: var(--text-secondary);
+  font-size: 16px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background var(--transition-fast), box-shadow var(--transition-fast), color var(--transition-fast);
+  line-height: 1;
+}
+.messages-schedule-toggle:hover {
+  background: rgba(255, 183, 77, 0.12);
+  color: #ffb74d;
+  border-color: rgba(255, 183, 77, 0.4);
+}
+/* Active state — schedule is armed */
+.messages-schedule-toggle.active {
+  background: rgba(255, 183, 77, 0.18);
+  border-color: #ffb74d;
+  color: #ffb74d;
+  box-shadow: 0 0 6px rgba(255, 183, 77, 0.35);
+}
+
+/* Collapsible scheduler row */
+.messages-schedule-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  background: rgba(255, 183, 77, 0.06);
+  border-top: 1px solid rgba(255, 183, 77, 0.2);
+  font-size: 13px;
+  color: var(--text-secondary);
+  flex-wrap: wrap;
+}
+.messages-schedule-row label {
+  white-space: nowrap;
+  color: #ffb74d;
+  font-weight: 600;
+}
+.messages-schedule-dt {
+  flex: 1;
+  min-width: 180px;
+  max-width: 260px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 13px;
+  padding: 5px 10px;
+  cursor: pointer;
+  transition: border-color var(--transition-fast);
+}
+.messages-schedule-dt:focus {
+  outline: none;
+  border-color: #ffb74d;
+  box-shadow: 0 0 0 2px rgba(255, 183, 77, 0.18);
+}
+/* Browser webkit calendar icon colour */
+.messages-schedule-dt::-webkit-calendar-picker-indicator {
+  filter: invert(1) opacity(0.5);
+  cursor: pointer;
+}
+.messages-schedule-clear {
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0 4px;
+  transition: color var(--transition-fast);
+}
+.messages-schedule-clear:hover { color: var(--text-primary); }
+
 /* Message bubbles in full-screen thread — WhatsApp-style */
 .messages-thread-list .message-bubble {
   max-width: 75%;
@@ -3180,4 +3262,115 @@ body.nav-open #sidebar-backdrop { display: block; }
   .cfg-grid { grid-template-columns: 1fr; }
   .cfg-input { width: 120px; }
   .cfg-input-number { width: 80px; }
+}
+
+/* =========================================================================
+   Security Scanner — Channel Security sub-section (Packets view / Stats panel)
+   ========================================================================= */
+
+#security-scan-section {
+  margin-top: 16px;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 12px;
+}
+
+/* Header row: title + Scan button */
+.sec-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  font-size: 13px;
+  gap: var(--space-sm);
+}
+
+.sec-scan-btn {
+  font-size: 11px;
+  padding: 4px 12px;
+  min-height: 28px;
+}
+
+/* Placeholder / error text */
+.sec-placeholder,
+.sec-error {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.sec-error { color: var(--color-error, #ef5350); }
+
+/* One row per channel finding */
+.sec-finding-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.sec-finding-row:last-of-type { border-bottom: none; }
+
+.sec-icon   { flex-shrink: 0; line-height: 1; }
+
+.sec-channel {
+  flex-shrink: 0;
+  min-width: 96px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.sec-channel em {
+  font-style: normal;
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+
+.sec-reason {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: normal;
+  line-height: 1.35;
+  /* colour is set inline by severity */
+}
+
+/* Duplicate-key badge */
+.sec-badge-dup {
+  flex-shrink: 0;
+  font-size: 10px;
+  background: rgba(255, 183, 77, 0.12);
+  color: #ffb74d;
+  border: 1px solid rgba(255, 183, 77, 0.35);
+  border-radius: 4px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+
+/* Scan timestamp */
+.sec-timestamp {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-align: right;
+  margin-top: 6px;
+  padding-top: 4px;
+}
+
+/* 🔓 badge on packet rows with a flagged channel */
+.sec-pkt-badge {
+  display: inline-block;
+  margin-left: 4px;
+  font-size: 11px;
+  vertical-align: middle;
+  opacity: 0.85;
+  cursor: default;
+}
+
+/* Mobile: wrap reason to new line on very small screens */
+@media (max-width: 480px) {
+  .sec-finding-row {
+    flex-wrap: wrap;
+  }
+  .sec-reason {
+    flex-basis: 100%;
+    margin-left: 28px; /* align under channel name */
+  }
 }

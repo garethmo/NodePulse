@@ -15,6 +15,7 @@ Shutdown sequence (on SIGTERM from HA Supervisor):
   2. We cancel the monitor Task and cleanly close the Meshtastic interface.
 """
 import asyncio
+import time
 import dataclasses
 import logging
 from pathlib import Path
@@ -51,6 +52,7 @@ from .routes import (
     handle_get_device_config,
     handle_put_device_config_section,
     handle_reload_device_config,
+    handle_get_security_scan,
 )
 
 # Configure structured logging early so all subsequent imports can log.
@@ -102,6 +104,26 @@ async def _on_startup(app: web.Application) -> None:
                 logger.debug("ACK expiry sweep error (ignored): %s", exc)
 
     app["ack_expiry_task"] = asyncio.create_task(_run_ack_expiry_loop())
+    # Launch the scheduled messages processor. Checks every second for messages
+    # whose execute_time has arrived and sends them to the mesh.
+    async def _run_scheduled_messages_loop() -> None:
+        while True:
+            await asyncio.sleep(1)
+            try:
+                current_time = time.time()
+                to_send = conn._process_scheduled_messages(current_time)
+                for msg in to_send:
+                    # Message payload: (destination, text, channel)
+                    dest = msg.get("to_id")
+                    if dest == "": dest = None
+                    await conn.send_message(
+                        text=msg["text"],
+                        destination=dest,
+                        channel=msg["channel"]
+                    )
+            except Exception as exc:  # defensive: never crash the task
+                logger.debug("Scheduled messages processor error (ignored): %s", exc)
+    app["scheduled_messages_task"] = asyncio.create_task(_run_scheduled_messages_loop())
     
     # Launch MQTT Bridge
     await app["mqtt_bridge"].start()
@@ -232,9 +254,14 @@ def build_app(config) -> web.Application:
     app.router.add_patch("/api/waypoints/{waypoint_id}", handle_update_waypoint)
     app.router.add_delete("/api/waypoints/{waypoint_id}", handle_delete_waypoint)
     # Device configuration endpoints
+    # NOTE: the literal /api/device-config/reload must be registered BEFORE
+    # the parameterized /api/device-config/{section} route, otherwise aiohttp
+    # greedily matches "reload" as the section name and the refresh button breaks.
     app.router.add_get("/api/device-config", handle_get_device_config)
-    app.router.add_put("/api/device-config/{section}", handle_put_device_config_section)
     app.router.add_post("/api/device-config/reload", handle_reload_device_config)
+    app.router.add_put("/api/device-config/{section}", handle_put_device_config_section)
+    # Security scanner
+    app.router.add_get("/api/security/scan", handle_get_security_scan)
 
     # --- Static Web UI ---
     # Serve the dashboard from the root path. Under HA Ingress the addon is

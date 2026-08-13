@@ -13,7 +13,7 @@
  * is easy to trace top-to-bottom.
  */
 
-import { fetchStatus, fetchNodes, fetchChannels, fetchMessages, sendMessage, requestTraceRoute, requestPosition, fetchTrackedNodes, trackNode, clearStaleNodes, fetchTags, setTags, fetchPositionHistory, fetchPackets, fetchSnifferStats, fetchWaypoints, addWaypoint, updateWaypoint, deleteWaypoint, deleteNode } from './api.js';
+import { fetchStatus, fetchNodes, fetchChannels, fetchMessages, sendMessage, requestTraceRoute, requestPosition, fetchTrackedNodes, trackNode, clearStaleNodes, fetchTags, setTags, fetchPositionHistory, fetchPackets, fetchSnifferStats, fetchWaypoints, addWaypoint, updateWaypoint, deleteWaypoint, deleteNode, fetchSecurityScan } from './api.js';
 import { MapManager } from './map.js';
 import { ChartManager } from './charts.js';
 import { TopologyManager } from './topology.js';
@@ -59,6 +59,9 @@ const state = {
   snifferStats:       null,
   packetFilters:      {},    // { col: value } — active column filters
   packetSort:         null,  // { col, dir } where dir is 'asc' or 'desc'
+  // Security scanner result — null until first scan, then cached for the session.
+  // Reset to null on manual rescan so stale badges are cleared while scanning.
+  securityScan:       null,
 
   // Notification state (Feature 2)
   _lastSeenMsgId:     localStorage.getItem('np_last_msg_id') || null,
@@ -1080,6 +1083,37 @@ async function handleMessagesSend() {
   const channel = conv.kind === 'dm' ? 0 : conv.channel;
   const convKey = state.activeConversation || 'ch:0';
 
+  // Check if the user has armed the scheduler.
+  const schedDt = document.getElementById('messages-schedule-dt');
+  const scheduleAt = schedDt && schedDt.value
+    ? Math.floor(new Date(schedDt.value).getTime() / 1000)
+    : null;
+
+  if (scheduleAt) {
+    if (scheduleAt <= Math.floor(Date.now() / 1000)) {
+      showToast('Scheduled time must be in the future.', 'error');
+      return;
+    }
+    try {
+      await sendMessage(text, destination, channel, scheduleAt);
+      // Show a toast confirming the schedule, then clear the compose bar.
+      const readableTime = new Date(schedDt.value).toLocaleString();
+      showToast(`⏰ Scheduled for ${readableTime}`, 'success');
+      input.value = '';
+      input.style.height = 'auto';
+      // Clear the scheduler UI.
+      schedDt.value = '';
+      const toggle = document.getElementById('messages-schedule-toggle');
+      const row    = document.getElementById('messages-schedule-row');
+      if (toggle) toggle.classList.remove('active');
+      if (row)    row.classList.add('hidden');
+    } catch (err) {
+      showToast(`Schedule failed: ${err.message}`, 'error');
+    }
+    return;
+  }
+
+  // Immediate send — existing optimistic-UI flow.
   const optimistic = {
     id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
     text,
@@ -1243,6 +1277,11 @@ function switchView(viewName) {
       topology.updateData(state);
     } else if (viewName === 'packets') {
       pollPackets();
+      // Auto-scan once per session when the Packets view is first opened.
+      // Subsequent scans are triggered manually via the Scan button.
+      if (state.securityScan === null) {
+        runSecurityScan();
+      }
     } else if (viewName === 'messages') {
       renderMessagesSidebar();
       renderMessagesThread();
@@ -1374,6 +1413,16 @@ async function renderSettings() {
     // Schedule & Logging
     _setEl('settings-scan-interval', cfg.scan_interval != null ? `${cfg.scan_interval} s` : '—');
     _setEl('settings-log-level',     cfg.log_level || '—');
+
+    // Scheduled Messages
+    const schedEnabled = cfg.scheduled_messages_enabled !== false;
+    _setEl('settings-scheduled-enabled', schedEnabled ? '✓ Enabled' : 'Disabled');
+    if (schedEnabled && status.next_scheduled_time) {
+      const nextTime = new Date(status.next_scheduled_time * 1000).toLocaleString();
+      _setEl('settings-scheduled-next', `${nextTime} (${status.scheduled_count} pending)`);
+    } else {
+      _setEl('settings-scheduled-next', 'None pending');
+    }
 
     // About
     _setEl('settings-version', status.addon_version || '—');
@@ -1793,6 +1842,33 @@ async function init() {
   if (msgsSendBtn) {
     msgsSendBtn.addEventListener('click', handleMessagesSend);
   }
+
+  // Schedule toggle — show/hide the datetime picker row.
+  const msgsScheduleToggle = document.getElementById('messages-schedule-toggle');
+  const msgsScheduleRow    = document.getElementById('messages-schedule-row');
+  const msgsScheduleDt     = document.getElementById('messages-schedule-dt');
+  const msgsScheduleClear  = document.getElementById('messages-schedule-clear');
+  if (msgsScheduleToggle && msgsScheduleRow) {
+    msgsScheduleToggle.addEventListener('click', () => {
+      const open = msgsScheduleRow.classList.toggle('hidden') === false;
+      msgsScheduleToggle.classList.toggle('active', open);
+      if (open && msgsScheduleDt) {
+        // Pre-fill with "now + 5 min" as a sensible default.
+        const d = new Date(Date.now() + 5 * 60 * 1000);
+        // datetime-local value format: YYYY-MM-DDTHH:MM
+        const pad = n => String(n).padStart(2, '0');
+        msgsScheduleDt.value = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+        msgsScheduleDt.focus();
+      }
+    });
+  }
+  if (msgsScheduleClear && msgsScheduleRow && msgsScheduleToggle) {
+    msgsScheduleClear.addEventListener('click', () => {
+      if (msgsScheduleDt) msgsScheduleDt.value = '';
+      msgsScheduleRow.classList.add('hidden');
+      msgsScheduleToggle.classList.remove('active');
+    });
+  }
   const msgsInput = document.getElementById('messages-message-input');
   if (msgsInput) {
     msgsInput.addEventListener('keydown', e => {
@@ -2007,6 +2083,9 @@ async function init() {
   const snifferPanel  = document.getElementById('sniffer-panel');
   if (snifferToggle && snifferPanel) snifferToggle.addEventListener('click', () => snifferPanel.classList.toggle('hidden'));
 
+  // Security scan button inside the Stats panel.
+  document.getElementById('security-scan-btn')?.addEventListener('click', runSecurityScan);
+
   // Waypoint panel — open/close and form submission.
   const waypointPanel = document.getElementById('waypoint-panel');
   const waypointBtn   = document.getElementById('map-add-waypoint-btn');
@@ -2134,7 +2213,8 @@ async function init() {
     }
   });
 
-  switchView('dashboard');
+  // Show the messages screen first on mobile (≤768px), dashboard on larger screens.
+  switchView(window.innerWidth <= 768 ? 'messages' : 'dashboard');
 
   // Initial data load — show a spinner state while waiting.
   document.getElementById('node-list').innerHTML = `
@@ -2293,10 +2373,8 @@ function showPacketFilterDropdown(th, col) {
   th.closest('table').parentElement.appendChild(dd);
 }
 
-function renderPacketTable() {
-  const tbody = document.getElementById('packet-table-body');
-  if (!tbody) return;
-  const pf = state.packetFilters;
+function getVisiblePackets() {
+  const pf = state.packetFilters || {};
   let packets = state.packetLog.filter(p => {
     for (const [col, val] of Object.entries(pf)) {
       const pv = String(p[col] ?? '');
@@ -2305,7 +2383,6 @@ function renderPacketTable() {
     return true;
   });
 
-  // Apply sort.
   if (state.packetSort) {
     const { col, dir } = state.packetSort;
     packets = [...packets].sort((a, b) => {
@@ -2321,7 +2398,23 @@ function renderPacketTable() {
       return dir === 'asc' ? cmp : -cmp;
     });
   }
+  return packets;
+}
+
+function renderPacketTable() {
+  const tbody = document.getElementById('packet-table-body');
+  if (!tbody) return;
+  const packets = getVisiblePackets();
   tbody.innerHTML = '';
+
+  // Build a set of channel indexes that have a non-secure finding so we can
+  // add a 🔓 badge to packet rows on those channels.
+  const flaggedChannels = new Set(
+    ((state.securityScan && state.securityScan.findings) || [])
+      .filter(f => f.severity !== 'secure')
+      .map(f => f.channel_index)
+  );
+
   for (const pkt of packets) {
     const color = _portnumColor(pkt.portnum);
     const tr = document.createElement('tr');
@@ -2329,12 +2422,12 @@ function renderPacketTable() {
     tr.innerHTML = `
       <td class="packet-time">${_fmtPacketTime(pkt.timestamp)}</td>
       <td><span class="portnum-badge" style="color:${color}">${escapeHtml(pkt.portnum||'UNKNOWN')}</span></td>
-      <td class="mono pkt-id">${escapeHtml(pkt.from_id||'—')}${shortNameFor(pkt.from_id) ? ' <span class="pkt-name">'+escapeHtml(shortNameFor(pkt.from_id))+'</span>' : ''}</td>
-      <td class="mono pkt-id">${escapeHtml(pkt.to_id||'—')}${shortNameFor(pkt.to_id) ? ' <span class="pkt-name">'+escapeHtml(shortNameFor(pkt.to_id))+'</span>' : ''}</td>
-      <td>${pkt.channel??'—'}</td>
-      <td>${pkt.rx_snr!=null?pkt.rx_snr.toFixed(1):'—'}</td>
-      <td>${pkt.hop_limit!=null?`${pkt.hop_limit}/${pkt.hop_start??'?'}`:'—'}</td>
-      <td>${pkt.want_ack?'✓':''}</td>`;
+      <td class="mono pkt-id">${escapeHtml(pkt.from_id||'\u2014')}${shortNameFor(pkt.from_id) ? ' <span class="pkt-name">'+escapeHtml(shortNameFor(pkt.from_id))+'</span>' : ''}</td>
+      <td class="mono pkt-id">${escapeHtml(pkt.to_id||'\u2014')}${shortNameFor(pkt.to_id) ? ' <span class="pkt-name">'+escapeHtml(shortNameFor(pkt.to_id))+'</span>' : ''}</td>
+      <td>${pkt.channel??'\u2014'}${flaggedChannels.has(pkt.channel) ? ' <span class="sec-pkt-badge" title="Weak or no encryption on this channel">\uD83D\uDD13</span>' : ''}</td>
+      <td>${pkt.rx_snr!=null?pkt.rx_snr.toFixed(1):'\u2014'}</td>
+      <td>${pkt.hop_limit!=null?`${pkt.hop_limit}/${pkt.hop_start??'?'}`:'\u2014'}</td>
+      <td>${pkt.want_ack?'\u2713':''}</td>`;
     const detail = document.createElement('tr');
     detail.className = 'packet-detail hidden';
     const pre = document.createElement('pre'); pre.className = 'json-dump';
@@ -2366,6 +2459,94 @@ function renderPacketTable() {
   });
 }
 
+// ============================================================================
+// Security Scanner (Packets view)
+// ============================================================================
+
+/**
+ * Render the security findings list inside #security-findings.
+ * Called after every scan completes (success or error).
+ */
+function renderSecurityFindings(result) {
+  const container = document.getElementById('security-findings');
+  if (!container) return;
+
+  if (!result) {
+    container.innerHTML = '<span class="sec-placeholder">Press Scan to check channel encryption keys.</span>';
+    return;
+  }
+
+  // Error from the API (e.g. not connected).
+  if (result.error) {
+    container.innerHTML = `<span class="sec-error">${escapeHtml(result.error)}</span>`;
+    return;
+  }
+
+  const { findings, scanned_at } = result;
+  if (!findings || !findings.length) {
+    container.innerHTML = '<span class="sec-placeholder">No active channels found.</span>';
+    return;
+  }
+
+  // Severity → display properties.
+  const severityColor = { secure: '#69f0ae', weak: '#ffb74d', unencrypted: '#ef5350' };
+  const severityIcon  = { secure: '🟢', weak: '🟠', unencrypted: '🔴' };
+
+  const rows = findings.map(f => {
+    const color = severityColor[f.severity] || '#9e9e9e';
+    const icon  = severityIcon[f.severity]  || '⚪';
+    const dupBadge = f.duplicate_of != null
+      ? `<span class="sec-badge-dup" title="Same key as channel ${f.duplicate_of}">⚠️ Duplicate of ch${f.duplicate_of}</span>`
+      : '';
+    return `
+      <div class="sec-finding-row" data-severity="${escapeHtml(f.severity)}">
+        <span class="sec-icon" aria-hidden="true">${icon}</span>
+        <span class="sec-channel">Ch${f.channel_index} <em>${escapeHtml(f.channel_name || '')}</em></span>
+        <span class="sec-reason" style="color:${color}">${escapeHtml(f.reason)}</span>
+        ${dupBadge}
+      </div>`;
+  }).join('');
+
+  const ts = new Date(scanned_at * 1000).toLocaleTimeString('en-GB', {
+    hour: '2-digit', minute: '2-digit',
+  });
+  container.innerHTML = rows + `<div class="sec-timestamp">Scanned at ${ts}</div>`;
+}
+
+/**
+ * Run a security scan and update the UI.
+ * Called on view entry (first time only) and on Scan button click.
+ */
+async function runSecurityScan() {
+  const btn = document.getElementById('security-scan-btn');
+  // Open the Stats panel automatically so the user sees the result.
+  const panel = document.getElementById('sniffer-panel');
+  if (panel && panel.classList.contains('hidden')) {
+    panel.classList.remove('hidden');
+  }
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Scanning…';
+  }
+  // Clear stale scan so badges disappear while scanning.
+  state.securityScan = null;
+  renderPacketTable();
+  try {
+    state.securityScan = await fetchSecurityScan();
+  } catch (err) {
+    // Build a pseudo-result with an error message.
+    state.securityScan = { error: `Scan failed: ${err.message || 'connection error'}` };
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Scan';
+    }
+  }
+  renderSecurityFindings(state.securityScan);
+  // Re-render the packet table so 🔓 badges appear/disappear correctly.
+  renderPacketTable();
+}
+
 function renderSnifferStats(stats) {
   if (!stats) return;
   const sid = id => document.getElementById(id);
@@ -2389,14 +2570,16 @@ function renderSnifferStats(stats) {
 }
 
 function exportPacketsJSON() {
-  const blob = new Blob([JSON.stringify(state.packetLog,null,2)],{type:'application/json'});
+  const packets = getVisiblePackets();
+  const blob = new Blob([JSON.stringify(packets,null,2)],{type:'application/json'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a'); a.href=url; a.download='nodepulse_packets.json'; a.click(); URL.revokeObjectURL(url);
 }
 
 function exportPacketsCSV() {
+  const packets = getVisiblePackets();
   const cols = ['timestamp','from_id','to_id','portnum','channel','rx_snr','rx_rssi','hop_limit','want_ack','via_mqtt','decoded_ok'];
-  const rows = state.packetLog.map(p=>cols.map(c=>JSON.stringify(p[c]??'')).join(','));
+  const rows = packets.map(p=>cols.map(c=>JSON.stringify(p[c]??'')).join(','));
   const csv = [cols.join(','),...rows].join('\n');
   const blob = new Blob([csv],{type:'text/csv'});
   const url = URL.createObjectURL(blob);

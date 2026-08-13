@@ -1,10 +1,16 @@
 {
   "name": "NodePulse",
-  "version": "1.12.0",
+  "version": "1.14.0",
   "slug": "nodepulse",
   "description": "Comprehensive dashboard and integration for monitoring Meshtastic networks directly within Home Assistant",
   "url": "https://github.com/garethmo/NodePulse",
-  "arch": ["aarch64", "amd64", "armhf", "armv7", "i386"],
+  "arch": [
+    "aarch64",
+    "amd64",
+    "armhf",
+    "armv7",
+    "i386"
+  ],
   "startup": "application",
   "boot": "auto",
   "init": false,
@@ -49,7 +55,8 @@
     "telegram_forward_dms": true,
     "telegram_allow_commands": true,
     "auto_responder_enabled": false,
-    "auto_responder_message": "Welcome to the mesh! You have been discovered by NodePulse."
+    "auto_responder_message": "Welcome to the mesh! You have been discovered by NodePulse.",
+    "scheduled_messages_enabled": true
   },
   "schema": {
     "log_level": "list(trace|debug|info|notice|warning|error|fatal)",
@@ -60,7 +67,9 @@
     "proxy_port": "port",
     "access_key": "str?",
     "scan_interval": "int(10,300)",
-    "ignored_nodes": ["str?"],
+    "ignored_nodes": [
+      "str?"
+    ],
     "ha_base_url": "str?",
     "disable_token_validation": "bool?",
     "mqtt_enabled": "bool?",
@@ -74,18 +83,25 @@
     "mqtt_lat_max": "float?",
     "mqtt_lng_min": "float?",
     "mqtt_lng_max": "float?",
-    "mqtt_portnum_allowlist": ["str?"],
-    "mqtt_node_blocklist": ["str?"],
+    "mqtt_portnum_allowlist": [
+      "str?"
+    ],
+    "mqtt_node_blocklist": [
+      "str?"
+    ],
     "mqtt_forwarding_enabled": "bool?",
     "telegram_enabled": "bool?",
     "telegram_bot_token": "str?",
     "telegram_chat_id": "str?",
-    "telegram_authorized_chat_ids": ["str?"],
+    "telegram_authorized_chat_ids": [
+      "str?"
+    ],
     "telegram_forward_channels": "str",
     "telegram_forward_dms": "bool?",
     "telegram_allow_commands": "bool?",
     "auto_responder_enabled": "bool?",
-    "auto_responder_message": "str?"
+    "auto_responder_message": "str?",
+    "scheduled_messages_enabled": "bool?"
   },
   "map": {},
   "environment": {}

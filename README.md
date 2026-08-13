@@ -68,6 +68,7 @@ NodePulse is a Home Assistant addon and custom integration that gives you deep v
 | 🔍 **Traceroute** | Dispatch traceroutes to any node from the Web UI (fire-and-forget — results appear on the next poll) |
 | 🖥️ **Web UI Dashboard** | Full-featured dashboard served via HA Ingress (no port forwarding). PWA-ready and fully mobile-optimized with slide-in navigation, responsive data tables, and tap-zoom protection. |
 | 📦 **Packet Inspector** | Real-time packet capture ring buffer showing every inbound Meshtastic packet with portnum, source/destination (with short names), channel, SNR, hop count, ACK status, and expandable JSON detail. Sort/filter by column headers, export to JSON/CSV, and view live sniffer stats. Fully responsive on mobile screens. |
+| 🔐 **Security Scanner** | Auto-detect weak or duplicate encryption keys across mesh channels with instantaneous server-side classification. Displays findings and highlights unencrypted/weak packets inline in the Packet Inspector. |
 | 📨 **Notify Platform** | `notify.mesh_<entry>` entity — send mesh messages from any automation/script, plus one `notify.mesh_<entry>_channel_<name>` entity per configured channel |
 | ⚡ **Service Actions** | `nodepulse.send_message`, `nodepulse.request_position`, `nodepulse.trace_route` |
 | 🤖 **Device Triggers & Actions** | Automate on message received/sent (and `channel_message.received`); send message / request position / trace route per node device |
@@ -92,6 +93,7 @@ NodePulse is a Home Assistant addon and custom integration that gives you deep v
 | ☁️ **MQTT Bridge** | Built-in bidirectional MQTT bridge. Ingests traffic from external brokers with a robust geospatial/portnum/node-ID filter pipeline. Optionally forwards packets to the local radio. Includes Web UI configuration. |
 | 🤖 **Telegram Bot** | Bidirectional Telegram Bot bridge. Inbound mesh text messages are automatically forwarded to an authorized Telegram chat. Send broadcasts or DMs back to the mesh from Telegram using bot commands. Includes `/status`, `/nodes`, `/send`, and `/dm` commands. Zero extra dependencies — uses the built-in `aiohttp` library. |
 | 🎛️ **Comprehensive Settings Page** | The Web UI Settings tab reflects every addon configuration option in real time — connection & mesh status, HA integration keys and token validation, the full MQTT bridge config (broker port, credential status, topic, geo filter, portnum allowlist, node blocklist), the Telegram bot (status, token, authorized chats, relay channels/DMs, commands), the auto responder, scan interval, and log level. Secrets are always masked |
+| ⚙️ **Remote Device Configuration** | Configure tab to view and edit the connected mesh radio's config (roles, LoRa, WiFi, MQTT, telemetry, owner names). Schema-driven forms, backend-validated ranges/enums, danger-zone confirmations (ROUTER role, TX disabled, region, credentials), LoRa preset gating, and reboot-required feedback |
 
 ---
 

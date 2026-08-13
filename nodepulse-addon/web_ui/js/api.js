@@ -74,11 +74,13 @@ export async function fetchMessages() {
  * @param {string|null} destination - Node ID hex string for DM, or null for broadcast.
  * @param {number} channel - Channel index (default 0).
  */
-export async function sendMessage(text, destination = null, channel = 0) {
+export async function sendMessage(text, destination = null, channel = 0, scheduleAt = null) {
+  const body = { text, destination, channel };
+  if (scheduleAt != null) body.schedule_at = scheduleAt;
   return _apiFetch('/send', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, destination, channel }),
+    body: JSON.stringify(body),
   });
 }
 
@@ -257,3 +259,11 @@ export async function reloadDeviceConfig() {
   });
 }
 
+/**
+ * Run a security scan on all configured channels.
+ * Returns { findings, has_issues, scanned_at }.
+ * Throws on connection failure (HTTP 503) or unexpected error.
+ */
+export async function fetchSecurityScan() {
+  return _apiFetch('/security/scan');
+}
