@@ -33,6 +33,7 @@ Legend: ✅ NodePulse has it · 🔶 partial ❌ NodePulse missing it.
 | Receive-only / passive mode | ✅ | ❌ | Shut off all TX |
 | Connection passthrough/filtering | ✅ | 🔶 | Portnum allowlist, node blocklist, geo bbox exist |
 
+
 ### Messaging & Channels
 
 | Feature | MeshMonitor | NodePulse | Notes |

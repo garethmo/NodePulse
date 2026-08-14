@@ -42,6 +42,7 @@ _NODES_FILE = os.path.join(_DATA_DIR, "nodes.json")
 _TAGS_FILE = os.path.join(_DATA_DIR, "tags.json")
 _POSITION_HISTORY_FILE = os.path.join(_DATA_DIR, "position_history.json")
 _WAYPOINTS_FILE = os.path.join(_DATA_DIR, "waypoints.json")
+_SCHEDULED_MESSAGES_FILE = os.path.join(_DATA_DIR, "scheduled_messages.json")
 logger = logging.getLogger(__name__)
 
 # A canonical Meshtastic node ID is a "!" followed by the node number in hex.
@@ -213,6 +214,7 @@ class MeshtasticConnection:
 
         # Restore any previously-persisted messages so history survives restarts.
         self._load_messages()
+        self._load_scheduled_messages()
 
         # Persisted traceroute results, keyed by node ID. Restored on startup so
         # discovered routes survive restarts; refreshed whenever a new traceroute
@@ -1439,17 +1441,18 @@ class MeshtasticConnection:
             logger.debug("Could not load persisted messages (ignored): %s", exc)
 
     
+    def _load_scheduled_messages(self) -> None:
+        """Restore scheduled messages from disk."""
         try:
-            if os.path.exists("/data/scheduled_messages.json"):
+            if os.path.exists(_SCHEDULED_MESSAGES_FILE):
                 with self._persist_lock:
-                    with open("/data/scheduled_messages.json", "r", encoding="utf-8") as fh:
+                    with open(_SCHEDULED_MESSAGES_FILE, "r", encoding="utf-8") as fh:
                         data = json.load(fh)
                 if isinstance(data, list):
                     with self._scheduled_messages_lock:
                         self._scheduled_messages = [tuple(x) for x in data]
         except Exception as exc:
             logger.debug("Could not load persisted scheduled messages (ignored): %s", exc)
-
     def _save_messages(self) -> None:
         """Persist the current message buffer to disk (best-effort)."""
         try:
@@ -1465,7 +1468,7 @@ class MeshtasticConnection:
     def schedule_message(self, execute_time: float, destination: str, text: str, channel: int) -> None:
         with self._scheduled_messages_lock:
             self._scheduled_messages.append((execute_time, destination, text, channel, 0))
-        self._schedule_save(self._scheduled_messages, "/data/scheduled_messages.json")
+        self._schedule_save(self._scheduled_messages, _SCHEDULED_MESSAGES_FILE)
 
 
     def _process_scheduled_messages(self, current_time: float) -> List[Dict[str, Any]]:
@@ -1481,15 +1484,15 @@ class MeshtasticConnection:
                 entry for entry in self._scheduled_messages
                 if entry[0] > current_time
             ]
-            for execute_time, from_id, to_id, text, channel in to_send:
+            for execute_time, destination, text, channel, _ in to_send:
                 sent.append({
-                    "from_id": from_id,
-                    "to_id": to_id,
+                    "from_id": None,
+                    "to_id": destination,
                     "text": text,
                     "channel": channel,
                     "outgoing": True,
                     "conversation": f"sch:{execute_time}",
-                    "is_dm": to_id is not None and to_id != "",
+                    "is_dm": destination is not None and destination != "",
                     "timestamp": int(execute_time),
                     "ack_status": "sending",
                     "packet_id": None,
@@ -1497,6 +1500,8 @@ class MeshtasticConnection:
                 # Actually send the message
                 # Note: we can't await here since we're in a sync method,
                 # but we schedule it via asyncio
+            if to_send:
+                self._schedule_save(self._scheduled_messages, _SCHEDULED_MESSAGES_FILE)
         return sent
 
     # ----------------------------------------------------------------
@@ -2339,6 +2344,7 @@ class MeshtasticConnection:
                             t = threading.Thread(
                                 target=self._send_message_sync,
                                 args=(msg, node_id, 0),
+                                kwargs={"want_ack": False},
                                 daemon=True
                             )
                             t.start()
@@ -2512,7 +2518,7 @@ class MeshtasticConnection:
         return result
 
     def _send_message_sync(
-        self, text: str, destination: Optional[str], channel: int
+        self, text: str, destination: Optional[str], channel: int, want_ack: bool = True
     ) -> bool:
         # Take a snapshot of the interface under the lock, then release it
         # BEFORE calling sendText. Holding _lock during sendText (which does
@@ -2551,6 +2557,7 @@ class MeshtasticConnection:
             sent_packet = iface.sendText(
                 text,
                 destinationId=to_num if to_num is not None else meshtastic.BROADCAST_ADDR,
+                wantAck=want_ack if is_dm else False,
                 channelIndex=channel,
             )
 
@@ -2566,10 +2573,10 @@ class MeshtasticConnection:
                 except (TypeError, ValueError, AttributeError):
                     packet_id = None
 
-            # Broadcast messages never receive a ROUTING_APP reply from
-            # the firmware, so we mark them delivered immediately.
-            # DMs get "sending" and flip on ROUTING_APP receipt (or timeout).
-            initial_ack = "delivered" if not is_dm else "sending"
+            # Broadcast messages (and DMs with want_ack=False) never receive a ROUTING_APP
+            # reply from the firmware, so we mark them delivered immediately.
+            # DMs with want_ack=True get "sending" and flip on ROUTING_APP receipt (or timeout).
+            initial_ack = "delivered" if (not is_dm or not want_ack) else "sending"
 
             entry = {
                 "from_id": self_id,
