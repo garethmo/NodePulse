@@ -2,6 +2,10 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.15.0] - 2026-08-14
+### Added
+- **E2E Testing Framework** — Added a comprehensive `pytest` + `Playwright` End-to-End testing suite for the Web UI and API. Tests execute entirely offline in a headless browser, utilizing robust mocking of the Meshtastic hardware and HA integration layers, and injecting stubs for CDN dependencies (Leaflet, Chart.js) to bypass network and Subresource Integrity (SRI) restrictions. Documented test execution commands in the README.
+
 ## [1.14.0] - 2026-08-13
 ### Added
 - **Security Scanner** — Auto-detect weak or duplicate encryption keys across mesh channels. Displays visual warnings and classification (secure/weak/unencrypted) directly in the Packets view, plus a 🔓 badge on packet rows from flagged channels. Uses zero radio I/O for instantaneous scanning.

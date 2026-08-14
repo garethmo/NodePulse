@@ -482,6 +482,29 @@ python -m app.main
 | Web UI charts | Chart.js (CDN) |
 | Web UI mapping | Leaflet.js (CDN) |
 | HA Integration | Python 3.12 + HA Core APIs |
+| E2E Testing    | pytest + Playwright |
+
+### Testing (E2E & API)
+
+NodePulse includes a comprehensive End-to-End (E2E) testing framework that validates both the Python API and the Web UI in a headless browser.
+
+**Running the tests:**
+```bash
+cd nodepulse-addon/
+# Install test dependencies
+pip install -r requirements.txt
+pip install pytest pytest-asyncio playwright
+playwright install chromium
+
+# Run the full test suite
+python3 -m pytest tests/e2e/ -v
+```
+
+**How it works:**
+- **Mocks & Isolation:** The `tests/conftest.py` file fully mocks the backend Meshtastic hardware connection, MQTT bridge, Telegram bot, and Home Assistant integration relays. This ensures tests run quickly and deterministically without requiring actual radio hardware or a live HA instance.
+- **Headless UI Tests:** `test_web_ui.py` uses Playwright to spin up a headless Chromium browser, navigate to the local `aiohttp` test server, and verify that the UI renders data correctly.
+- **CDN Stubbing:** Because the UI relies on external CDNs for Leaflet, Chart.js, and vis-network (which can fail or time out in offline/headless environments), Playwright intercepts these requests and injects minimal mock JavaScript stubs into the page before it loads. This allows the UI logic to execute without crashing.
+- **API Tests:** `test_api.py` verifies all JSON endpoints (`/api/nodes`, `/api/messages`, etc.) accurately reflect the mocked data state.
 
 ---
 
