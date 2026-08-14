@@ -2,6 +2,11 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.16.0] - 2026-08-14
+### Added
+- **Comprehensive Test Coverage** — Added extensive unit and E2E test suite with 80 tests covering core functionality. Includes unit tests for configuration management, security scanning, MQTT bridge filtering, and API route handlers. E2E tests expanded to cover additional API endpoints including position history, waypoints, tags, traceroute, and node management. Coverage reporting integrated with pytest-cov, achieving 26% overall coverage with 95%+ coverage on critical modules like config.py and security_scanner.py.
+- **Test Infrastructure** — Added pytest-cov for coverage reporting, improved test fixtures for comprehensive mocking, and structured test organization with unit and E2E test suites.
+
 ## [1.15.0] - 2026-08-14
 ### Added
 - **E2E Testing Framework** — Added a comprehensive `pytest` + `Playwright` End-to-End testing suite for the Web UI and API. Tests execute entirely offline in a headless browser, utilizing robust mocking of the Meshtastic hardware and HA integration layers, and injecting stubs for CDN dependencies (Leaflet, Chart.js) to bypass network and Subresource Integrity (SRI) restrictions. Documented test execution commands in the README.

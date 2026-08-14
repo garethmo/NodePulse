@@ -486,21 +486,33 @@ python -m app.main
 
 ### Testing (E2E & API)
 
-NodePulse includes a comprehensive End-to-End (E2E) testing framework that validates both the Python API and the Web UI in a headless browser.
+NodePulse includes a comprehensive testing framework with both unit tests and End-to-End (E2E) tests that validate the Python API, core modules, and Web UI in a headless browser.
 
 **Running the tests:**
 ```bash
 cd nodepulse-addon/
 # Install test dependencies
-pip install -r requirements.txt
-pip install pytest pytest-asyncio playwright
+pip install -r requirements-test.txt
 playwright install chromium
 
-# Run the full test suite
+# Run unit tests
+python3 -m pytest tests/unit/ -v
+
+# Run E2E tests
 python3 -m pytest tests/e2e/ -v
+
+# Run all tests with coverage reporting
+python3 -m pytest tests/ --cov=app --cov-report=term-missing --cov-report=html -v
 ```
 
+**Test Coverage:**
+- **80 total tests** covering configuration management, security scanning, MQTT bridge filtering, API route handlers, and E2E API endpoints
+- **26% overall coverage** with 95%+ coverage on critical modules like `config.py` and `security_scanner.py`
+- **Coverage reports** generated in both terminal and HTML format (`htmlcov/` directory)
+
 **How it works:**
+- **Unit Tests:** `tests/unit/` contains focused tests for individual modules (config, security_scanner, mqtt_bridge, routes) using mocks to isolate functionality
+- **E2E Tests:** `tests/e2e/` validates the full API stack and Web UI integration using a headless browser
 - **Mocks & Isolation:** The `tests/conftest.py` file fully mocks the backend Meshtastic hardware connection, MQTT bridge, Telegram bot, and Home Assistant integration relays. This ensures tests run quickly and deterministically without requiring actual radio hardware or a live HA instance.
 - **Headless UI Tests:** `test_web_ui.py` uses Playwright to spin up a headless Chromium browser, navigate to the local `aiohttp` test server, and verify that the UI renders data correctly.
 - **CDN Stubbing:** Because the UI relies on external CDNs for Leaflet, Chart.js, and vis-network (which can fail or time out in offline/headless environments), Playwright intercepts these requests and injects minimal mock JavaScript stubs into the page before it loads. This allows the UI logic to execute without crashing.

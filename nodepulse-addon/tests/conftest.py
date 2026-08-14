@@ -52,6 +52,14 @@ def mock_connection():
     conn.get_tags = AsyncMock(return_value={})
     conn.send_message = AsyncMock(return_value=True)
     conn.disconnect = AsyncMock()
+    conn.clear_stale_nodes = AsyncMock(return_value=0)
+    conn.delete_node = AsyncMock(return_value=True)
+    conn.add_waypoint = AsyncMock(return_value={"id": "wp1", "name": "Test"})
+    conn.update_waypoint = AsyncMock(return_value={"id": "wp1", "name": "Updated"})
+    conn.delete_waypoint = AsyncMock(return_value=True)
+    conn.set_tags = AsyncMock(return_value={"!12345678": ["test"]})
+    conn.request_traceroute = AsyncMock(return_value=True)
+    conn.request_position = AsyncMock(return_value=True)
     
     # Sync methods / attributes
     conn._scheduled_messages_lock = MagicMock()
