@@ -10,6 +10,7 @@ jobs:
   test:
     name: Run Pytest and Playwright
     runs-on: ubuntu-latest
+    timeout-minutes: 60
 
     steps:
     - name: Checkout repository
@@ -39,19 +40,21 @@ jobs:
       working-directory: ./nodepulse-addon
       run: python3 -m pytest tests/unit/ --cov=app --cov-report=xml --cov-report=term-missing -v
 
-    - name: Upload test results
+    - name: Upload test results artifact
       if: always()
       uses: actions/upload-artifact@v4
       with:
         name: test-results
         path: nodepulse-addon/test-results.xml
+        retention-days: 30
 
-    - name: Upload coverage reports
+    - name: Upload coverage report artifact
       if: always()
       uses: actions/upload-artifact@v4
       with:
         name: coverage-report
         path: nodepulse-addon/htmlcov/
+        retention-days: 30
 
     - name: Publish test results
       if: always()
@@ -59,3 +62,19 @@ jobs:
       with:
         files: nodepulse-addon/test-results.xml
         check_name: E2E Test Results
+
+    - name: Upload coverage to Codecov
+      if: github.event_name != 'pull_request'
+      uses: codecov/codecov-action@v4
+      with:
+        files: nodepulse-addon/coverage.xml
+        token: ${{ secrets.CODECOV_TOKEN }}
+        fail_ci_if_error: false
+
+    - name: Publish test summary
+      if: always()
+      run: |
+        echo "## Test Execution Summary" >> $GITHUB_STEP_SUMMARY
+        echo "- **E2E Tests**: Ran pytest for e2e tests" >> $GITHUB_STEP_SUMMARY
+        echo "- **Unit Tests**: Ran pytest with coverage for unit tests" >> $GITHUB_STEP_SUMMARY
+        echo "- **Coverage**: Uploaded to Codecov (if push to main)" >> $GITHUB_STEP_SUMMARY
