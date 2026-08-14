@@ -84,40 +84,16 @@ jobs:
       run: |
         echo "## Test Execution Summary" >> $GITHUB_STEP_SUMMARY
         
-        E2E_PASS=$(python3 -c "
-import xml.etree.ElementTree as ET
-tree = ET.parse('nodepulse-addon/test-results.xml')
-root = tree.getroot()
-e2e = root.find('.//testsuite[@name='E2E Tests']')
-if e2e is not None:
-    print(e2e.get('tests', '0'))
-    print(e2e.get('errors', '0'))
-    print(e2e.get('failures', '0'))
-    print(e2e.get('tests', '0') - e2e.get('errors', '0') - e2e.get('failures', '0'))
-else:
-    print('0')
-    print('0')
-    print('0')
-    print('0')
-" 2>/dev/null || echo "0\n0\n0\n0")
-        UUT_PASS=$(python3 -c "
-import xml.etree.ElementTree as ET
-tree = ET.parse('nodepulse-addon/test-results.xml')
-root = tree.getroot()
-uut = root.find('.//testsuite[@name='Unit Tests']')
-if uut is not None:
-    print(uut.get('tests', '0'))
-    print(uut.get('errors', '0'))
-    print(uut.get('failures', '0'))
-    print(uut.get('tests', '0') - uut.get('errors', '0') - uut.get('failures', '0'))
-else:
-    print('0')
-    print('0')
-    print('0')
-    print('0')
-" 2>/dev/null || echo "0\n0\n0\n0")
-        IFS=' ' read -r E2E_TOTAL E2E_ERRORS E2E_FAILS E2E_PASSED <<< "$E2E_PASS"
-        IFS=' ' read -r UUT_TOTAL UUT_ERRORS UUT_FAILS UUT_PASSED <<< "$UUT_PASS"
+        E2E_PASS=$(python3 -c 'import xml.etree.ElementTree as ET; tree = ET.parse("nodepulse-addon/test-results.xml"); root = tree.getroot(); e2e = root.find(".//testsuite[@name=\\"E2E Tests\\"]"); print(e2e.get("tests", "0") if e2e is not None else "0")' 2>/dev/null || echo "0")
+        UUT_PASS=$(python3 -c 'import xml.etree.ElementTree as ET; tree = ET.parse("nodepulse-addon/test-results.xml"); root = tree.getroot(); uut = root.find(".//testsuite[@name=\\"Unit Tests\\"]"); print(uut.get("tests", "0") if uut is not None else "0")' 2>/dev/null || echo "0")
+        
+        E2E_TOTAL=0; E2E_ERRORS=0; E2E_FAILS=0; UUT_TOTAL=0; UUT_ERRORS=0; UUT_FAILS=0; UUT_PASSED=0
+        if [ "$E2E_PASS" != "0" ]; then
+          read -r E2E_TOTAL E2E_ERRORS E2E_FAILS E2E_PASSED <<< "$E2E_PASS"
+        fi
+        if [ "$UUT_PASS" != "0" ]; then
+          read -r UUT_TOTAL UUT_ERRORS UUT_FAILS UUT_PASSED <<< "$UUT_PASS"
+        fi
         
         echo "- **E2E Tests**: $E2E_PASSED passed / $E2E_TOTAL total" >> $GITHUB_STEP_SUMMARY
         echo "- **Unit Tests**: $UUT_PASSED passed / $UUT_TOTAL total" >> $GITHUB_STEP_SUMMARY
