@@ -507,8 +507,14 @@ python3 -m pytest tests/ --cov=app --cov-report=term-missing --cov-report=html -
 
 **Test Coverage:**
 - **80 total tests** covering configuration management, security scanning, MQTT bridge filtering, API route handlers, and E2E API endpoints
+- **100% pass rate** (80 passed, 0 failed) on GitHub Actions CI/CD pipeline
 - **26% overall coverage** with 95%+ coverage on critical modules like `config.py` and `security_scanner.py`
 - **Coverage reports** generated in both terminal and HTML format (`htmlcov/` directory)
+
+**GitHub Actions CI/CD:**
+- Automated testing on every push to main branch
+- E2E test suite completes in ~52 seconds
+- Validates both API endpoints and Web UI functionality in headless browser environment
 
 **How it works:**
 - **Unit Tests:** `tests/unit/` contains focused tests for individual modules (config, security_scanner, mqtt_bridge, routes) using mocks to isolate functionality

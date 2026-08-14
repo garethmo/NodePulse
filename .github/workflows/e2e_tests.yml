@@ -25,12 +25,37 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-        pip install pytest pytest-asyncio pytest-aiohttp playwright
+        pip install -r requirements-test.txt
 
     - name: Install Playwright Browsers
       working-directory: ./nodepulse-addon
       run: playwright install chromium --with-deps
 
-    - name: Run test suite
+    - name: Run E2E tests
       working-directory: ./nodepulse-addon
-      run: python3 -m pytest tests/e2e/ -v
+      run: python3 -m pytest tests/e2e/ -v --junitxml=test-results.xml
+
+    - name: Run unit tests with coverage
+      working-directory: ./nodepulse-addon
+      run: python3 -m pytest tests/unit/ --cov=app --cov-report=xml --cov-report=term-missing -v
+
+    - name: Upload test results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-results
+        path: nodepulse-addon/test-results.xml
+
+    - name: Upload coverage reports
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-report
+        path: nodepulse-addon/htmlcov/
+
+    - name: Publish test results
+      if: always()
+      uses: EnricoMi/publish-unit-test-result-action@v2
+      with:
+        files: nodepulse-addon/test-results.xml
+        check_name: E2E Test Results
