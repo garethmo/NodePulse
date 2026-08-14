@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [ main, master ]
 
+permissions:
+  checks: write
+
 jobs:
   test:
     name: Run Pytest and Playwright
@@ -13,6 +16,11 @@ jobs:
     timeout-minutes: 60
 
     steps:
+    - name: Set up Node.js 20
+      uses: actions/setup-node@v4
+      with:
+        node-version: "20"
+
     - name: Checkout repository
       uses: actions/checkout@v7
 
@@ -75,6 +83,44 @@ jobs:
       if: always()
       run: |
         echo "## Test Execution Summary" >> $GITHUB_STEP_SUMMARY
-        echo "- **E2E Tests**: Ran pytest for e2e tests" >> $GITHUB_STEP_SUMMARY
-        echo "- **Unit Tests**: Ran pytest with coverage for unit tests" >> $GITHUB_STEP_SUMMARY
+        
+        E2E_PASS=$(python3 -c "
+import xml.etree.ElementTree as ET
+tree = ET.parse('nodepulse-addon/test-results.xml')
+root = tree.getroot()
+e2e = root.find('.//testsuite[@name='E2E Tests']')
+if e2e is not None:
+    print(e2e.get('tests', '0'))
+    print(e2e.get('errors', '0'))
+    print(e2e.get('failures', '0'))
+    print(e2e.get('tests', '0') - e2e.get('errors', '0') - e2e.get('failures', '0'))
+else:
+    print('0')
+    print('0')
+    print('0')
+    print('0')
+" 2>/dev/null || echo "0\n0\n0\n0")
+        UUT_PASS=$(python3 -c "
+import xml.etree.ElementTree as ET
+tree = ET.parse('nodepulse-addon/test-results.xml')
+root = tree.getroot()
+uut = root.find('.//testsuite[@name='Unit Tests']')
+if uut is not None:
+    print(uut.get('tests', '0'))
+    print(uut.get('errors', '0'))
+    print(uut.get('failures', '0'))
+    print(uut.get('tests', '0') - uut.get('errors', '0') - uut.get('failures', '0'))
+else:
+    print('0')
+    print('0')
+    print('0')
+    print('0')
+" 2>/dev/null || echo "0\n0\n0\n0")
+        IFS=' ' read -r E2E_TOTAL E2E_ERRORS E2E_FAILS E2E_PASSED <<< "$E2E_PASS"
+        IFS=' ' read -r UUT_TOTAL UUT_ERRORS UUT_FAILS UUT_PASSED <<< "$UUT_PASS"
+        
+        echo "- **E2E Tests**: $E2E_PASSED passed / $E2E_TOTAL total" >> $GITHUB_STEP_SUMMARY
+        echo "- **Unit Tests**: $UUT_PASSED passed / $UUT_TOTAL total" >> $GITHUB_STEP_SUMMARY
+        echo "- **Errors**: $((E2E_ERRORS + UUT_ERRORS))" >> $GITHUB_STEP_SUMMARY
+        echo "- **Failures**: $((E2E_FAILS + UUT_FAILS))" >> $GITHUB_STEP_SUMMARY
         echo "- **Coverage**: Uploaded to Codecov (if push to main)" >> $GITHUB_STEP_SUMMARY
