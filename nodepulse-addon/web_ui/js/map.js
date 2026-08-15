@@ -41,9 +41,20 @@ import { escapeHtml, haversineKm, formatDistance } from './util.js';
   }
 })();
 
-// Tile layer URL — dark CartoDB "Dark Matter" tiles, no API key needed.
-const TILE_URL = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
-const TILE_ATTRIBUTION = '&copy; <a href="https://carto.com">CARTO</a>';
+// Tile layer URLs — different base map styles, no API key needed.
+const TILE_URL_DARK = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
+const TILE_URL_LIGHT = 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png';
+// ESRI World Imagery — free satellite imagery tiles (no API key required).
+const TILE_URL_SATELLITE = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+const TILE_URL_TOPO = 'https://{s}.a.tile.opentopomap.org/{z}/{x}/{y}.png';
+
+const TILE_ATTRIBUTION =
+  '&copy; <a href="https://carto.com">CARTO</a>' +
+  '&copy; <a href="https://opentopomap.org">OpenTopoMap</a>' +
+  '&copy; <a href="https://esri.com">Esri</a>';
+
+const DEFAULT_MAP_TYPE = 'dark';
+// Map type keys: 'dark', 'light', 'satellite', 'topographical'
 
 // Custom icon for default client node markers.
 const CLIENT_ICON = L.divIcon({
@@ -103,18 +114,87 @@ const COLOR_TRAIL       = '#ff7043'; // position history trails (deep orange)
  * Create and return a Leaflet map bound to a DOM element ID.
  * Starts centred on Durban, South Africa at a street/neighbourhood zoom.
  */
-function createMap(elementId) {
+function createMap(elementId, mapType = DEFAULT_MAP_TYPE) {
   const map = L.map(elementId, {
     center: DEFAULT_CENTER,
     zoom: DEFAULT_ZOOM,
     zoomControl: true,
   });
 
-  L.tileLayer(TILE_URL, {
+  const tileLayerOptions = {
     attribution: TILE_ATTRIBUTION,
     subdomains: 'abcd',
     maxZoom: 19,
-  }).addTo(map);
+  };
+
+  let tileLayer;
+  if (mapType === 'satellite') {
+    // ESRI World Imagery uses {z}/{y}/{x} format, no subdomains
+    tileLayer = L.tileLayer(TILE_URL_SATELLITE, {
+      attribution: TILE_ATTRIBUTION,
+      maxZoom: 19,
+    });
+  } else {
+    const tileLayerOptions = {
+      attribution: TILE_ATTRIBUTION,
+      subdomains: 'abcd',
+      maxZoom: 19,
+    };
+    if (mapType === 'topographical') {
+      tileLayer = L.tileLayer(TILE_URL_TOPO, tileLayerOptions);
+    } else if (mapType === 'light') {
+      tileLayer = L.tileLayer(TILE_URL_LIGHT, tileLayerOptions);
+    } else {
+      tileLayer = L.tileLayer(TILE_URL_DARK, tileLayerOptions);
+    }
+  }
+  tileLayer.addTo(map);
+
+   // --- Map type toggle controls (top-right) ---------------------------
+   // Allows switching between dark, light, satellite and topographical maps.
+   const mapTypeControl = L.control({ position: 'topleft' });
+   mapTypeControl.onAdd = () => {
+     const container = L.DomUtil.create('div', 'leaflet-control-maptype');
+     container.style.display = 'flex';
+     container.style.flexDirection = 'column';
+     container.style.gap = '4px';
+     container.style.transition = 'opacity 0.15s';
+
+     const makeMapTypeToggle = (mapTypeKey, title, glyph, initialOn) => {
+       const btn = L.DomUtil.create('button', 'leaflet-control-maptoggle');
+       btn.type = 'button';
+       btn.title = title;
+       btn.textContent = glyph;
+       if (initialOn) btn.classList.add('active');
+       L.DomEvent.disableClickPropagation(btn);
+       L.DomEvent.on(btn, 'click', () => {
+         // Remove active class from all map type buttons
+         container.querySelectorAll('.leaflet-control-maptoggle').forEach(b => b.classList.remove('active'));
+         btn.classList.add('active');
+         // Switch the tile layer
+         setMapType(mapTypeKey);
+       });
+       container.appendChild(btn);
+     };
+
+     // Dark matter (current default)
+     makeMapTypeToggle('dark', 'Dark Matter', '◉', mapType === 'dark');
+     // Light matter
+     makeMapTypeToggle('light', 'Light Matter', '☀', mapType === 'light');
+     // Satellite
+     makeMapTypeToggle('satellite', 'Satellite', '🛰', mapType === 'satellite');
+     // Topographical
+     makeMapTypeToggle('topographical', 'Topographical', '🗺', mapType === 'topographical');
+
+     // Restore saved collapsed state.
+     const saved = localStorage.getItem('nodepulse-map-type-collapsed');
+     if (saved === 'true') {
+       container.classList.add('collapsed');
+     }
+
+     return container;
+   };
+   mapTypeControl.addTo(map);
 
    // --- Map overlay toggle controls (top-right) ---------------------------
    // Each button toggles one overlay category and dispatches a custom event
@@ -184,9 +264,45 @@ function createMap(elementId) {
      }
 
      return container;
-   };
-   toggleBar.addTo(map);
+};
 
+   setMapType(mapType);
+
+   // Remove the existing tile layer and add the new one.
+   function setMapType(mapTypeKey) {
+     const newTileUrl =
+       mapTypeKey === 'satellite'
+         ? TILE_URL_SATELLITE
+         : mapTypeKey === 'topographical'
+         ? TILE_URL_TOPO
+         : mapTypeKey === 'light'
+         ? TILE_URL_LIGHT
+         : TILE_URL_DARK;
+
+     // Rotate active class on the map type buttons.
+     document.querySelectorAll('.leaflet-control-maptype button').forEach((btn) => {
+       btn.classList.toggle('active', btn.textContent === mapTypeKeyLabels[mapTypeKey]);
+     });
+
+     // Replace the tile layer.
+     if (map.hasLayer(tileLayer)) {
+       map.removeLayer(tileLayer);
+     }
+     // ESRI World Imagery uses {z}/{y}/{x} format, no subdomains
+     const isSatellite = mapTypeKey === 'satellite';
+     const options = isSatellite
+       ? { attribution: TILE_ATTRIBUTION, maxZoom: 19 }
+       : { attribution: TILE_ATTRIBUTION, subdomains: 'abcd', maxZoom: 19 };
+     tileLayer = L.tileLayer(newTileUrl, options);
+     tileLayer.addTo(map);
+     // Update the default map type in localStorage.
+     localStorage.setItem('nodepulse-map-type', mapTypeKey);
+   }
+
+   // Map type glyph labels for button state matching.
+   const mapTypeKeyLabels = { dark: '◉', light: '☀', satellite: '🛰', topographical: '🗺' };
+
+   toggleBar.addTo(map);
    // --- Role legend (bottom-left) -----------------------------------------
    const legend = L.control({ position: 'bottomleft' });
    legend.onAdd = () => {
@@ -669,7 +785,9 @@ export class MapManager {
    */
   init() {
     if (this._map) return; // already initialised
-    this._map = createMap(this._elementId);
+    // Load saved map type preference (dark, light, satellite, topographical)
+    const savedMapType = localStorage.getItem('nodepulse-map-type') || DEFAULT_MAP_TYPE;
+    this._map = createMap(this._elementId, savedMapType);
     // Note: heatLayer is created lazily in updateTrails() because leaflet.heat
     // is loaded with `defer` and may not yet be available at init() time.
   }
