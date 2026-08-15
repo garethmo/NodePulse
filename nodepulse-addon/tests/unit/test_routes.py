@@ -3,7 +3,7 @@ Unit tests for app/routes.py
 """
 import pytest
 import json
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import MagicMock, AsyncMock
 from aiohttp import web
 import asyncio
 
@@ -11,85 +11,76 @@ import asyncio
 from app import routes
 
 # ----------------------------------------------------------------------
-# Helper fixtures
+# Helper to create a mock request
 # ----------------------------------------------------------------------
-@pytest.fixture
-def sample_body():
-    return {"test": "data"}
+def make_request(app_dict=None, method="GET", path="/", headers=None, body=None, query=None, match_info=None):
+    """Create a mock aiohttp request."""
+    request = MagicMock()
+    request.method = method
+    request.path = path
+    request.headers = headers or {}
+    request.query = query or {}
+    request.match_info = match_info or {}
+    if app_dict:
+        # Ensure ignored_nodes is present if connection is provided
+        if "connection" in app_dict and "ignored_nodes" not in app_dict:
+            app_dict["ignored_nodes"] = set()
+        request.app = app_dict
+    else:
+        request.app = {}
+    if body is not None:
+        request._body = json.dumps(body).encode()
+        request.content = MagicMock()
+        request.content.read = AsyncMock(return_value=json.dumps(body).encode())
+    else:
+        request._body = b""
+        request.content = MagicMock()
+        request.content.read = AsyncMock(return_value=b"")
+    request.json = AsyncMock(return_value=body or {})
+    return request
 
-@pytest.fixture
-def sample_headers():
-    return {}
 
 # ----------------------------------------------------------------------
 # _validate_destination tests
 # ----------------------------------------------------------------------
 class TestValidateDestination:
-    @patch("app.routes.DeviceQuery")
-    @patch("app.routes.qrcode")
-    @patch("app.routes.DeviceDataPushRealm.stream_msg")
-    def test_validate_destination_normal(self, mock_stream_msg, mock_qrcode, mock_device_query):
-        """Valid destination should call the device query and stream method."""
-        valid_dest = {"address": "!12345678", "channel": 0}
-        with patch.dict("app.routes.topology", {"address": "!12345678", "channel": 0}):
-            result = routes._validate_destination(sample_body, valid_dest, {}, {})
-            # No exception means test passes
-            assert result is None
+    def test_validate_destination_normal(self):
+        body = {"destination": "!12345678"}
+        result = routes._validate_destination(body)
+        assert result == "!12345678"
 
-    @patch("app.routes.DeviceQuery")
-    @patch("app.routes.qrcode")
-    @patch("app.routes.DeviceDataPushRealm.stream_msg")
-    def test_validate_destination_missing_address(self, mock_stream_msg, mock_qrcode, mock_device_query):
-        """Missing address should raise ValueError."""
-        dest = {"channel": 0}
-        with patch.dict("app.routes.topology", {"address": "!12345678", "channel": 0}):
-            with pytest.raises(ValueError, match="Valid destination required"):
-                routes._validate_destination(sample_body, dest, {}, {})
+    def test_validate_destination_missing(self):
+        body = {}
+        result = routes._validate_destination(body)
+        assert result is None
 
-    @patch("app.routes.DeviceQuery")
-    @patch("app.routes.qrcode")
-    @patch("app.routes.DeviceDataPushRealm.stream_msg")
-    def test_validate_destination_missing_channel(self, mock_stream_msg, mock_qrcode, mock_device_query):
-        """Missing channel should raise ValueError."""
-        dest = {"address": "!12345678"}
-        with patch.dict("app.routes.topology", {"address": "!12345678", "channel": 0}):
-            with pytest.raises(ValueError, match="Valid destination required"):
-                routes._validate_destination(sample_body, dest, {}, {})
+    def test_validate_destination_empty(self):
+        body = {"destination": "   "}
+        result = routes._validate_destination(body)
+        assert result is None
 
-    @patch("app.routes.DeviceQuery")
-    @patch("app.routes.qrcode")
-    @patch("app.routes.DeviceDataPushRealm.stream_msg")
-    def test_validate_destination_invalid_address(self, mock_stream_msg, mock_qrcode, mock_device_query):
-        """Invalid address should raise ValueError."""
-        dest = {"address": "invalidaddr", "channel": 0}
-        with patch.dict("app.routes.topology", {"address": "!12345678", "channel": 0}):
-            with pytest.raises(ValueError, match="Valid destination required"):
-                routes._validate_destination(sample_body, dest, {}, {})
+    def test_validate_destination_invalid_format(self):
+        body = {"destination": "invalid"}
+        result = routes._validate_destination(body)
+        assert result is None
+
 
 # ----------------------------------------------------------------------
 # _apply_access_key tests
 # ----------------------------------------------------------------------
 class TestApplyAccessKey:
-    @patch("app.routes._send_custom_event")
-    def test_apply_access_key_good(self, mock_send_event):
-        request = MagicMock()
-        request.path = "/some/path"
-        request.method = "POST"
-        request.transport = MagicMock()
-        with patch("app.routes.access_key", {"valid_key": "abc"}):
-            routes._apply_access_key(request, "abc")
-            mock_send_event.assert_called_once()
+    def test_apply_access_key_with_header(self):
+        mock_conn = MagicMock()
+        request = make_request(app_dict={"connection": mock_conn}, headers={"X-NodePulse-Access-Key": "test-key"})
+        routes._apply_access_key(request)
+        mock_conn.set_access_key.assert_called_once_with("test-key")
 
-    @patch("app.routes._send_custom_event")
-    def test_apply_access_key_bad(self, mock_send_event):
-        request = MagicMock()
-        request.path = "/some/path"
-        request.method = "POST"
-        request.transport = MagicMock()
-        with patch("app.routes.access_key", {"valid_key": "abc"}):
-            with pytest.raises(ValueError, match="Access key required"):
-                routes._apply_access_key(request, "wrong_key")
-            mock_send_event.assert_not_called()
+    def test_apply_access_key_without_header(self):
+        mock_conn = MagicMock()
+        request = make_request(app_dict={"connection": mock_conn}, headers={})
+        routes._apply_access_key(request)
+        mock_conn.set_access_key.assert_not_called()
+
 
 # ----------------------------------------------------------------------
 # _json_response and _error_response tests
@@ -105,190 +96,312 @@ class TestJsonErrorResponses:
         resp = routes._error_response("Bad request", status=400)
         assert resp.status == 400
         body = json.loads(resp.body)
-        assert body == {"message": "Bad request"}
+        assert body == {"error": "Bad request"}
+
 
 # ----------------------------------------------------------------------
 # handle_status tests
 # ----------------------------------------------------------------------
 class TestHandleStatus:
-    @patch("app.routes.render_template")
-    @patch("app.routes.get_node_by_id")
-    def test_handle_status_success(self, mock_get_node, mock_render):
-        mock_node = MagicMock()
-        mock_node.name = "TestNode"
-        mock_node.id = "!12345678"
-        mock_get_node.return_value = mock_node
-        mock_render.return_value = MagicMock(
-            body=any,  # we don't inspect rendered body here
-            status=200
-        )
-        result = routes.handle_status(MagicMock())
-        assert result.status == 200
-        mock_get_node.assert_called_once_with("!12345678")
-        mock_render.assert_called_once()
+    @pytest.mark.asyncio
+    async def test_handle_status_success(self):
+        mock_conn = AsyncMock()
+        mock_conn.get_status.return_value = {"connected": True, "my_info": {}}
+        # Add scheduled messages attributes used in handle_status
+        mock_conn._scheduled_messages = []
+        mock_conn._scheduled_messages_lock = MagicMock()
+        mock_conn._scheduled_messages_lock.__enter__ = MagicMock(return_value=None)
+        mock_conn._scheduled_messages_lock.__exit__ = MagicMock(return_value=None)
 
-    @patch("app.routes.render_template")
-    @patch("app.routes.get_node_by_id")
-    def test_handle_status_node_not_found(self, mock_get_node, mock_render):
-        mock_get_node.side_effect = KeyError("node not found")
-        result = routes.handle_status(MagicMock())
-        assert result.status == 404
-        mock_get_node.assert_called_once_with("!someid")
+        mock_config = MagicMock()
+        config_attrs = {
+            "connection_type": "tcp",
+            "meshtastic_host": "localhost",
+            "meshtastic_port": 4403,
+            "proxy_host": "",
+            "proxy_port": 8080,
+            "scan_interval": 300,
+            "log_level": "INFO",
+            "ha_base_url": "",
+            "disable_token_validation": False,
+            "ignored_nodes": [],
+            "access_key": "",
+            "scheduled_messages_enabled": True,
+            "mqtt_enabled": False,
+            "mqtt_address": "",
+            "mqtt_port": 1883,
+            "mqtt_username": "",
+            "mqtt_password": "",
+            "mqtt_topic": "",
+            "mqtt_forwarding_enabled": False,
+            "mqtt_geo_filter_enabled": False,
+            "mqtt_lat_min": -90.0,
+            "mqtt_lat_max": 90.0,
+            "mqtt_lng_min": -180.0,
+            "mqtt_lng_max": 180.0,
+        }
+        for k, v in config_attrs.items():
+            setattr(mock_config, k, v)
+
+        request = make_request(app_dict={"connection": mock_conn, "config": mock_config})
+        resp = await routes.handle_status(request)
+        assert resp.status == 200
+        body = json.loads(resp.body)
+        assert "connected" in body
+        assert "config" in body
+        mock_conn.get_status.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_handle_status_connection_error(self):
+        mock_conn = AsyncMock()
+        mock_conn.get_status.side_effect = Exception("Connection failed")
+        mock_conn._scheduled_messages = []
+        mock_conn._scheduled_messages_lock = MagicMock()
+        mock_conn._scheduled_messages_lock.__enter__ = MagicMock(return_value=None)
+        mock_conn._scheduled_messages_lock.__exit__ = MagicMock(return_value=None)
+        mock_config = MagicMock()
+        request = make_request(app_dict={"connection": mock_conn, "config": mock_config})
+        resp = await routes.handle_status(request)
+        assert resp.status == 500
+
+
+# ----------------------------------------------------------------------
+# handle_nodes tests
+# ----------------------------------------------------------------------
+class TestHandleNodes:
+    @pytest.mark.asyncio
+    async def test_handle_nodes_success(self):
+        mock_conn = AsyncMock()
+        mock_conn.get_nodes.return_value = [{"id": "!12345678", "name": "Node1"}]
+        request = make_request(app_dict={"connection": mock_conn}, method="GET", path="/api/nodes")
+        resp = await routes.handle_nodes(request)
+        assert resp.status == 200
+        body = json.loads(resp.body)
+        assert isinstance(body, list)
+        mock_conn.get_nodes.assert_called_once()
+
 
 # ----------------------------------------------------------------------
 # handle_clear_stale_nodes tests
 # ----------------------------------------------------------------------
 class TestHandleClearStaleNodes:
-    @patch("app.routes.clear_stale_nodes")
-    @patch("app.routes.render_template")
-    def test_handle_clear_stale_nodes_success(self, mock_render, mock_clear):
-        mock_clear.return_value = 5
-        result = routes.handle_clear_stale_nodes(MagicMock(), "!123")
-        assert result.status == 200
-        mock_clear.assert_called_once_with("!123")
+    @pytest.mark.asyncio
+    async def test_handle_clear_stale_nodes_success(self):
+        mock_conn = AsyncMock()
+        mock_conn.clear_stale_nodes.return_value = 5
+        request = make_request(app_dict={"connection": mock_conn}, method="POST", path="/api/nodes/clear")
+        resp = await routes.handle_clear_stale_nodes(request)
+        assert resp.status == 200
+        body = json.loads(resp.body)
+        assert body == {"removed": 5}
+        mock_conn.clear_stale_nodes.assert_called_once()
 
-    @patch("app.routes.render_template")
-    @patch("app.routes.clear_stale_nodes")
-    def test_handle_clear_stale_nodes_not_found(self, mock_render, mock_clear):
-        mock_clear.side_effect = KeyError("node not found")
-        with pytest.raises(KeyError):
-            routes.handle_clear_stale_nodes(MagicMock(), "!missing")
-        mock_clear.assert_called_once_with("!missing")
+    @pytest.mark.asyncio
+    async def test_handle_clear_stale_nodes_error(self):
+        mock_conn = AsyncMock()
+        mock_conn.clear_stale_nodes.side_effect = Exception("DB error")
+        request = make_request(app_dict={"connection": mock_conn}, method="POST", path="/api/nodes/clear")
+        resp = await routes.handle_clear_stale_nodes(request)
+        assert resp.status == 500
+
 
 # ----------------------------------------------------------------------
 # handle_delete_node tests
 # ----------------------------------------------------------------------
 class TestHandleDeleteNode:
-    @patch("app.routes.delete_node")
-    @patch("app.routes.render_template")
-    def test_handle_delete_node_success(self, mock_render, mock_delete):
-        result = routes.handle_delete_node(MagicMock(), "!123")
-        assert result.status == 200
-        mock_delete.assert_called_once_with("!123")
+    @pytest.mark.asyncio
+    async def test_handle_delete_node_success(self):
+        mock_conn = AsyncMock()
+        mock_conn.delete_node.return_value = True
+        request = make_request(app_dict={"connection": mock_conn}, method="DELETE", path="/api/nodes/!123", match_info={"node_id": "!123"})
+        resp = await routes.handle_delete_node(request)
+        assert resp.status == 200
+        body = json.loads(resp.body)
+        assert body == {"deleted": "!123"}
+        mock_conn.delete_node.assert_called_once_with("!123")
 
-    @patch("app.routes.delete_node")
-    @patch("app.routes.render_template")
-    def test_handle_delete_node_not_found(self, mock_render, mock_delete):
-        mock_delete.side_effect = KeyError("node not found")
-        with pytest.raises(KeyError):
-            routes.handle_delete_node(MagicMock(), "!missing")
-        mock_delete.assert_called_once_with("!missing")
+    @pytest.mark.asyncio
+    async def test_handle_delete_node_not_found(self):
+        mock_conn = AsyncMock()
+        mock_conn.delete_node.return_value = False  # Return False to indicate not found
+        request = make_request(app_dict={"connection": mock_conn}, method="DELETE", path="/api/nodes/!missing", match_info={"node_id": "!missing"})
+        resp = await routes.handle_delete_node(request)
+        assert resp.status == 404
+
 
 # ----------------------------------------------------------------------
 # handle_search_messages tests
 # ----------------------------------------------------------------------
 class TestHandleSearchMessages:
-    @patch("app.routes.search_messages")
-    @patch("app.routes.render_template")
-    def test_handle_search_messages_success(self, mock_render, mock_search):
-        mock_search.return_value = [{"id": "!1", "text": "msg"}]
-        result = routes.handle_search_messages(MagicMock(), "query")
-        assert result.status == 200
-        mock_search.assert_called_once_with("query")
+    @pytest.mark.asyncio
+    async def test_handle_search_messages_success(self):
+        mock_conn = AsyncMock()
+        mock_conn.get_messages.return_value = [{"id": "!1", "text": "test message", "timestamp": 1234567890}]
+        request = make_request(app_dict={"connection": mock_conn}, method="GET", path="/api/messages/search")
+        request.query = {"q": "test", "limit": "50"}
+        resp = await routes.handle_search_messages(request)
+        assert resp.status == 200
+        body = json.loads(resp.body)
+        assert isinstance(body, list)
+        mock_conn.get_messages.assert_called_once()
 
-    @patch("app.routes.search_messages")
-    @patch("app.routes.render_template")
-    def test_handle_search_messages_not_found(self, mock_render, mock_search):
-        mock_search.side_effect = KeyError("not found")
-        with pytest.raises(KeyError):
-            routes.handle_search_messages(MagicMock(), "q")
-        mock_search.assert_called_once_with("q")
+    @pytest.mark.asyncio
+    async def test_handle_search_messages_missing_query(self):
+        mock_conn = AsyncMock()
+        request = make_request(app_dict={"connection": mock_conn}, method="GET", path="/api/messages/search")
+        request.query = {}
+        resp = await routes.handle_search_messages(request)
+        assert resp.status == 400
+
 
 # ----------------------------------------------------------------------
 # handle_messages tests
 # ----------------------------------------------------------------------
 class TestHandleMessages:
-    @patch("app.routes.handle_messages")
-    def test_handle_messages_delegates(self, mock_handle_messages):
-        routes.handle_messages(MagicMock(), "path", "GET")
-        mock_handle_messages.assert_called_once()
+    @pytest.mark.asyncio
+    async def test_handle_messages_success(self):
+        mock_conn = AsyncMock()
+        mock_conn.get_messages.return_value = [{"id": "!1", "text": "msg"}]
+        request = make_request(app_dict={"connection": mock_conn})
+        resp = await routes.handle_messages(request)
+        assert resp.status == 200
+        body = json.loads(resp.body)
+        assert isinstance(body, list)
+        mock_conn.get_messages.assert_called_once()
+
 
 # ----------------------------------------------------------------------
 # handle_export_messages tests
 # ----------------------------------------------------------------------
 class TestHandleExportMessages:
-    @patch("app.routes.handle_export_messages")
-    def test_handle_export_messages_delegates(self, mock_handle):
-        routes.handle_export_messages(MagicMock(), "path")
-        mock_handle.assert_called_once()
+    @pytest.mark.asyncio
+    async def test_handle_export_messages_success(self):
+        mock_conn = AsyncMock()
+        mock_conn.get_messages.return_value = [{"id": "!1", "text": "msg", "conversation": "ch:0"}]
+        request = make_request(app_dict={"connection": mock_conn}, query={"format": "json", "conversation": "ch:0"})
+        resp = await routes.handle_export_messages(request)
+        assert resp.status == 200
+        mock_conn.get_messages.assert_called_once()
+
 
 # ----------------------------------------------------------------------
 # handle_get_waypoints tests
 # ----------------------------------------------------------------------
 class TestHandleGetWaypoints:
-    @patch("app.routes.get_waypoints")
-    @patch("app.routes.render_template")
-    def test_handle_get_waypoints_success(self, mock_render, mock_get):
-        mock_get.return_value = [{"name": "wp1", "lat": 1}]
-        result = routes.handle_get_waypoints(MagicMock(), "")
-        assert result.status == 200
-        mock_get.assert_called_once()
+    @pytest.mark.asyncio
+    async def test_handle_get_waypoints_success(self):
+        mock_conn = AsyncMock()
+        mock_conn.get_waypoints.return_value = [{"name": "wp1", "lat": 1, "lng": 2}]
+        request = make_request(app_dict={"connection": mock_conn}, method="GET", path="/api/waypoints")
+        resp = await routes.handle_get_waypoints(request)
+        assert resp.status == 200
+        body = json.loads(resp.body)
+        assert isinstance(body, list)
+        mock_conn.get_waypoints.assert_called_once()
+
 
 # ----------------------------------------------------------------------
 # handle_add_waypoint tests
 # ----------------------------------------------------------------------
 class TestHandleAddWaypoint:
-    @patch("app.routes.add_waypoint")
-    @patch("app.routes.render_template")
-    def test_handle_add_waypoint_success(self, mock_render, mock_add):
-        routes.handle_add_waypoint(MagicMock(), "name", {"lat": 1})
-        mock_add.assert_called_once()
+    @pytest.mark.asyncio
+    async def test_handle_add_waypoint_success(self):
+        mock_conn = AsyncMock()
+        mock_conn.add_waypoint.return_value = {"name": "wp1"}
+        request = make_request(app_dict={"connection": mock_conn}, method="POST", path="/api/waypoints", body={"name": "wp1", "lat": 1, "lng": 2})
+        resp = await routes.handle_add_waypoint(request)
+        assert resp.status == 200
+        mock_conn.add_waypoint.assert_called_once()
+
 
 # ----------------------------------------------------------------------
 # handle_update_waypoint tests
 # ----------------------------------------------------------------------
 class TestHandleUpdateWaypoint:
-    @patch("app.routes.update_waypoint")
-    @patch("app.routes.render_template")
-    def test_handle_update_waypoint_success(self, mock_render, mock_up):
-        routes.handle_update_waypoint(MagicMock(), "id", {"lat": 2})
-        mock_up.assert_called_once_with("id", {"lat": 2})
+    @pytest.mark.asyncio
+    async def test_handle_update_waypoint_success(self):
+        mock_conn = AsyncMock()
+        mock_conn.update_waypoint.return_value = {"name": "wp1", "lat": 5}
+        request = make_request(app_dict={"connection": mock_conn}, method="PUT", path="/api/waypoints/wp1", body={"lat": 5}, match_info={"waypoint_id": "wp1"})
+        resp = await routes.handle_update_waypoint(request)
+        assert resp.status == 200
+        mock_conn.update_waypoint.assert_called_once_with("wp1", {"lat": 5})
+
 
 # ----------------------------------------------------------------------
 # handle_delete_waypoint tests
 # ----------------------------------------------------------------------
 class TestHandleDeleteWaypoint:
-    @patch("app.routes.delete_waypoint")
-    @patch("app.routes.render_template")
-    def test_handle_delete_waypoint_success(self, mock_render, mock_del):
-        routes.handle_delete_waypoint(MagicMock(), "id")
-        mock_del.assert_called_once_with("id")
+    @pytest.mark.asyncio
+    async def test_handle_delete_waypoint_success(self):
+        mock_conn = AsyncMock()
+        mock_conn.delete_waypoint.return_value = True
+        request = make_request(app_dict={"connection": mock_conn}, method="DELETE", path="/api/waypoints/wp1", match_info={"waypoint_id": "wp1"})
+        resp = await routes.handle_delete_waypoint(request)
+        assert resp.status == 200
+        body = json.loads(resp.body)
+        assert body == {"deleted": "wp1"}
+        mock_conn.delete_waypoint.assert_called_once_with("wp1")
+
 
 # ----------------------------------------------------------------------
 # handle_channels tests
 # ----------------------------------------------------------------------
 class TestHandleChannels:
-    @patch("app.routes.get_channels")
-    @patch("app.routes.render_template")
-    def test_handle_channels_success(self, mock_render, mock_get):
-        mock_get.return_value = [{"channel": 0}]
-        result = routes.handle_channels(MagicMock())
-        assert result.status == 200
-        mock_get.assert_called_once()
+    @pytest.mark.asyncio
+    async def test_handle_channels_success(self):
+        mock_conn = AsyncMock()
+        mock_conn.refresh_channels.return_value = [{"channel": 0, "name": "Primary"}]
+        request = make_request(app_dict={"connection": mock_conn}, method="GET", path="/api/channels")
+        resp = await routes.handle_channels(request)
+        assert resp.status == 200
+        body = json.loads(resp.body)
+        assert isinstance(body, list)
+        mock_conn.refresh_channels.assert_called_once()
+
 
 # ----------------------------------------------------------------------
 # handle_send tests
 # ----------------------------------------------------------------------
 class TestHandleSend:
-    @patch("app.routes._send_custom_event")
-    def test_handle_send_delegates(self, mock_send):
-        routes.handle_send(MagicMock(), "", "text", 0, "channel")
-        mock_send.assert_called_once()
+    @pytest.mark.asyncio
+    async def test_handle_send_delegates(self):
+        mock_conn = AsyncMock()
+        mock_conn.send_message.return_value = True
+        request = make_request(app_dict={"connection": mock_conn}, method="POST", path="/api/send", body={"destination": "!12345678", "text": "hello", "channel": 0})
+        resp = await routes.handle_send(request)
+        assert resp.status == 200
+        mock_conn.send_message.assert_called_once()
+
 
 # ----------------------------------------------------------------------
 # handle_traceroute tests
 # ----------------------------------------------------------------------
 class TestHandleTraceroute:
-    @patch("app.routes.handle_traceroute")
-    def test_handle_traceroute_delegates(self, mock_handle):
-        routes.handle_traceroute(MagicMock(), "path")
-        mock_handle.assert_called_once()
+    @pytest.mark.asyncio
+    async def test_handle_traceroute_delegates(self):
+        mock_conn = AsyncMock()
+        mock_conn.request_traceroute.return_value = None
+        request = make_request(app_dict={"connection": mock_conn}, method="POST", path="/api/traceroute", body={"destination": "!12345678"})
+        resp = await routes.handle_traceroute(request)
+        assert resp.status == 200
+        mock_conn.request_traceroute.assert_called_once_with("!12345678")
+
 
 # ----------------------------------------------------------------------
 # handle_request_position tests
 # ----------------------------------------------------------------------
 class TestHandleRequestPosition:
-    @patch("app.routes.handle_request_position")
-    def test_handle_request_position_delegates(self, mock_handle):
-        routes.handle_request_position(MagicMock(), "")
-        mock_handle.assert_called_once()
+    @pytest.mark.asyncio
+    async def test_handle_request_position_delegates(self):
+        mock_conn = AsyncMock()
+        mock_conn.request_position.return_value = None
+        request = make_request(app_dict={"connection": mock_conn}, method="POST", path="/api/position/request", body={"destination": "!12345678"})
+        resp = await routes.handle_request_position(request)
+        assert resp.status == 200
+        mock_conn.request_position.assert_called_once_with("!12345678")
+
+
+# ----------------------------------------------------------------------
+# Additional handlers can be added similarly
+# ----------------------------------------------------------------------
