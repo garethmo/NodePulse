@@ -17,20 +17,24 @@ import { escapeHtml } from './util.js';
 // Sections not in this map are rendered with a title-cased version of the key.
 // ---------------------------------------------------------------------------
 const SECTION_META = {
-  owner:           { title: 'Node Identity',        icon: '🪪', danger: false },
-  device:          { title: 'Device',               icon: '📟', danger: false },
-  lora:            { title: 'LoRa Radio',           icon: '📡', danger: true  },
-  position:        { title: 'Position',             icon: '📍', danger: false },
-  power:           { title: 'Power',                icon: '🔋', danger: false },
-  display:         { title: 'Display',              icon: '🖥️', danger: false },
-  network:         { title: 'Network / WiFi',       icon: '🌐', danger: true  },
-  bluetooth:       { title: 'Bluetooth',            icon: '🔵', danger: false },
-  telemetry:       { title: 'Telemetry',            icon: '📊', danger: false },
-  neighbor_info:   { title: 'Neighbor Info',        icon: '🗺️', danger: false },
-  mesh_beacon:     { title: 'Mesh Beacon',          icon: '📢', danger: false },
-  mqtt:            { title: 'MQTT Module',          icon: '📨', danger: false },
-  canned_message:  { title: 'Canned Messages',      icon: '💬', danger: false },
-  store_forward:   { title: 'Store & Forward',      icon: '📦', danger: false },
+  owner:             { title: 'Node Identity',        icon: '🪪', danger: false },
+  device:            { title: 'Device',               icon: '📟', danger: false },
+  lora:              { title: 'LoRa Radio',           icon: '📡', danger: true  },
+  position:          { title: 'Position',             icon: '📍', danger: false },
+  power:             { title: 'Power',                icon: '🔋', danger: false },
+  display:           { title: 'Display',              icon: '🖥️', danger: false },
+  network:           { title: 'Network / WiFi',       icon: '🌐', danger: true  },
+  bluetooth:         { title: 'Bluetooth',            icon: '🔵', danger: false },
+  telemetry:         { title: 'Telemetry',            icon: '📊', danger: false },
+  neighbor_info:     { title: 'Neighbor Info',        icon: '🗺️', danger: false },
+  mesh_beacon:       { title: 'Mesh Beacon',          icon: '📢', danger: false },
+  status_message:    { title: 'Status Message',       icon: '📝', danger: false },
+  tak:               { title: 'TAK / ATAK',           icon: '🎯', danger: false },
+  traffic_management:{ title: 'Traffic Management',   icon: '🚦', danger: false },
+  ambient_lighting:  { title: 'Ambient Lighting',     icon: '💡', danger: false },
+  mqtt:              { title: 'MQTT Module',          icon: '📨', danger: false },
+  canned_message:    { title: 'Canned Messages',      icon: '💬', danger: false },
+  store_forward:     { title: 'Store & Forward',      icon: '📦', danger: false },
 };
 
 // Ordered list of sections to render (controls card order).
@@ -38,6 +42,10 @@ const SECTION_ORDER = [
   'owner', 'device', 'lora', 'position', 'power', 'display',
   'network', 'bluetooth', 'telemetry', 'neighbor_info',
   'mesh_beacon',
+  'status_message',
+  'tak',
+  'traffic_management',
+  'ambient_lighting',
   'mqtt', 'canned_message', 'store_forward',
 ];
 
@@ -159,7 +167,7 @@ function _renderSections(container, data) {
 
   // Extract firmware version from owner section for feature gating
   const firmwareVersion = dataClone.owner?.firmware_version || '';
-  const isMeshBeaconSupported = _isFirmwareVersionAtLeast(firmwareVersion, '2.8.0');
+  const isFw28 = _isFirmwareVersionAtLeast(firmwareVersion, '2.8.0');
 
   container.innerHTML = '';
 
@@ -177,8 +185,9 @@ function _renderSections(container, data) {
       danger: false,
     };
 
-    // Gate mesh_beacon on firmware 2.8.0+
-    if (sectionKey === 'mesh_beacon' && !isMeshBeaconSupported) {
+    // Gate 2.8+ features
+    const is28Section = ['mesh_beacon', 'status_message', 'tak', 'traffic_management', 'ambient_lighting'].includes(sectionKey);
+    if (is28Section && !isFw28) {
       meta.disabled = true;
       meta.disabledReason = `Requires firmware 2.8.0+ (current: ${firmwareVersion || 'unknown'})`;
     }
@@ -850,6 +859,41 @@ function _labelify(fieldKey) {
     broadcast_on_region:        'TX Region',
     broadcast_on_preset:        'TX Modem Preset',
     broadcast_interval_secs:    'Broadcast Interval (s)',
+    // StatusMessage fields
+    node_status:                'Status Text',
+    // TAK fields
+    team:                       'Team',
+    role:                       'Role',
+    // TrafficManagement fields
+    enabled:                    'Enabled',
+    mqtt_enabled:               'MQTT Enabled',
+    mqtt_downlink_enabled:      'MQTT Downlink',
+    uplink_enabled:             'Uplink Enabled',
+    downlink_enabled:           'Downlink Enabled',
+    ignore_mqtt:                'Ignore MQTT',
+    ignore_serial:              'Ignore Serial',
+    ignore_external_notification: 'Ignore External Notification',
+    ignore_canned_message:      'Ignore Canned Message',
+    ignore_audio:               'Ignore Audio',
+    ignore_remote_hardware:     'Ignore Remote Hardware',
+    ignore_ambient_lighting:    'Ignore Ambient Lighting',
+    ignore_detection_sensor:    'Ignore Detection Sensor',
+    ignore_paxcounter:          'Ignore PaxCounter',
+    ignore_store_forward:       'Ignore Store & Forward',
+    ignore_range_test:          'Ignore Range Test',
+    ignore_neighbor_info:       'Ignore Neighbor Info',
+    ignore_telemetry:           'Ignore Telemetry',
+    ignore_tak:                 'Ignore TAK',
+    ignore_status_message:      'Ignore Status Message',
+    ignore_mesh_beacon:         'Ignore Mesh Beacon',
+    // AmbientLighting fields
+    led_gpio:                   'LED GPIO',
+    led_count:                  'LED Count',
+    led_type:                   'LED Type',
+    brightness:                 'Brightness',
+    pattern:                    'Pattern',
+    color:                      'Color',
+    speed:                      'Speed',
   };
   return overrides[fieldKey] || _titleCase(fieldKey);
 }

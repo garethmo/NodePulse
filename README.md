@@ -63,6 +63,7 @@ NodePulse is a Home Assistant addon and custom integration that gives you deep v
 | 📶 **Per-Node Metrics** | SNR, hops away, battery level, last heard — one HA device per node (RSSI is reported by the firmware as "Not provided" where unavailable) |
 | 🗺️ **GPS Mapping** | Device trackers plotted on the native HA map card |
 | 🌡️ **Coverage Heatmap** | Visual heatmap layer on the map showing signal strength (SNR) with dynamic gradient legend |
+| 🗺️ **Map Base Layers** | Four selectable map styles: Dark (CartoDB), Light (CartoDB), **Satellite** (ESRI World Imagery), **Topographical** (OpenTopoMap). Toggle in top-left toolbar, persists across sessions. |
 | 🕸️ **Network Topology** | Force-directed network graph visualizing nodes, roles, and connections (traceroutes & neighbors) with SNR coloring. Includes interactive toggles for node names, edges, physics, and a node search box |
 | 💬 **Messaging** | Send broadcast or DM messages via the Web UI; channel tabs appear immediately with real channel names, and the chat shows each sender's short name |
 | 🔍 **Traceroute** | Dispatch traceroutes to any node from the Web UI (fire-and-forget — results appear on the next poll) |
@@ -94,6 +95,16 @@ NodePulse is a Home Assistant addon and custom integration that gives you deep v
 | 🤖 **Telegram Bot** | Bidirectional Telegram Bot bridge. Inbound mesh text messages are automatically forwarded to an authorized Telegram chat. Send broadcasts or DMs back to the mesh from Telegram using bot commands. Includes `/status`, `/nodes`, `/send`, and `/dm` commands. Zero extra dependencies — uses the built-in `aiohttp` library. |
 | 🎛️ **Comprehensive Settings Page** | The Web UI Settings tab reflects every addon configuration option in real time — connection & mesh status, HA integration keys and token validation, the full MQTT bridge config (broker port, credential status, topic, geo filter, portnum allowlist, node blocklist), the Telegram bot (status, token, authorized chats, relay channels/DMs, commands), the auto responder, scan interval, and log level. Secrets are always masked |
 | ⚙️ **Remote Device Configuration** | Configure tab to view and edit the connected mesh radio's config (roles, LoRa, WiFi, MQTT, telemetry, owner names). Schema-driven forms, backend-validated ranges/enums, danger-zone confirmations (ROUTER role, TX disabled, region, credentials), LoRa preset gating, and reboot-required feedback |
+| 📢 **MeshBeacon Config (2.8+)** | New Mesh Beacon section: Listen/Broadcast/Legacy-Split toggles, beacon message (100 bytes), offer/TX channel-region-preset, broadcast interval (min 1h). Greyed out on firmware < 2.8.0 |
+| 📝 **Status Message (2.8+)** | Text status string for UI display |
+| 🎯 **TAK / ATAK (2.8+)** | Team (16 colors) + Role (100+ ATAK roles) dropdowns |
+| 🚦 **Traffic Management (2.8+)** | Per-module enable/disable toggles (21 modules: MQTT, Serial, MeshBeacon, TAK, Status Message, etc.) |
+| 💡 **Ambient Lighting (2.8+)** | LED strip control: GPIO, count, type, brightness (0–255), pattern, color, speed |
+| 📻 **LoRa Regions (2.8+)** | +11 new regions: EU_N_868, EU_866, EU_874, EU_917, ITU1/2/3_2M (2m amateur), ITU1/2/3_70CM (70cm amateur), ITU2_125CM (1.25m amateur) |
+| 📻 **LoRa Presets (2.8+)** | +7 new presets: LITE_FAST/SLOW (EU 866MHz), NARROW_FAST/SLOW (EU 868MHz narrow), TINY_FAST/SLOW (20kHz amateur, TCXO req), MEDIUM_TURBO (500kHz) |
+| 🎭 **New Device Roles (2.8+)** | TAK, CLIENT_HIDDEN, LOST_AND_FOUND, TAK_TRACKER, ROUTER_LATE, CLIENT_BASE |
+| 🔄 **RebroadcastMode (2.8+)** | ALL, ALL_SKIP_DECODING, LOCAL_ONLY, KNOWN_ONLY, NONE, CORE_PORTNUMS_ONLY |
+| 🔔 **BuzzerMode (2.8+)** | ALL_ENABLED, DISABLED, NOTIFICATIONS_ONLY, SYSTEM_ONLY, DIRECT_MSG_ONLY |
 
 ---
 

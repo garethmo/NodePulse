@@ -93,6 +93,14 @@ Full-screen map with an interactive filter bar:
 
 A live `N shown` counter updates on filter change and on every poll.
 
+**Base map style toggle** (top-left toolbar):
+- **Dark** — CartoDB Dark Matter (default)
+- **Light** — CartoDB Light Matter
+- **Satellite** — ESRI World Imagery
+- **Topographical** — OpenTopoMap
+
+Selection persists in `localStorage` across sessions.
+
 **Overlay toggle controls** (collapsible via **C** key):
 - Self→node links (teal dashes, distance-labelled)
 - Peer proximity links (amber dashes, within ~15 km or both 1-hop)
@@ -126,15 +134,40 @@ Read-only display of runtime configuration: connection type, host/port, node cou
 
 ### Web UI — Configuration View (Device Configuration)
 
-A **Configure** tab for viewing and editing the connected mesh radio's configuration (shipped 1.10.0+, refined in 1.11.0/1.12.0). Backed by `GET/PUT /api/device-config` + `POST /api/device-config/reload`.
+A **Configure** tab for viewing and editing the connected mesh radio's configuration (shipped 1.10.0+, refined in 1.11.0/1.12.0/1.17.0). Backed by `GET/PUT /api/device-config` + `POST /api/device-config/reload`.
 
-- **Schema-driven forms** — The field schema (types, enum options, min/max, max length) is introspected live from the radio's installed protobuf descriptors, so forms render correctly across firmware versions. Sectioned cards: Node Identity (owner), Device, LoRa Radio, Position, Power, Display, Network/WiFi, Bluetooth, Telemetry, Neighbor Info, MQTT, Canned Messages, Store & Forward.
+- **Schema-driven forms** — The field schema (types, enum options, min/max, max length) is introspected live from the radio's installed protobuf descriptors, so forms render correctly across firmware versions. Sectioned cards: Node Identity (owner), Device, LoRa Radio, Position, Power, Display, Network/WiFi, Bluetooth, Telemetry, Neighbor Info, **Mesh Beacon (2.8+)**, **Status Message (2.8+)**, **TAK / ATAK (2.8+)**, **Traffic Management (2.8+)**, **Ambient Lighting (2.8+)**, MQTT, Canned Messages, Store & Forward.
+- **Firmware gating** — 2.8+ sections (Mesh Beacon, Status Message, TAK, Traffic Management, Ambient Lighting) are greyed out with "Requires firmware 2.8.0+" banner on older firmware.
 - **Backend validation** — Numeric ranges, string lengths, and enum values are validated against firmware-derived constraints; invalid values are rejected with HTTP 400.
 - **Enum dropdowns** — Enum-backed fields render as `<select>`s populated from the radio's firmware schema.
 - **Danger-zone confirmations** — Role→ROUTER, LoRa TX disabled, region change, and credential updates prompt for confirmation in the UI *and* are rejected server-side without `"confirm": true`.
 - **LoRa preset gating** — Manual radio params (bandwidth/spread factor/coding rate/frequency offset) are greyed out and rejected while `use_preset` is enabled.
 - **Reboot feedback** — Writes requiring a reboot show a dismissible "reboot the node to apply" banner; a Refresh button force re-reads config from the radio.
 - **Thread-safe writes** — Writes run in a thread-pool worker under a config-write lock, never holding the connection lock during radio I/O.
+
+#### Mesh Beacon (firmware 2.8+)
+- **Flags** — Bitfield rendered as three checkboxes: Listen (receive beacons), Broadcast (transmit beacons), Legacy Split (split beacon text + offer into separate MESH_BEACON_APP + TEXT_MESSAGE_APP packets)
+- **Broadcast message** — Text included in each beacon (max 100 bytes)
+- **Offer channel/region/preset** — Advertised to listening clients for mesh discovery
+- **TX channel/region/preset** — Radio settings used when transmitting beacons
+- **Broadcast interval** — Seconds between beacons (min 3600s / 1 hour)
+
+#### Status Message (firmware 2.8+)
+- **Node status** — Free-text status string displayed in UI
+
+#### TAK / ATAK (firmware 2.8+)
+- **Team** — 16-color enum dropdown (Unspecified, Red, Blue, Green, Yellow, Cyan, Magenta, Orange, Violet, White, Black, Brown, Pink, Grey, Light Blue, Dark Red, Dark Green, Dark Blue)
+- **Role** — 100+ ATAK MemberRole enum dropdown
+
+#### Traffic Management (firmware 2.8+)
+- **Enabled** — Master toggle for traffic management module
+- **Per-module ignore toggles** — 21 boolean toggles to ignore specific module traffic (MQTT, Serial, External Notification, Canned Message, Audio, Remote Hardware, Ambient Lighting, Detection Sensor, PaxCounter, Store & Forward, Range Test, Neighbor Info, Telemetry, TAK, Status Message, Mesh Beacon, plus MQTT downlink/uplink variants)
+
+#### Ambient Lighting (firmware 2.8+)
+- **Enabled** — Master toggle
+- **LED GPIO / Count / Type** — Hardware configuration
+- **Brightness** — 0–255
+- **Pattern / Color / Speed** — Animation parameters
 
 ### Web UI — Theming
 

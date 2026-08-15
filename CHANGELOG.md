@@ -2,6 +2,28 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.17.0] - 2026-08-15
+### Added
+- **Meshtastic 2.8 Firmware Support** — Full compatibility with Meshtastic 2.8.x including new module configs, LoRa regions/presets, and device roles.
+- **Map Base Layer Styles** — Four selectable map types in the top-left toolbar: Dark (CartoDB), Light (CartoDB), Satellite (ESRI World Imagery), Topographical (OpenTopoMap). Selection persists in localStorage.
+- **MeshBeacon Config (2.8+)** — New "Mesh Beacon" section in Configure tab with Listen/Broadcast/Legacy-Split toggles (bitfield), beacon message, offer/TX channel-region-preset, and broadcast interval (min 1h). Greyed out on firmware < 2.8.0.
+- **2.8 Module Configs** (all firmware-gated):
+  - **Status Message** — Text status for UI display
+  - **TAK / ATAK** — Team (16 colors) + Role (100+ ATAK roles) dropdowns
+  - **Traffic Management** — Per-module enable/disable toggles (21 modules including MQTT, Serial, MeshBeacon, TAK, etc.)
+  - **Ambient Lighting** — LED strip control (GPIO, count, type, brightness 0-255, pattern, color, speed)
+- **New LoRa Regions** (11 new): EU_N_868, EU_866, EU_874, EU_917, ITU1_2M, ITU2_2M, ITU3_2M, ITU1_70CM, ITU2_70CM, ITU3_70CM, ITU2_125CM
+- **New LoRa Presets** (7 new): LITE_FAST, LITE_SLOW, NARROW_FAST, NARROW_SLOW, TINY_FAST, TINY_SLOW, MEDIUM_TURBO
+- **New Device Roles** (6 new): TAK, CLIENT_HIDDEN, LOST_AND_FOUND, TAK_TRACKER, ROUTER_LATE, CLIENT_BASE
+- **New RebroadcastMode** (6 values): ALL, ALL_SKIP_DECODING, LOCAL_ONLY, KNOWN_ONLY, NONE, CORE_PORTNUMS_ONLY
+- **New BuzzerMode** (5 values): ALL_ENABLED, DISABLED, NOTIFICATIONS_ONLY, SYSTEM_ONLY, DIRECT_MSG_ONLY
+- **New Device Config Fields**: `rebroadcast_mode`, `buzzer_mode`, `tzdef`, `led_heartbeat_disabled`
+
+### Fixed
+- **OpenTopoMap tile DNS failures** — Corrected subdomain pattern from `abcd` to `abc` (OpenTopoMap only has a/b/c subdomains)
+- **Map type initialization race condition** — Fixed Temporal Dead Zone error where `mapTypeKeyLabels` was used before declaration
+- **MeshBeacon 2.8 enum population** — Manually added 2.8 RegionCode/ModemPreset values not present in meshtastic-python 2.7.x protobuf
+
 ## [1.16.0] - 2026-08-14
 ### Added
 - **Comprehensive Test Coverage** — Added extensive unit and E2E test suite with 80 tests covering core functionality. Includes unit tests for configuration management, security scanning, MQTT bridge filtering, and API route handlers. E2E tests expanded to cover additional API endpoints including position history, waypoints, tags, traceroute, and node management. Coverage reporting integrated with pytest-cov, achieving 26% overall coverage with 95%+ coverage on critical modules like config.py and security_scanner.py.

@@ -135,32 +135,124 @@ def build_config_registry() -> Dict[str, Any]:
     }
     
     # Populate RegionCode and ModemPreset enum options for mesh_beacon fields
+    # Also includes 2.8 enum values not present in 2.7.x library
     try:
         region_enum = config_pb2.Config.LoRaConfig.RegionCode
         preset_enum = config_pb2.Config.LoRaConfig.ModemPreset
         region_options = []
-        for i in range(27):
+        for i in range(38):  # 2.8 adds regions up to 37 (ITU2_125CM)
             try:
                 name = region_enum.Name(i)
                 if name != 'UNSET':
                     region_options.append(name)
             except ValueError:
                 pass
+        # Manually add 2.8 regions not in 2.7.x library
+        region_28 = {
+            27: 'ITU1_2M', 28: 'ITU2_2M', 29: 'EU_866',
+            30: 'EU_874', 31: 'EU_917', 32: 'EU_N_868',
+            33: 'ITU3_2M', 34: 'ITU1_70CM', 35: 'ITU2_70CM',
+            36: 'ITU3_70CM', 37: 'ITU2_125CM'
+        }
+        for num, name in region_28.items():
+            if name not in region_options:
+                region_options.append(name)
+
         preset_options = []
-        for i in range(20):
+        for i in range(17):  # 2.8 adds presets up to 16 (MEDIUM_TURBO)
             try:
                 name = preset_enum.Name(i)
                 if name != 'UNSET':
                     preset_options.append(name)
             except ValueError:
                 pass
+        # Manually add 2.8 presets not in 2.7.x library
+        preset_28 = {
+            10: 'LITE_FAST', 11: 'LITE_SLOW', 12: 'NARROW_FAST',
+            13: 'NARROW_SLOW', 14: 'TINY_FAST', 15: 'TINY_SLOW',
+            16: 'MEDIUM_TURBO'
+        }
+        for num, name in preset_28.items():
+            if name not in preset_options:
+                preset_options.append(name)
+
         for field in ["broadcast_offer_region", "broadcast_on_region"]:
             registry["mesh_beacon"]["fields"][field]["options"] = region_options
         for field in ["broadcast_offer_preset", "broadcast_on_preset"]:
             registry["mesh_beacon"]["fields"][field]["options"] = preset_options
     except Exception:
         pass
-    
+
+    # StatusMessageConfig — firmware 2.8+ (simple status text for UI)
+    registry["status_message"] = {
+        "category": "module",
+        "fields": {
+            "node_status": {"type": "string", "label": "node_status", "max_length": 100},
+        }
+    }
+
+    # TAKConfig — firmware 2.8+ (ATAK integration)
+    registry["tak"] = {
+        "category": "module",
+        "fields": {
+            "team": {
+                "type": "enum",
+                "label": "team",
+                "enum_type": "Team",
+                "options": ["UNSPECIFIED", "RED", "BLUE", "GREEN", "YELLOW", "CYAN", "MAGENTA", "ORANGE", "VIOLET", "WHITE", "BLACK", "BROWN", "PINK", "GREY", "LIGHT_BLUE", "DARK_RED", "DARK_GREEN", "DARK_BLUE"]
+            },
+            "role": {
+                "type": "enum",
+                "label": "role",
+                "enum_type": "MemberRole",
+                "options": ["UNSPECIFIED", "TEAM_LEADER", "TEAM_MEMBER", "MEDIC", "OBSERVER", "JTAC", "FIRE_SUPPORT", "UAS_OPERATOR", "K9_HANDLER", "EOD", "INTELLIGENCE", "ENGINEER", "COMMUNICATIONS", "LOGISTICS", "SNIPE", "RECON", "CROWD_CONTROL", "DRIVER", "PILOT", "CREW_CHIEF", "LOADMASTER", "GUNNER", "RIFLEMAN", "AUTOMATIC_RIFLEMAN", "GRENADIER", "MACHINE_GUNNER", "ANTI_TANK", "ANTI_AIR", "MORTAR", "ARTILLERY", "TANKER", "MECHANIZED", "AIR_ASSAULT", "AIRBORNE", "SPECIAL_FORCES", "CIVIL_AFFAIRS", "PSYOP", "CHAPLAIN", "LEGAL", "PUBLIC_AFFAIRS", "MEDICAL", "VETERINARY", "DENTAL", "PHARMACY", "LAB", "RADIOLOGY", "PREVENTIVE_MED", "MENTAL_HEALTH", "NUTRITION", "ENVIRONMENTAL", "INDUSTRIAL_HYGIENE", "OCCUPATIONAL_HEALTH", "BIOENVIRONMENTAL", "RADIATION", "CBRN", "EXPLOSIVE_ORDNANCE", "WEAPONS", "MISSILE", "SPACE", "CYBER", "INTEL_ANALYST", "CRYPTOLOGIC", "SIGNALS_INTEL", "HUMAN_INTEL", "GEOSPATIAL", "TARGETING", "FIRE_CONTROL", "AIR_DEFENSE", "MISSILE_DEFENSE", "COUNTER_INTEL", "SECURITY_FORCES", "LAW_ENFORCEMENT", "CORRECTIONS", "INVESTIGATIONS", "FORENSICS", "EMERGENCY_MGMT", "FIREFIGHTING", "SEARCH_RESCUE", "HAZMAT", "DISASTER_RELIEF", "HUMANITARIAN", "CIVIL_ENGINEER", "UTILITIES", "CONSTRUCTION", "HEAVY_EQUIP", "SURVEY", "MAPPING", "NAVIGATION", "COMMUNICATIONS_SPECIALIST", "SATELLITE_COMMS", "NETWORK_ADMIN", "SYS_ADMIN", "PROGRAMMER", "DATA_ANALYST", "DB_ADMIN", "SECURITY_SPECIALIST", "INFO_ASSURANCE", "COMPLIANCE", "ACQUISITION", "CONTRACTING", "LOGISTICS_READINESS", "TRANSPORTATION", "SUPPLY", "FUEL", "MAINTENANCE", "AVIONICS", "AIRCRAFT_MAINT", "MUNITIONS", "ARMAMENT", "ELECTRONIC_WARFARE", "RADAR", "SONAR", "UAV_OPERATOR", "ROBOTICS", "AI_ML", "QUANTUM", "OTHER"]
+            },
+        }
+    }
+
+    # TrafficManagementConfig — firmware 2.8+
+    registry["traffic_management"] = {
+        "category": "module",
+        "fields": {
+            "enabled": {"type": "bool", "label": "enabled"},
+            "mqtt_enabled": {"type": "bool", "label": "mqtt_enabled"},
+            "mqtt_downlink_enabled": {"type": "bool", "label": "mqtt_downlink_enabled"},
+            "uplink_enabled": {"type": "bool", "label": "uplink_enabled"},
+            "downlink_enabled": {"type": "bool", "label": "downlink_enabled"},
+            "ignore_mqtt": {"type": "bool", "label": "ignore_mqtt"},
+            "ignore_serial": {"type": "bool", "label": "ignore_serial"},
+            "ignore_external_notification": {"type": "bool", "label": "ignore_external_notification"},
+            "ignore_canned_message": {"type": "bool", "label": "ignore_canned_message"},
+            "ignore_audio": {"type": "bool", "label": "ignore_audio"},
+            "ignore_remote_hardware": {"type": "bool", "label": "ignore_remote_hardware"},
+            "ignore_ambient_lighting": {"type": "bool", "label": "ignore_ambient_lighting"},
+            "ignore_detection_sensor": {"type": "bool", "label": "ignore_detection_sensor"},
+            "ignore_paxcounter": {"type": "bool", "label": "ignore_paxcounter"},
+            "ignore_store_forward": {"type": "bool", "label": "ignore_store_forward"},
+            "ignore_range_test": {"type": "bool", "label": "ignore_range_test"},
+            "ignore_neighbor_info": {"type": "bool", "label": "ignore_neighbor_info"},
+            "ignore_telemetry": {"type": "bool", "label": "ignore_telemetry"},
+            "ignore_tak": {"type": "bool", "label": "ignore_tak"},
+            "ignore_status_message": {"type": "bool", "label": "ignore_status_message"},
+            "ignore_mesh_beacon": {"type": "bool", "label": "ignore_mesh_beacon"},
+        }
+    }
+
+    # AmbientLightingConfig — firmware 2.8+ (LED control)
+    registry["ambient_lighting"] = {
+        "category": "module",
+        "fields": {
+            "enabled": {"type": "bool", "label": "enabled"},
+            "led_gpio": {"type": "int", "label": "led_gpio"},
+            "led_count": {"type": "int", "label": "led_count"},
+            "led_type": {"type": "int", "label": "led_type"},
+            "brightness": {"type": "int", "label": "brightness", "min": 0, "max": 255},
+            "pattern": {"type": "int", "label": "pattern"},
+            "color": {"type": "int", "label": "color"},
+            "speed": {"type": "int", "label": "speed"},
+        }
+    }
+
     return registry
 
 
