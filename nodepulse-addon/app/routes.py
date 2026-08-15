@@ -318,7 +318,7 @@ async def handle_status(request: web.Request) -> web.Response:
             import json as _json, os as _os
             # HA Supervisor mounts config.json one level above the app/ package.
             _cfg_candidates = [
-                _os.path.join(_os.path.dirname(__file__), "..", "..", "config.json"),
+                _os.path.join(_os.path.dirname(__file__), "..", "config.json"),
                 "/data/config.json",
             ]
             for _p in _cfg_candidates:
