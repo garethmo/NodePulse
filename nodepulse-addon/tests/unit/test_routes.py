@@ -39,7 +39,6 @@ def make_request(app_dict=None, method="GET", path="/", headers=None, body=None,
     request.json = AsyncMock(return_value=body or {})
     return request
 
-
 # ----------------------------------------------------------------------
 # _validate_destination tests
 # ----------------------------------------------------------------------
@@ -163,7 +162,9 @@ class TestHandleStatus:
         request = make_request(app_dict={"connection": mock_conn, "config": mock_config})
         resp = await routes.handle_status(request)
         assert resp.status == 500
-
+        body = json.loads(resp.body)
+        assert body == {"error": "Failed to retrieve status"}
+        
 
 # ----------------------------------------------------------------------
 # handle_nodes tests
@@ -179,6 +180,17 @@ class TestHandleNodes:
         body = json.loads(resp.body)
         assert isinstance(body, list)
         mock_conn.get_nodes.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_handle_nodes_error(self):
+        """Test that handle_nodes returns 500 on connection error."""
+        mock_conn = AsyncMock()
+        mock_conn.get_nodes.side_effect = Exception("DB error")
+        request = make_request(app_dict={"connection": mock_conn}, method="GET", path="/api/nodes")
+        resp = await routes.handle_nodes(request)
+        assert resp.status == 500
+        body = json.loads(resp.body)
+        assert body == {"error": "Failed to retrieve nodes"}
 
 
 # ----------------------------------------------------------------------
@@ -203,6 +215,8 @@ class TestHandleClearStaleNodes:
         request = make_request(app_dict={"connection": mock_conn}, method="POST", path="/api/nodes/clear")
         resp = await routes.handle_clear_stale_nodes(request)
         assert resp.status == 500
+        body = json.loads(resp.body)
+        assert body == {"error": "Failed to clear stale nodes"}
 
 
 # ----------------------------------------------------------------------
@@ -227,6 +241,20 @@ class TestHandleDeleteNode:
         request = make_request(app_dict={"connection": mock_conn}, method="DELETE", path="/api/nodes/!missing", match_info={"node_id": "!missing"})
         resp = await routes.handle_delete_node(request)
         assert resp.status == 404
+        body = json.loads(resp.body)
+        assert body == {"error": "Node not found"}
+        mock_conn.delete_node.assert_called_once_with("!missing")
+
+    @pytest.mark.asyncio
+    async def test_delete_node_error(self):
+        """Test that handle_delete_node returns 500 when delete_node raises."""
+        mock_conn = AsyncMock()
+        mock_conn.delete_node.side_effect = Exception("DB error")
+        request = make_request(app_dict={"connection": mock_conn}, method="DELETE", path="/api/nodes/!error", match_info={"node_id": "!error"})
+        resp = await routes.handle_delete_node(request)
+        assert resp.status == 500
+        body = json.loads(resp.body)
+        assert body == {"error": "Failed to delete node"}
 
 
 # ----------------------------------------------------------------------
@@ -268,7 +296,6 @@ class TestHandleMessages:
         body = json.loads(resp.body)
         assert isinstance(body, list)
         mock_conn.get_messages.assert_called_once()
-
 
 # ----------------------------------------------------------------------
 # handle_export_messages tests
@@ -313,6 +340,17 @@ class TestHandleAddWaypoint:
         assert resp.status == 200
         mock_conn.add_waypoint.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_handle_add_waypoint_error(self):
+        """Test that handle_add_waypoint returns 500 on internal error."""
+        mock_conn = AsyncMock()
+        mock_conn.add_waypoint.side_effect = Exception("DB error")
+        request = make_request(app_dict={"connection": mock_conn}, method="POST", path="/api/waypoints", body={"name": "wp1", "lat": 1, "lng": 2})
+        resp = await routes.handle_add_waypoint(request)
+        assert resp.status == 500
+        body = json.loads(resp.body)
+        assert body == {"error": "Failed to add waypoint"}
+
 
 # ----------------------------------------------------------------------
 # handle_update_waypoint tests
@@ -327,13 +365,24 @@ class TestHandleUpdateWaypoint:
         assert resp.status == 200
         mock_conn.update_waypoint.assert_called_once_with("wp1", {"lat": 5})
 
+    @pytest.mark.asyncio
+    async def test_handle_update_waypoint_error(self):
+        """Test that handle_update_waypoint returns 500 on internal error."""
+        mock_conn = AsyncMock()
+        mock_conn.update_waypoint.side_effect = Exception("Update failed")
+        request = make_request(app_dict={"connection": mock_conn}, method="PUT", path="/api/waypoints/wp1", body={"lat": 5}, match_info={"waypoint_id": "wp1"})
+        resp = await routes.handle_update_waypoint(request)
+        assert resp.status == 500
+        body = json.loads(resp.body)
+        assert body == {"error": "Failed to update waypoint"}
+
 
 # ----------------------------------------------------------------------
 # handle_delete_waypoint tests
 # ----------------------------------------------------------------------
 class TestHandleDeleteWaypoint:
     @pytest.mark.asyncio
-    async def test_handle_delete_waypoint_success(self):
+    async def test_delete_waypoint_success(self):
         mock_conn = AsyncMock()
         mock_conn.delete_waypoint.return_value = True
         request = make_request(app_dict={"connection": mock_conn}, method="DELETE", path="/api/waypoints/wp1", match_info={"waypoint_id": "wp1"})
@@ -342,6 +391,28 @@ class TestHandleDeleteWaypoint:
         body = json.loads(resp.body)
         assert body == {"deleted": "wp1"}
         mock_conn.delete_waypoint.assert_called_once_with("wp1")
+
+    @pytest.mark.asyncio
+    async def test_delete_waypoint_not_found(self):
+        mock_conn = AsyncMock()
+        mock_conn.delete_waypoint.return_value = False  # Return False to indicate not found
+        request = make_request(app_dict={"connection": mock_conn}, method="DELETE", path="/api/waypoints/wp1", match_info={"waypoint_id": "wp1"})
+        resp = await routes.handle_delete_waypoint(request)
+        assert resp.status == 404
+        body = json.loads(resp.body)
+        assert body == {"error": "Waypoint not found"}
+        mock_conn.delete_waypoint.assert_called_once_with("wp1")
+
+    @pytest.mark.asyncio
+    async def test_delete_waypoint_error(self):
+        """Test that handle_delete_waypoint returns 500 when delete_node raises."""
+        mock_conn = AsyncMock()
+        mock_conn.delete_waypoint.side_effect = Exception("DB error")
+        request = make_request(app_dict={"connection": mock_conn}, method="DELETE", path="/api/waypoints/wp1", match_info={"waypoint_id": "wp1"})
+        resp = await routes.handle_delete_waypoint(request)
+        assert resp.status == 500
+        body = json.loads(resp.body)
+        assert body == {"error": "Failed to delete waypoint"}
 
 
 # ----------------------------------------------------------------------
@@ -387,6 +458,17 @@ class TestHandleTraceroute:
         assert resp.status == 200
         mock_conn.request_traceroute.assert_called_once_with("!12345678")
 
+    @pytest.mark.asyncio
+    async def test_handle_traceroute_error(self):
+        """Test that handle_traceroute returns 500 on internal error."""
+        mock_conn = AsyncMock()
+        mock_conn.request_traceroute.side_effect = Exception("DB error")
+        request = make_request(app_dict={"connection": mock_conn}, method="POST", path="/api/traceroute", body={"destination": "!12345678"})
+        resp = await routes.handle_traceroute(request)
+        assert resp.status == 500
+        body = json.loads(resp.body)
+        assert body == {"error": "Failed to dispatch traceroute"}
+
 
 # ----------------------------------------------------------------------
 # handle_request_position tests
@@ -401,7 +483,13 @@ class TestHandleRequestPosition:
         assert resp.status == 200
         mock_conn.request_position.assert_called_once_with("!12345678")
 
-
-# ----------------------------------------------------------------------
-# Additional handlers can be added similarly
-# ----------------------------------------------------------------------
+    @pytest.mark.asyncio
+    async def test_handle_request_position_error(self):
+        """Test that handle_request_position returns 500 on internal error."""
+        mock_conn = AsyncMock()
+        mock_conn.request_position.side_effect = Exception("Network error")
+        request = make_request(app_dict={"connection": mock_conn}, method="POST", path="/api/position/request", body={"destination": "!12345678"})
+        resp = await routes.handle_request_position(request)
+        assert resp.status == 500
+        body = json.loads(resp.body)
+        assert body == {"error": "Failed to dispatch position request"}

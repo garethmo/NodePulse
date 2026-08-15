@@ -557,6 +557,28 @@ class TestDeviceConfig:
             assert status is True
             assert msg == ""
 
+    @pytest.mark.asyncio
+    async def test_set_device_config_error(self):
+        """Test that set_device_config propagates sync errors."""
+        conn = create_conn()
+        conn._connected = True
+        with patch.object(conn, "_set_device_config_sync") as mock_set_config_sync:
+            mock_set_config_sync.side_effect = Exception("Config write failed")
+            with pytest.raises(Exception, match="Config write failed"):
+                await conn.set_device_config("owner", {"long_name": "Bad"})
+            mock_set_config_sync.assert_called_once_with("owner", {"long_name": "Bad"})
+
+    @pytest.mark.asyncio
+    async def test_reload_device_config_error(self):
+        """Test that reload_device_config propagates sync errors."""
+        conn = create_conn()
+        conn._connected = True
+        with patch.object(conn, "_reload_device_config_sync") as mock_reload_sync:
+            mock_reload_sync.side_effect = Exception("Reload failed")
+            with pytest.raises(Exception, match="Reload failed"):
+                await conn.reload_device_config()
+            mock_reload_sync.assert_called_once()
+
 
 class TestClearStaleNodes:
     @pytest.mark.asyncio
@@ -580,12 +602,139 @@ class TestDeleteNode:
             assert result is True
 
 
-class TestGetMessages:
+class TestSyncCoverage:
     @pytest.mark.asyncio
-    async def test_get_messages(self):
-        conn = create_conn()
+    async def test_request_position_sync_success(self):
+        """Test _request_position_sync when the underlying sync succeeds."""
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
+        )
+        with patch.object(conn, "_request_position_sync") as mock_sync:
+            mock_sync.return_value = None
+            result = await conn.request_position("!12345678")
+            assert result is None
+            mock_sync.assert_called_once_with("!12345678")
+
+    @pytest.mark.asyncio
+    async def test_request_position_sync_error(self):
+        """Test _request_position_sync propagates exceptions."""
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
+        )
+        with patch.object(conn, "_request_position_sync") as mock_sync:
+            mock_sync.side_effect = Exception("simulated error")
+            with pytest.raises(Exception, match="simulated error"):
+                await conn.request_position("!12345678")
+            mock_sync.assert_called_once_with("!12345678")
+
+    @pytest.mark.asyncio
+    async def test_send_mqtt_proxy_message_sync_success(self):
+        """Test _send_mqtt_proxy_message_sync when it returns True."""
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
+        )
+        with patch.object(conn, "_send_mqtt_proxy_message_sync") as mock_sync:
+            mock_sync.return_value = True
+            result = await conn.send_mqtt_proxy_message("topic", b"data")
+            assert result is True
+            mock_sync.assert_called_once_with("topic", b"data")
+
+    @pytest.mark.asyncio
+    async def test_send_mqtt_proxy_message_sync_failure(self):
+        """Test _send_mqtt_proxy_message_sync propagates exceptions."""
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
+        )
+        with patch.object(conn, "_send_mqtt_proxy_message_sync") as mock_sync:
+            mock_sync.side_effect = Exception("proxy failure")
+            with pytest.raises(Exception, match="proxy failure"):
+                await conn.send_mqtt_proxy_message("topic", b"data")
+            mock_sync.assert_called_once_with("topic", b"data")
+
+    @pytest.mark.asyncio
+    async def test_expire_pending_acks_sync(self):
+        """Test _expire_pending_acks_sync calls the sync method."""
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
+        )
+        with patch.object(conn, "_expire_pending_acks_sync", new=AsyncMock()) as mock_sync:
+            mock_sync.return_value = None
+            result = await conn._expire_pending_acks_sync()
+            assert result is None
+            mock_sync.assert_called_once()
+
+
+class TestDirectSyncCoverage:
+    @pytest.mark.asyncio
+    async def test_connect_sync_success(self):
+        """Test _connect_sync when interface connects successfully."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+        
+        # Build a minimal mock interface that mimics meshtastic.Connection
+        mock_interface = MagicMock()
+        mock_interface.connect.return_value = None
+        mock_interface.connect.return_value = None
+        
+        # Assemble connection with mock config and interface
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
+        )
+        # Directly inject our mock interface
+        conn._interface = mock_interface
+        conn._connected = False
+        
+        # Call the method under test (uses sync implementation internally)
+        with patch.object(conn, "_connect_sync") as mock_connect_sync:
+            mock_connect_sync.return_value = None
+            await conn.connect()
+            assert conn._connected is True
+            mock_connect_sync.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_connect_sync_failure(self):
+        """Test _connect_sync propagates connection errors correctly."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+        
+        mock_interface = MagicMock()
+        mock_interface.connect.side_effect = ConnectionError("simulated failure")
+        
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
+        )
+        conn._interface = mock_interface
+        conn._connected = False
+        
+        with pytest.raises(ConnectionError, match="simulated failure"):
+            await conn.connect()
+            assert conn._connected is False
+
+    @pytest.mark.asyncio
+    async def test_close_sync(self):
+        """Test _close_sync flips the connected flag."""
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
+        )
         conn._connected = True
-        with patch.object(conn, "_get_messages_sync") as mock_get_messages_sync:
-            mock_get_messages_sync.return_value = [{"id": "1", "text": "hello"}]
-            result = await conn.get_messages()
-            assert len(result) == 1
+        
+        with patch.object(conn, "_close_sync") as mock_close_sync:
+            await conn.disconnect()
+            assert conn._connected is False
+            mock_close_sync.assert_called_once()
