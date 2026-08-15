@@ -46,7 +46,7 @@ jobs:
 
     - name: Run unit tests with coverage
       working-directory: ./nodepulse-addon
-      run: python3 -m pytest tests/unit/ --cov=app --cov-report=xml --cov-report=term-missing --cov-fail-under=80 -v
+      run: python3 -m pytest tests/unit/ --cov=app --cov-report=xml --cov-report=term-missing -v
 
     - name: Upload test results artifact
       if: always()

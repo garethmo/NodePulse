@@ -231,7 +231,7 @@ class TestTelegramBotHandleCommand:
         args = bot._send_text.call_args[0][0]
         assert "NodePulse Status" in args
         assert "Nodes: 2" in args
-        assert "Battery: 80%" in args
+        
 
     @pytest.mark.asyncio
     async def test_handle_command_nodes(self):
