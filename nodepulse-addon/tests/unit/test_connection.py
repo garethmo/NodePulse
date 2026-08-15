@@ -293,3 +293,299 @@ class TestConstants:
             import importlib
             importlib.reload(connection)
             assert connection._DATA_DIR == "/custom/data"
+
+
+# ----------------------------------------------------------------------
+# Comprehensive tests for public async methods of MeshtasticConnection
+# ----------------------------------------------------------------------
+def create_conn(**kwargs):
+    """Create a MeshtasticConnection with minimal mock config."""
+    mock_config = Mock()
+    mock_config.mqtt_enabled = False
+    for k, v in kwargs.items():
+        setattr(mock_config, k, v)
+    return MeshtasticConnection(
+        host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
+    )
+
+
+class TestConnectDisconnect:
+    @pytest.mark.asyncio
+    async def test_connect_success(self):
+        conn = create_conn()
+        with patch.object(conn, "_connect_sync") as mock_connect_sync:
+            mock_connect_sync.return_value = None
+            # The connect method calls asyncio.to_thread, which runs the sync method
+            # We just verify it doesn't raise
+            await conn.connect()
+            # The real _connect_sync would set _connected, but our mock doesn't
+            # So we just verify the method completes without exception
+
+    @pytest.mark.asyncio
+    async def test_connect_failure(self):
+        conn = create_conn()
+        with patch.object(conn, "_connect_sync") as mock_connect_sync:
+            mock_connect_sync.side_effect = Exception("Connection failed")
+            with pytest.raises(Exception):
+                await conn.connect()
+            # The real _connect_sync would set _connected=False on failure
+            # but our mock doesn't, so we just verify the exception is raised
+
+    @pytest.mark.asyncio
+    async def test_disconnect(self):
+        conn = create_conn()
+        conn._connected = True
+        with patch.object(conn, "_close_sync") as mock_close_sync:
+            mock_close_sync.return_value = None
+            await conn.disconnect()
+            # The real _close_sync would set _connected=False
+            # but our mock doesn't, so we just verify it completes
+
+
+class TestGetStatus:
+    @pytest.mark.asyncio
+    async def test_get_status_connected(self):
+        conn = create_conn()
+        conn._connected = True
+        conn._scheduled_messages = []
+        conn._scheduled_messages_lock = MagicMock()
+        conn._scheduled_messages_lock.__enter__ = MagicMock(return_value=None)
+        conn._scheduled_messages_lock.__exit__ = MagicMock(return_value=None)
+
+        with patch.object(conn, "_get_status_sync") as mock_get_status_sync:
+            mock_get_status_sync.return_value = {"connected": True, "my_info": {"id": "!12345678"}}
+            result = await conn.get_status()
+            assert result["connected"] is True
+            assert "my_info" in result
+
+
+class TestGetNodes:
+    @pytest.mark.asyncio
+    async def test_get_nodes_connected(self):
+        conn = create_conn()
+        conn._connected = True
+        with patch.object(conn, "_get_nodes_sync") as mock_get_nodes_sync:
+            mock_get_nodes_sync.return_value = [{"id": "!12345678", "name": "Node1"}]
+            result = await conn.get_nodes()
+            assert len(result) == 1
+            assert result[0]["id"] == "!12345678"
+
+
+class TestGetChannels:
+    @pytest.mark.asyncio
+    async def test_get_channels_connected(self):
+        conn = create_conn()
+        conn._connected = True
+        with patch.object(conn, "_get_channels_sync") as mock_get_channels_sync:
+            mock_get_channels_sync.return_value = [{"channel": 0, "name": "Primary"}]
+            result = await conn.get_channels()
+            assert len(result) == 1
+            assert result[0]["channel"] == 0
+
+
+class TestSendMessage:
+    @pytest.mark.asyncio
+    async def test_send_message_success(self):
+        conn = create_conn()
+        conn._connected = True
+        with patch.object(conn, "_send_message_sync") as mock_send_sync:
+            mock_send_sync.return_value = True
+            result = await conn.send_message("hello", destination="!12345678", channel=0)
+            assert result is True
+
+    @pytest.mark.asyncio
+    async def test_send_message_failure(self):
+        conn = create_conn()
+        conn._connected = True
+        with patch.object(conn, "_send_message_sync") as mock_send_sync:
+            mock_send_sync.return_value = False
+            result = await conn.send_message("hello", destination="!12345678", channel=0)
+            assert result is False
+
+
+class TestSendMqttProxyMessage:
+    @pytest.mark.asyncio
+    async def test_send_mqtt_proxy_message_success(self):
+        conn = create_conn()
+        conn._connected = True
+        with patch.object(conn, "_send_mqtt_proxy_message_sync") as mock_send_proxy_sync:
+            mock_send_proxy_sync.return_value = True
+            result = await conn.send_mqtt_proxy_message("test/topic", b"test data")
+            assert result is True
+
+
+class TestRequestTraceroute:
+    @pytest.mark.asyncio
+    async def test_request_traceroute_success(self):
+        conn = create_conn()
+        conn._connected = True
+        with patch.object(conn, "_request_traceroute_sync") as mock_request_sync:
+            mock_request_sync.return_value = None
+            await conn.request_traceroute("!12345678")
+
+
+class TestRequestPosition:
+    @pytest.mark.asyncio
+    async def test_request_position_success(self):
+        conn = create_conn()
+        conn._connected = True
+        with patch.object(conn, "_request_position_sync") as mock_request_sync:
+            mock_request_sync.return_value = None
+            await conn.request_position("!12345678")
+
+
+class TestTags:
+    @pytest.mark.asyncio
+    async def test_set_tags(self):
+        conn = create_conn()
+        conn._connected = True
+        with patch.object(conn, "_set_tags_sync") as mock_set_tags_sync:
+            mock_set_tags_sync.return_value = {"!12345678": ["tag1", "tag2"]}
+            result = await conn.set_tags("!12345678", ["tag1", "tag2"])
+            assert result == {"!12345678": ["tag1", "tag2"]}
+
+    @pytest.mark.asyncio
+    async def test_get_tags(self):
+        conn = create_conn()
+        conn._connected = True
+        with patch.object(conn, "_get_tags_sync") as mock_get_tags_sync:
+            mock_get_tags_sync.return_value = {"!12345678": ["tag1", "tag2"]}
+            result = await conn.get_tags()
+            assert result == {"!12345678": ["tag1", "tag2"]}
+
+
+class TestPositionHistory:
+    @pytest.mark.asyncio
+    async def test_get_position_history(self):
+        conn = create_conn()
+        conn._connected = True
+        with patch.object(conn, "_get_position_history_sync") as mock_get_history_sync:
+            mock_get_history_sync.return_value = {"!12345678": [{"lat": 1.0, "lng": 2.0}]}
+            result = await conn.get_position_history("!12345678")
+            assert result == {"!12345678": [{"lat": 1.0, "lng": 2.0}]}
+
+
+class TestWaypoints:
+    @pytest.mark.asyncio
+    async def test_add_waypoint(self):
+        conn = create_conn()
+        conn._connected = True
+        with patch.object(conn, "_add_waypoint_sync") as mock_add_sync:
+            mock_add_sync.return_value = {"name": "wp1", "lat": 1.0, "lng": 2.0}
+            result = await conn.add_waypoint({"name": "wp1", "lat": 1.0, "lng": 2.0})
+            assert result["name"] == "wp1"
+
+    @pytest.mark.asyncio
+    async def test_delete_waypoint(self):
+        conn = create_conn()
+        conn._connected = True
+        with patch.object(conn, "_delete_waypoint_sync") as mock_delete_sync:
+            mock_delete_sync.return_value = True
+            result = await conn.delete_waypoint("wp1")
+            assert result is True
+
+    @pytest.mark.asyncio
+    async def test_update_waypoint(self):
+        conn = create_conn()
+        conn._connected = True
+        with patch.object(conn, "_update_waypoint_sync") as mock_update_sync:
+            mock_update_sync.return_value = {"name": "wp1", "lat": 5.0}
+            result = await conn.update_waypoint("wp1", {"lat": 5.0})
+            assert result["lat"] == 5.0
+
+
+class TestPacketLog:
+    @pytest.mark.asyncio
+    async def test_get_packet_log(self):
+        conn = create_conn()
+        conn._connected = True
+        with patch.object(conn, "_get_packet_log_sync") as mock_get_log_sync:
+            mock_get_log_sync.return_value = [{"id": 1, "data": "test"}]
+            result = await conn.get_packet_log(limit=10)
+            assert len(result) == 1
+
+
+class TestSnifferStats:
+    @pytest.mark.asyncio
+    async def test_get_sniffer_stats(self):
+        conn = create_conn()
+        conn._connected = True
+        with patch.object(conn, "_get_sniffer_stats_sync") as mock_get_stats_sync:
+            mock_get_stats_sync.return_value = {"rx_packets": 100, "tx_packets": 50}
+            result = await conn.get_sniffer_stats()
+            assert result["rx_packets"] == 100
+
+
+class TestSecurityScan:
+    @pytest.mark.asyncio
+    async def test_get_security_scan(self):
+        conn = create_conn()
+        conn._connected = True
+        with patch.object(conn, "_get_security_scan_sync") as mock_scan_sync:
+            mock_scan_sync.return_value = {"findings": [], "has_issues": False, "scanned_at": 1234567890}
+            result = await conn.get_security_scan()
+            assert "findings" in result
+            assert "has_issues" in result
+
+
+class TestDeviceConfig:
+    @pytest.mark.asyncio
+    async def test_get_device_config(self):
+        conn = create_conn()
+        conn._connected = True
+        with patch.object(conn, "_get_device_config_sync") as mock_get_config_sync:
+            mock_get_config_sync.return_value = {"owner": {"long_name": "Test"}}
+            result = await conn.get_device_config()
+            assert "owner" in result
+
+    @pytest.mark.asyncio
+    async def test_set_device_config(self):
+        conn = create_conn()
+        conn._connected = True
+        with patch.object(conn, "_set_device_config_sync") as mock_set_config_sync:
+            mock_set_config_sync.return_value = {"applied": True, "reboot_required": False}
+            result = await conn.set_device_config("owner", {"long_name": "New Name"})
+            assert result["applied"] is True
+
+    @pytest.mark.asyncio
+    async def test_reload_device_config(self):
+        conn = create_conn()
+        conn._connected = True
+        with patch.object(conn, "_reload_device_config_sync") as mock_reload_sync:
+            mock_reload_sync.return_value = (True, "")
+            status, msg = await conn.reload_device_config()
+            assert status is True
+            assert msg == ""
+
+
+class TestClearStaleNodes:
+    @pytest.mark.asyncio
+    async def test_clear_stale_nodes(self):
+        conn = create_conn()
+        conn._connected = True
+        with patch.object(conn, "_clear_stale_nodes_sync") as mock_clear_sync:
+            mock_clear_sync.return_value = 5
+            result = await conn.clear_stale_nodes()
+            assert result == 5
+
+
+class TestDeleteNode:
+    @pytest.mark.asyncio
+    async def test_delete_node(self):
+        conn = create_conn()
+        conn._connected = True
+        with patch.object(conn, "_delete_node_sync") as mock_delete_sync:
+            mock_delete_sync.return_value = True
+            result = await conn.delete_node("!12345678")
+            assert result is True
+
+
+class TestGetMessages:
+    @pytest.mark.asyncio
+    async def test_get_messages(self):
+        conn = create_conn()
+        conn._connected = True
+        with patch.object(conn, "_get_messages_sync") as mock_get_messages_sync:
+            mock_get_messages_sync.return_value = [{"id": "1", "text": "hello"}]
+            result = await conn.get_messages()
+            assert len(result) == 1
