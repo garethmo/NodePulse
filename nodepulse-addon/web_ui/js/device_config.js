@@ -17,25 +17,27 @@ import { escapeHtml } from './util.js';
 // Sections not in this map are rendered with a title-cased version of the key.
 // ---------------------------------------------------------------------------
 const SECTION_META = {
-  owner:          { title: 'Node Identity',        icon: '🪪', danger: false },
-  device:         { title: 'Device',               icon: '📟', danger: false },
-  lora:           { title: 'LoRa Radio',           icon: '📡', danger: true  },
-  position:       { title: 'Position',             icon: '📍', danger: false },
-  power:          { title: 'Power',                icon: '🔋', danger: false },
-  display:        { title: 'Display',              icon: '🖥️', danger: false },
-  network:        { title: 'Network / WiFi',       icon: '🌐', danger: true  },
-  bluetooth:      { title: 'Bluetooth',            icon: '🔵', danger: false },
-  telemetry:      { title: 'Telemetry',            icon: '📊', danger: false },
-  neighbor_info:  { title: 'Neighbor Info',        icon: '🗺️', danger: false },
-  mqtt:           { title: 'MQTT Module',          icon: '📨', danger: false },
-  canned_message: { title: 'Canned Messages',      icon: '💬', danger: false },
-  store_forward:  { title: 'Store & Forward',      icon: '📦', danger: false },
+  owner:           { title: 'Node Identity',        icon: '🪪', danger: false },
+  device:          { title: 'Device',               icon: '📟', danger: false },
+  lora:            { title: 'LoRa Radio',           icon: '📡', danger: true  },
+  position:        { title: 'Position',             icon: '📍', danger: false },
+  power:           { title: 'Power',                icon: '🔋', danger: false },
+  display:         { title: 'Display',              icon: '🖥️', danger: false },
+  network:         { title: 'Network / WiFi',       icon: '🌐', danger: true  },
+  bluetooth:       { title: 'Bluetooth',            icon: '🔵', danger: false },
+  telemetry:       { title: 'Telemetry',            icon: '📊', danger: false },
+  neighbor_info:   { title: 'Neighbor Info',        icon: '🗺️', danger: false },
+  mesh_beacon:     { title: 'Mesh Beacon',          icon: '📢', danger: false },
+  mqtt:            { title: 'MQTT Module',          icon: '📨', danger: false },
+  canned_message:  { title: 'Canned Messages',      icon: '💬', danger: false },
+  store_forward:   { title: 'Store & Forward',      icon: '📦', danger: false },
 };
 
 // Ordered list of sections to render (controls card order).
 const SECTION_ORDER = [
   'owner', 'device', 'lora', 'position', 'power', 'display',
   'network', 'bluetooth', 'telemetry', 'neighbor_info',
+  'mesh_beacon',
   'mqtt', 'canned_message', 'store_forward',
 ];
 
@@ -155,6 +157,10 @@ function _renderSections(container, data) {
   const schema = (dataClone._schema) || {};
   delete dataClone._schema;
 
+  // Extract firmware version from owner section for feature gating
+  const firmwareVersion = dataClone.owner?.firmware_version || '';
+  const isMeshBeaconSupported = _isFirmwareVersionAtLeast(firmwareVersion, '2.8.0');
+
   container.innerHTML = '';
 
   const grid = document.createElement('div');
@@ -171,6 +177,12 @@ function _renderSections(container, data) {
       danger: false,
     };
 
+    // Gate mesh_beacon on firmware 2.8.0+
+    if (sectionKey === 'mesh_beacon' && !isMeshBeaconSupported) {
+      meta.disabled = true;
+      meta.disabledReason = `Requires firmware 2.8.0+ (current: ${firmwareVersion || 'unknown'})`;
+    }
+
     const card = _buildSectionCard(sectionKey, sectionData, meta, schema[sectionKey]);
     grid.appendChild(card);
   }
@@ -180,7 +192,7 @@ function _renderSections(container, data) {
 
 function _buildSectionCard(sectionKey, sectionData, meta, sectionSchema = null) {
   const card = document.createElement('div');
-  card.className = `cfg-card${meta.danger ? ' cfg-card-danger' : ''}`;
+  card.className = `cfg-card${meta.danger ? ' cfg-card-danger' : ''}${meta.disabled ? ' cfg-card-disabled' : ''}`;
   card.id = `cfg-card-${sectionKey}`;
 
   const header = document.createElement('div');
@@ -189,8 +201,17 @@ function _buildSectionCard(sectionKey, sectionData, meta, sectionSchema = null) 
     <span class="cfg-card-icon">${meta.icon}</span>
     <span class="cfg-card-title">${escapeHtml(meta.title)}</span>
     ${meta.danger ? '<span class="cfg-danger-badge">Advanced</span>' : ''}
+    ${meta.disabled ? '<span class="cfg-disabled-badge" title="Unavailable">🔒 Unavailable</span>' : ''}
   `;
   card.appendChild(header);
+
+  // Show disabled reason banner if section is gated
+  if (meta.disabled) {
+    const banner = document.createElement('div');
+    banner.className = 'cfg-disabled-banner';
+    banner.textContent = meta.disabledReason || 'This feature requires a newer firmware version.';
+    card.appendChild(banner);
+  }
 
   const form = document.createElement('form');
   form.className = 'cfg-form';
@@ -224,10 +245,26 @@ function _buildSectionCard(sectionKey, sectionData, meta, sectionSchema = null) 
   revertBtn.disabled = true;
   revertBtn.id = `cfg-revert-${sectionKey}`;
 
+  // Disable buttons if section is gated
+  if (meta.disabled) {
+    saveBtn.disabled = true;
+    saveBtn.title = 'Unavailable — requires firmware 2.8.0+';
+    revertBtn.disabled = true;
+  }
+
   actions.appendChild(revertBtn);
   actions.appendChild(saveBtn);
   form.appendChild(actions);
   card.appendChild(form);
+
+  // Disable all form inputs if section is gated
+  if (meta.disabled) {
+    form.querySelectorAll('input, select, button').forEach(el => {
+      if (el !== saveBtn && el !== revertBtn) {
+        el.disabled = true;
+      }
+    });
+  }
 
   // Dirty tracking — enable Save/Revert when any input changes
   form.addEventListener('input', () => {
@@ -305,6 +342,221 @@ function _buildSectionCard(sectionKey, sectionData, meta, sectionSchema = null) 
 }
 
 /**
+ * Build field rows for MeshBeaconConfig section.
+ * Handles the bitfield flags as checkboxes and ChannelSettings as combined inputs.
+ */
+function _buildMeshBeaconFieldRow(sectionKey, fieldKey, fieldValue, fieldSchema = null) {
+  const row = document.createElement('div');
+  row.className = 'cfg-field-row';
+
+  const label = document.createElement('label');
+  label.className = 'cfg-field-label';
+  label.htmlFor = `cfg-${sectionKey}-${fieldKey}`;
+  label.textContent = _labelify(fieldKey);
+
+  const inputId = `cfg-${sectionKey}-${fieldKey}`;
+  let input;
+
+  // flags — bitfield rendered as three checkboxes
+  if (fieldKey === 'flags') {
+    const flagsValue = Number(fieldValue) || 0;
+    const flagDefs = [
+      { bit: 1, key: 'FLAG_LISTEN_ENABLED',   label: 'Listen',          title: 'Receive MESH_BEACON_APP packets from other nodes' },
+      { bit: 2, key: 'FLAG_BROADCAST_ENABLED', label: 'Broadcast',      title: 'Periodically broadcast MESH_BEACON_APP packets' },
+      { bit: 4, key: 'FLAG_LEGACY_SPLIT',     label: 'Legacy Split',    title: 'Split beacon into separate MESH_BEACON_APP (offer) and TEXT_MESSAGE_APP (text) packets' },
+    ];
+
+    const container = document.createElement('div');
+    container.className = 'cfg-flags-container';
+    container.style.display = 'flex';
+    container.style.flexWrap = 'wrap';
+    container.style.gap = '12px';
+    container.style.alignItems = 'center';
+
+    for (const def of flagDefs) {
+      const isSet = (flagsValue & def.bit) !== 0;
+      const cbId = `${inputId}-${def.key}`;
+
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.id = cbId;
+      checkbox.checked = isSet;
+      checkbox.dataset.fieldKey = fieldKey;
+      checkbox.dataset.flagBit = def.bit;
+      checkbox.dataset.flagKey = def.key;
+      checkbox.className = 'cfg-checkbox cfg-flag-checkbox';
+      checkbox.title = def.title;
+
+      const checkboxLabel = document.createElement('label');
+      checkboxLabel.htmlFor = cbId;
+      checkboxLabel.className = 'cfg-flag-label';
+      checkboxLabel.textContent = def.label;
+      checkboxLabel.style.display = 'flex';
+      checkboxLabel.style.alignItems = 'center';
+      checkboxLabel.style.gap = '6px';
+      checkboxLabel.style.cursor = 'pointer';
+
+      checkboxLabel.prepend(checkbox);
+      container.appendChild(checkboxLabel);
+    }
+
+    // Hidden input to track the combined flags value for form collection
+    const hiddenInput = document.createElement('input');
+    hiddenInput.type = 'hidden';
+    hiddenInput.id = inputId;
+    hiddenInput.value = flagsValue;
+    hiddenInput.dataset.fieldKey = fieldKey;
+    hiddenInput.dataset.fieldType = 'int';
+    container.appendChild(hiddenInput);
+
+    // Update hidden input when checkboxes change
+    container.querySelectorAll('.cfg-flag-checkbox').forEach(cb => {
+      cb.addEventListener('change', () => {
+        let newFlags = 0;
+        container.querySelectorAll('.cfg-flag-checkbox').forEach(c => {
+          if (c.checked) newFlags |= Number(c.dataset.flagBit);
+        });
+        hiddenInput.value = newFlags;
+        // Trigger input event for dirty tracking
+        hiddenInput.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+    });
+
+    row.appendChild(label);
+    row.appendChild(container);
+    return row;
+  }
+
+  // broadcast_offer_channel / broadcast_on_channel — ChannelSettings (name + PSK)
+  // Render as a combined text input with a helper button
+  if (fieldKey === 'broadcast_offer_channel' || fieldKey === 'broadcast_on_channel') {
+    // fieldValue is a stringified ChannelSettings or empty
+    const displayValue = fieldValue || '';
+
+    const container = document.createElement('div');
+    container.className = 'cfg-channel-settings-container';
+    container.style.display = 'flex';
+    container.style.gap = '8px';
+    container.style.alignItems = 'center';
+
+    input = document.createElement('input');
+    input.type = 'text';
+    input.id = inputId;
+    input.value = displayValue;
+    input.className = 'cfg-input';
+    input.dataset.fieldKey = fieldKey;
+    input.dataset.fieldType = 'string';
+    input.placeholder = 'Channel name (PSK stored separately)';
+    input.title = 'Channel settings are managed in the Channels section. Enter the channel name here.';
+    input.style.flex = '1';
+
+    const helperBtn = document.createElement('button');
+    helperBtn.type = 'button';
+    helperBtn.className = 'action-btn cfg-channel-helper';
+    helperBtn.textContent = '⚙️';
+    helperBtn.title = 'Configure channel in Channels section';
+    helperBtn.style.flexShrink = '0';
+
+    container.appendChild(input);
+    container.appendChild(helperBtn);
+
+    row.appendChild(label);
+    row.appendChild(container);
+    return row;
+  }
+
+  // broadcast_offer_region / broadcast_on_region / broadcast_offer_preset / broadcast_on_preset — enums
+  const isEnum = fieldSchema?.type === 'enum' && Array.isArray(fieldSchema.options);
+  if (isEnum && (
+    fieldKey === 'broadcast_offer_region' ||
+    fieldKey === 'broadcast_on_region' ||
+    fieldKey === 'broadcast_offer_preset' ||
+    fieldKey === 'broadcast_on_preset'
+  )) {
+    input = document.createElement('select');
+    input.id = inputId;
+    input.className = 'cfg-input cfg-input-select';
+    input.dataset.fieldKey = fieldKey;
+    input.dataset.fieldType = 'enum';
+
+    // Add empty option for "not set"
+    const emptyOpt = document.createElement('option');
+    emptyOpt.value = '';
+    emptyOpt.textContent = '(not set)';
+    input.appendChild(emptyOpt);
+
+    for (const opt of fieldSchema.options) {
+      const option = document.createElement('option');
+      option.value = opt;
+      option.textContent = _labelify(opt);
+      if (String(fieldValue) === opt) option.selected = true;
+      input.appendChild(option);
+    }
+
+    row.appendChild(label);
+    row.appendChild(input);
+    return row;
+  }
+
+  // broadcast_interval_secs — number with min constraint
+  if (fieldKey === 'broadcast_interval_secs') {
+    input = document.createElement('input');
+    input.type = 'number';
+    input.id = inputId;
+    input.value = fieldValue ?? '';
+    input.min = fieldSchema?.min ?? 3600;
+    input.step = '1';
+    input.className = 'cfg-input cfg-input-number';
+    input.dataset.fieldKey = fieldKey;
+    input.dataset.fieldType = 'int';
+    input.title = 'Minimum 3600 seconds (1 hour)';
+
+    row.appendChild(label);
+    row.appendChild(input);
+    return row;
+  }
+
+  // broadcast_message — string with max_length
+  if (fieldKey === 'broadcast_message') {
+    input = document.createElement('input');
+    input.type = 'text';
+    input.id = inputId;
+    input.value = fieldValue ?? '';
+    input.maxLength = fieldSchema?.max_length ?? 100;
+    input.className = 'cfg-input';
+    input.dataset.fieldKey = fieldKey;
+    input.dataset.fieldType = 'string';
+    input.placeholder = 'Beacon message (max 100 chars)';
+    input.title = `Max ${fieldSchema?.max_length ?? 100} characters`;
+
+    row.appendChild(label);
+    row.appendChild(input);
+    return row;
+  }
+
+  // broadcast_send_as_node — integer (node ID)
+  if (fieldKey === 'broadcast_send_as_node') {
+    input = document.createElement('input');
+    input.type = 'number';
+    input.id = inputId;
+    input.value = fieldValue ?? '';
+    input.min = '0';
+    input.step = '1';
+    input.className = 'cfg-input cfg-input-number';
+    input.dataset.fieldKey = fieldKey;
+    input.dataset.fieldType = 'int';
+    input.placeholder = '0 = local node';
+
+    row.appendChild(label);
+    row.appendChild(input);
+    return row;
+  }
+
+  // Fallback to default rendering for any other fields
+  return null;
+}
+
+/**
  * Build a single field row (label + input/select/checkbox).
  * `fieldSchema` is the per-field metadata block returned by the backend
  * (type, enum options, min/max, max_length) — used to render selects and
@@ -315,6 +567,11 @@ function _buildFieldRow(sectionKey, fieldKey, fieldValue, fieldSchema = null) {
   // Skip complex nested objects (repeated fields like available_pins)
   if (fieldValue !== null && typeof fieldValue === 'object' && !Array.isArray(fieldValue)) {
     return null;
+  }
+
+  // --- MeshBeacon special handling ---
+  if (sectionKey === 'mesh_beacon') {
+    return _buildMeshBeaconFieldRow(sectionKey, fieldKey, fieldValue, fieldSchema);
   }
 
   const row = document.createElement('div');
@@ -550,6 +807,22 @@ function _titleCase(str) {
   return str.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 }
 
+/**
+ * Compare firmware version strings (e.g., "2.8.0" >= "2.8.0" -> true)
+ */
+function _isFirmwareVersionAtLeast(version, minVersion) {
+  if (!version) return false;
+  const v = version.split('.').map(Number);
+  const min = minVersion.split('.').map(Number);
+  for (let i = 0; i < Math.max(v.length, min.length); i++) {
+    const a = v[i] || 0;
+    const b = min[i] || 0;
+    if (a > b) return true;
+    if (a < b) return false;
+  }
+  return true;
+}
+
 function _labelify(fieldKey) {
   // Convert snake_case to "Title Case" with a few manual overrides
   const overrides = {
@@ -567,6 +840,16 @@ function _labelify(fieldKey) {
     region:       'Region',
     role:         'Role',
     is_power_saving: 'Power Saving Mode',
+    // MeshBeacon fields
+    broadcast_send_as_node:     'Broadcast as Node',
+    broadcast_message:          'Broadcast Message',
+    broadcast_offer_channel:    'Offer Channel',
+    broadcast_offer_region:     'Offer Region',
+    broadcast_offer_preset:     'Offer Modem Preset',
+    broadcast_on_channel:       'TX Channel',
+    broadcast_on_region:        'TX Region',
+    broadcast_on_preset:        'TX Modem Preset',
+    broadcast_interval_secs:    'Broadcast Interval (s)',
   };
   return overrides[fieldKey] || _titleCase(fieldKey);
 }

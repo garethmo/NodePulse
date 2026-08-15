@@ -40,6 +40,9 @@ _FIELD_CONSTRAINTS = {
     ("position", "position_broadcast_secs"): {"min": 0, "max": 2**32 - 1},
     ("position", "gps_update_interval"):     {"min": 0, "max": 2**32 - 1},
     ("power", "wait_bluetooth_secs"):        {"min": 0, "max": 24 * 3600},
+    # MeshBeacon (firmware 2.8+)
+    ("mesh_beacon", "broadcast_interval_secs"): {"min": 3600, "max": 2**32 - 1},
+    ("mesh_beacon", "broadcast_message"): {"max_length": 100},
 }
 
 def build_config_registry() -> Dict[str, Any]:
@@ -87,6 +90,76 @@ def build_config_registry() -> Dict[str, Any]:
             "short_name": {"type": "string", "label": "short_name", "max_length": 4}
         }
     }
+    
+    # MeshBeaconConfig — not yet in released meshtastic protobuf (2.7.x), added manually
+    # for firmware 2.8+ support. Gated by firmware version in the UI.
+    registry["mesh_beacon"] = {
+        "category": "module",
+        "fields": {
+            "flags": {
+                "type": "enum",
+                "label": "flags",
+                "enum_type": "MeshBeaconConfigFlags",
+                "options": ["FLAG_NONE", "FLAG_LISTEN_ENABLED", "FLAG_BROADCAST_ENABLED", "FLAG_LEGACY_SPLIT"]
+            },
+            "broadcast_send_as_node": {"type": "int", "label": "broadcast_send_as_node"},
+            "broadcast_message": {"type": "string", "label": "broadcast_message", "max_length": 100},
+            "broadcast_offer_channel": {"type": "string", "label": "broadcast_offer_channel"},
+            "broadcast_offer_region": {
+                "type": "enum",
+                "label": "broadcast_offer_region",
+                "enum_type": "RegionCode",
+                "options": []  # Populated dynamically from config_pb2
+            },
+            "broadcast_offer_preset": {
+                "type": "enum",
+                "label": "broadcast_offer_preset",
+                "enum_type": "ModemPreset",
+                "options": []  # Populated dynamically from config_pb2
+            },
+            "broadcast_on_channel": {"type": "string", "label": "broadcast_on_channel"},
+            "broadcast_on_region": {
+                "type": "enum",
+                "label": "broadcast_on_region",
+                "enum_type": "RegionCode",
+                "options": []  # Populated dynamically from config_pb2
+            },
+            "broadcast_on_preset": {
+                "type": "enum",
+                "label": "broadcast_on_preset",
+                "enum_type": "ModemPreset",
+                "options": []  # Populated dynamically from config_pb2
+            },
+            "broadcast_interval_secs": {"type": "int", "label": "broadcast_interval_secs", "min": 3600},
+        }
+    }
+    
+    # Populate RegionCode and ModemPreset enum options for mesh_beacon fields
+    try:
+        region_enum = config_pb2.Config.LoRaConfig.RegionCode
+        preset_enum = config_pb2.Config.LoRaConfig.ModemPreset
+        region_options = []
+        for i in range(27):
+            try:
+                name = region_enum.Name(i)
+                if name != 'UNSET':
+                    region_options.append(name)
+            except ValueError:
+                pass
+        preset_options = []
+        for i in range(20):
+            try:
+                name = preset_enum.Name(i)
+                if name != 'UNSET':
+                    preset_options.append(name)
+            except ValueError:
+                pass
+        for field in ["broadcast_offer_region", "broadcast_on_region"]:
+            registry["mesh_beacon"]["fields"][field]["options"] = region_options
+        for field in ["broadcast_offer_preset", "broadcast_on_preset"]:
+            registry["mesh_beacon"]["fields"][field]["options"] = preset_options
+    except Exception:
+        pass
     
     return registry
 
@@ -249,6 +322,22 @@ def read_device_config(interface) -> Dict[str, Any]:
                         filtered_dict[field_name] = val
             
             config_dict[section_name] = filtered_dict
+        else:
+            # Section not available in firmware (e.g., mesh_beacon on < 2.8)
+            # Provide default values so UI can show it greyed out
+            if section_name == "mesh_beacon":
+                config_dict[section_name] = {
+                    "flags": 0,
+                    "broadcast_send_as_node": 0,
+                    "broadcast_message": "",
+                    "broadcast_offer_channel": "",
+                    "broadcast_offer_region": None,
+                    "broadcast_offer_preset": None,
+                    "broadcast_on_channel": "",
+                    "broadcast_on_region": None,
+                    "broadcast_on_preset": None,
+                    "broadcast_interval_secs": 3600,
+                }
 
     # Add owner (Node Identity — includes read-only identity info alongside the
     # editable names)
@@ -379,6 +468,27 @@ def validate_and_apply_patch(section_name: str, patch: Dict[str, Any], local_nod
                 "frequency_offset) require 'use_preset': false"
             )
 
+    # MeshBeaconConfig special handling (firmware 2.8+)
+    if section_name == "mesh_beacon":
+        # flags is a bitfield (uint32) - combine the checkbox values
+        if "flags" in patch:
+            try:
+                flags_val = int(patch["flags"])
+                if flags_val < 0 or flags_val > 7:
+                    raise ValueError
+            except (TypeError, ValueError):
+                raise ValueError("'flags' must be an integer 0-7 (bitfield)")
+            setattr(section_obj, "flags", flags_val)
+            # Remove from patch so it's not processed again
+            patch.pop("flags")
+
+        # broadcast_offer_channel and broadcast_on_channel are ChannelSettings messages
+        # For now, we skip them as they require complex nested message handling.
+        # The UI renders them as text inputs for channel name reference only.
+        for ch_field in ("broadcast_offer_channel", "broadcast_on_channel"):
+            if ch_field in patch:
+                patch.pop(ch_field)
+
     # Validate and apply fields
     for field_name, value in patch.items():
         if field_name not in section_info["fields"]:
@@ -425,7 +535,7 @@ def validate_and_apply_patch(section_name: str, patch: Dict[str, Any], local_nod
     local_node.writeConfig(section_name)
             
     # Conservative reboot defaults
-    reboot_sections = ["device", "lora", "position", "network"]
+    reboot_sections = ["device", "lora", "position", "network", "mesh_beacon"]
     reboot_required = section_name in reboot_sections
     
     return True, reboot_required

@@ -46,7 +46,8 @@ const TILE_URL_DARK = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}
 const TILE_URL_LIGHT = 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png';
 // ESRI World Imagery — free satellite imagery tiles (no API key required).
 const TILE_URL_SATELLITE = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
-const TILE_URL_TOPO = 'https://{s}.a.tile.opentopomap.org/{z}/{x}/{y}.png';
+// OpenTopoMap — topographical/terrain tiles (subdomains a,b,c)
+const TILE_URL_TOPO = 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png';
 
 const TILE_ATTRIBUTION =
   '&copy; <a href="https://carto.com">CARTO</a>' +
@@ -123,7 +124,7 @@ function createMap(elementId, mapType = DEFAULT_MAP_TYPE) {
 
   const tileLayerOptions = {
     attribution: TILE_ATTRIBUTION,
-    subdomains: 'abcd',
+    subdomains: 'abc',
     maxZoom: 19,
   };
 
@@ -266,6 +267,9 @@ function createMap(elementId, mapType = DEFAULT_MAP_TYPE) {
      return container;
 };
 
+   // Map type glyph labels for button state matching.
+   const mapTypeKeyLabels = { dark: '◉', light: '☀', satellite: '🛰', topographical: '🗺' };
+
    setMapType(mapType);
 
    // Remove the existing tile layer and add the new one.
@@ -290,19 +294,16 @@ function createMap(elementId, mapType = DEFAULT_MAP_TYPE) {
      }
      // ESRI World Imagery uses {z}/{y}/{x} format, no subdomains
      const isSatellite = mapTypeKey === 'satellite';
-     const options = isSatellite
-       ? { attribution: TILE_ATTRIBUTION, maxZoom: 19 }
-       : { attribution: TILE_ATTRIBUTION, subdomains: 'abcd', maxZoom: 19 };
+const options = isSatellite
+        ? { attribution: TILE_ATTRIBUTION, maxZoom: 19 }
+        : { attribution: TILE_ATTRIBUTION, subdomains: 'abc', maxZoom: 19 };
      tileLayer = L.tileLayer(newTileUrl, options);
      tileLayer.addTo(map);
      // Update the default map type in localStorage.
-     localStorage.setItem('nodepulse-map-type', mapTypeKey);
-   }
+localStorage.setItem('nodepulse-map-type', mapTypeKey);
+  }
 
-   // Map type glyph labels for button state matching.
-   const mapTypeKeyLabels = { dark: '◉', light: '☀', satellite: '🛰', topographical: '🗺' };
-
-   toggleBar.addTo(map);
+  toggleBar.addTo(map);
    // --- Role legend (bottom-left) -----------------------------------------
    const legend = L.control({ position: 'bottomleft' });
    legend.onAdd = () => {
