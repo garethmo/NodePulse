@@ -20,59 +20,70 @@ import { TopologyManager } from './topology.js';
 import { escapeHtml, haversineKm, formatDistance, buildKml, buildGpx, downloadFile } from './util.js';
 
 // How often (ms) to poll the backend for fresh node/status/message data.
-// Matches the scan_interval default from config.json (30s) but we use a
-// faster default here so the UI feels live from the first load.
-const POLL_INTERVAL_MS = 15_000;
-
-// How many fast poll cycles to skip between tracked-nodes refreshes.
-// fetchTrackedNodes() relays to HA (potentially slow); we only need it to
-// stay accurate, not be real-time — once every 5 minutes (20 × 15s) is
-// plenty. A value of 0 means "refresh on every poll" (previous behaviour).
-const TRACKED_NODES_POLL_EVERY_N = 20;
-
-// ============================================================================
-// App State — all mutable state lives here, not scattered in closures.
-// ============================================================================
-const state = {
-  nodes:          [],     // last successful node list from the API
-  status:         null,   // last successful status from the API
-  selectedNodeId: null,   // ID of node highlighted in the list + chart source
-  currentView:    'dashboard',
-  seenMessageIds: new Set(),  // dedupe inbound messages across polls
-  selfId:         null,   // node ID of the locally-connected node
-  trackedNodes:   new Set(), // node IDs currently tracked as HA entities
-  nodeFilter:     '',       // free-text filter for the Nodes tab
-  signalFilter:   '',       // signal-strength filter for the Nodes tab
-  activeConversation: 'ch:0', // currently-open thread (ch:<n> or dm:<nodeId>)
-  messageFilter:    '',       // free-text filter for message history
-  conversations:  {},       // key -> { key, name, kind, unread }
-  messagesByConv: {},       // key -> [message objects], persisted across polls
-  channels:       [],       // configured mesh channels from the node
-  nodeTags:        {},       // node_id -> [tag strings], loaded from /api/tags
-  notifyNodes:     new Set(), // node IDs that should trigger HA notifications
-  dismissedConvs:  new Set(), // conversation keys hidden from sidebar, persisted in localStorage
-  _initialBatchComplete: false, // becomes true after first message poll
-
-  // Counter incremented on each fast poll cycle. Used to throttle the slow
-  // Packet inspector / sniffer state
-  packetLog:          [],
-  snifferStats:       null,
-  packetFilters:      {},    // { col: value } — active column filters
-  packetSort:         null,  // { col, dir } where dir is 'asc' or 'desc'
-  // Security scanner result — null until first scan, then cached for the session.
-  // Reset to null on manual rescan so stale badges are cleared while scanning.
-  securityScan:       null,
-
-  // Notification state (Feature 2)
-  _lastSeenMsgId:     localStorage.getItem('np_last_msg_id') || null,
-  _notifPermission:   localStorage.getItem('np_notifications') || 'default',
-
-  // tracked-nodes refresh so it does not run on every 15s tick.
-  _pollCount:     0,
-
-  // Position history data for trail polylines, heatmap, and ruler elevation sampling.
-  posHistory:     {},
-};
+ // Matches the scan_interval default from config.json (30s) but we use a
+ // faster default here so the UI feels live from the first load.
+ const POLL_INTERVAL_MS = 15_000;
+ 
+ // How many fast poll cycles to skip between tracked-nodes refreshes.
+ // fetchTrackedNodes() relays to HA (potentially slow); we only need it to
+ // stay accurate, not be real-time — once every 5 minutes (20 × 15s) is
+ // plenty. A value of 0 means "refresh on every poll" (previous behaviour).
+ const TRACKED_NODES_POLL_EVERY_N = 20;
+ 
+ // ============================================================================
+ // App State — all mutable state lives here, not scattered in closures.
+ // ============================================================================
+ let _nodes = [];
+ const state = {
+   get nodes() { return _nodes; },
+   set nodes(val) {
+     _nodes = val;
+     // Reactive re-render when nodes data changes (if Nodes view is active)
+     if (document.getElementById('view-nodes')?.classList.contains('active')) {
+       renderNodesGrid(_nodes);
+     }
+   },
+   status:         null,   // last successful status from the API
+   selectedNodeId: null,   // ID of node highlighted in the list + chart source
+   currentView:    'dashboard',
+   seenMessageIds: new Set(),  // dedupe inbound messages across polls
+   selfId:         null,   // node ID of the locally-connected node
+   trackedNodes:   new Set(), // node IDs currently tracked as HA entities
+   nodeFilter:     '',       // free-text filter for the Nodes tab
+   signalFilter:   '',       // signal-strength filter for the Nodes tab
+   activeConversation: 'ch:0', // currently-open thread (ch:<n> or dm:<nodeId>)
+   messageFilter:    '',       // free-text filter for message history
+   conversations:  {},       // key -> { key, name, kind, unread }
+   messagesByConv: {},       // key -> [message objects], persisted across polls
+   channels:       [],       // configured mesh channels from the node
+   nodeTags:        {},       // node_id -> [tag strings], loaded from /api/tags
+   notifyNodes:     new Set(), // node IDs that should trigger HA notifications
+   dismissedConvs:  new Set(), // conversation keys hidden from sidebar, persisted in localStorage
+   _initialBatchComplete: false, // becomes true after first message poll
+ 
+   // Counter incremented on each fast poll cycle. Used to throttle the slow
+   // Packet inspector / sniffer state
+   packetLog:          [],
+   snifferStats:       null,
+   packetFilters:      {},    // { col: value } — active column filters
+   packetSort:         null,  // { col, dir } where dir is 'asc' or 'desc'
+   // Security scanner result — null until first scan, then cached for the session.
+   // Reset to null on manual rescan so stale badges are cleared while scanning.
+   securityScan:       null,
+ 
+   // Notification state (Feature 2)
+   _lastSeenMsgId:     localStorage.getItem('np_last_msg_id') || null,
+   _notifPermission:   localStorage.getItem('np_notifications') || 'default',
+ 
+   // tracked-nodes refresh so it does not run on every 15s tick.
+   _pollCount:     0,
+ 
+   // Position history data for trail polylines, heatmap, and ruler elevation sampling.
+   posHistory:     {},
+   
+   // Favorite nodes - persisted in localStorage
+   favoriteNodes: new Set(JSON.parse(localStorage.getItem('np_favorite_nodes') || '[]')),
+ };
 
 // ============================================================================
 // Sub-module instances
@@ -176,6 +187,39 @@ function sortBySignal(nodes) {
   });
 }
 
+/**
+ * Sort nodes with favorites first, then by signal quality (recently online with signal),
+ * then by last heard time.
+ */
+function sortByFavoritesThenSignal(nodes) {
+  return [...nodes].sort((a, b) => {
+    const aFav = state.favoriteNodes.has(a.id);
+    const bFav = state.favoriteNodes.has(b.id);
+    
+    // Favorites first
+    if (aFav && !bFav) return -1;
+    if (!aFav && bFav) return 1;
+    
+    // Both favorites or both not favorites - sort by signal quality
+    // Prefer nodes with signal (snr_avg != null) over no signal
+    const aHasSignal = a.snr_avg != null;
+    const bHasSignal = b.snr_avg != null;
+    if (aHasSignal && !bHasSignal) return -1;
+    if (!aHasSignal && bHasSignal) return 1;
+    
+    // Both have signal or both don't - sort by signal strength
+    const sa = a.snr_avg != null ? a.snr_avg : -Infinity;
+    const sb = b.snr_avg != null ? b.snr_avg : -Infinity;
+    if (sb > sa) return 1;
+    if (sb < sa) return -1;
+    
+    // Equal signal - sort by last heard (most recent first)
+    const da = a.last_heard ?? 0;
+    const db = b.last_heard ?? 0;
+    return db - da;
+  });
+}
+
 // ============================================================================
 // Rendering: Status Bar
 // ============================================================================
@@ -184,7 +228,11 @@ function renderStatusBar(status) {
   const label = document.getElementById('status-label');
   const count = document.getElementById('badge-value');
 
-  if (status?.connected) {
+  if (!status) {
+    // No status data received yet — show connecting state
+    dot.className = 'status-dot';
+    label.textContent = 'Connecting…';
+  } else if (status.connected) {
     dot.className = 'status-dot connected';
     label.textContent = 'Connected';
   } else {
@@ -214,8 +262,8 @@ function renderNodeList(nodes) {
     return;
   }
 
-  // Sort by signal strength (strongest first).
-  const sorted = sortBySignal(nodes);
+  // Sort by favorites first, then signal strength (strongest first).
+  const sorted = sortByFavoritesThenSignal(nodes);
 
   for (const node of sorted) {
     const li = document.createElement('li');
@@ -306,8 +354,8 @@ function renderNodesGrid(nodes) {
     return;
   }
 
-  // Sort the filtered nodes by signal strength (strongest first).
-  const sorted = sortBySignal(filtered);
+  // Sort the filtered nodes: favorites first, then signal/recency.
+  const sorted = sortByFavoritesThenSignal(filtered);
 
   // Resolve the self node's coordinates once so we can compute per-node
   // distance (MeshSense-style "distance from your node").
@@ -381,6 +429,7 @@ function renderNodesGrid(nodes) {
         </div>
         <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
           <span class="node-card-hw">${escapeHtml(node.hw_model || 'Unknown')}</span>
+          <button class="node-fav-btn${state.favoriteNodes.has(node.id) ? ' active' : ''}" data-action="favorite" data-node="${escapeHtml(node.id)}" title="Toggle favorite" aria-label="Toggle favorite">★</button>
           ${qBadge}${snrAvgText ? `<span style="font-size:0.68rem;color:var(--text-muted)">${snrAvgText}</span>` : ''}
         </div>
       </div>
@@ -514,6 +563,20 @@ async function handleNodeCardAction(event) {
       `${enabled ? 'Notifications enabled' : 'Notifications disabled'} for ${nodeId}`,
       'success',
     );
+  } else if (action === 'favorite') {
+    const isFav = state.favoriteNodes.has(nodeId);
+    if (isFav) {
+      state.favoriteNodes.delete(nodeId);
+      btn.classList.remove('active');
+      showToast(`Removed ${nodeId} from favorites`, 'success');
+    } else {
+      state.favoriteNodes.add(nodeId);
+      btn.classList.add('active');
+      showToast(`Added ${nodeId} to favorites`, 'success');
+    }
+    localStorage.setItem('np_favorite_nodes', JSON.stringify([...state.favoriteNodes]));
+    // Re-render to update sort order
+    renderNodesGrid(state.nodes);
   } else if (action === 'delete') {
     if (!confirm(`Remove node ${nodeId} from the store?`)) return;
     try {
@@ -1266,10 +1329,26 @@ function switchView(viewName) {
     // Leaflet maps need invalidateSize() after becoming visible.
     if (viewName === 'dashboard') {
       dashMap.invalidateSize();
+
+      // Listen for map popup actions (traceroute, message) on dashboard mini-map
+      dashMap._map?.getContainer().addEventListener('nodepulse:traceroute', (e) => {
+        requestTraceRoute(e.detail.nodeId).then(() => showToast(`Traceroute dispatched to ${e.detail.nodeId}`, 'success')).catch(err => showToast(`Traceroute failed: ${err.message}`, 'error'));
+      });
+      dashMap._map?.getContainer().addEventListener('nodepulse:message', (e) => {
+        openDirectMessage(e.detail.nodeId);
+      });
     } else if (viewName === 'map') {
       fullMap.init();
       fullMap.updateNodes(state.nodes);
       fullMap.invalidateSize();
+
+      // Listen for map popup actions (traceroute, message)
+      fullMap._map.getContainer().addEventListener('nodepulse:traceroute', (e) => {
+        requestTraceRoute(e.detail.nodeId).then(() => showToast(`Traceroute dispatched to ${e.detail.nodeId}`, 'success')).catch(err => showToast(`Traceroute failed: ${err.message}`, 'error'));
+      });
+      fullMap._map.getContainer().addEventListener('nodepulse:message', (e) => {
+        openDirectMessage(e.detail.nodeId);
+      });
     } else if (viewName === 'settings') {
       renderSettings();
     } else if (viewName === 'topology') {
@@ -1409,6 +1488,8 @@ async function renderSettings() {
       cfg.auto_responder_enabled ? '✓ Enabled' : 'Disabled');
     _setEl('settings-auto-responder-message',
       cfg.auto_responder_enabled ? (cfg.auto_responder_message || '—') : '—');
+    _setEl('settings-auto-traceroute',
+      cfg.auto_traceroute_enabled ? '✓ Enabled' : 'Disabled');
 
     // Schedule & Logging
     _setEl('settings-scan-interval', cfg.scan_interval != null ? `${cfg.scan_interval} s` : '—');
@@ -1491,9 +1572,14 @@ async function pollData() {
   ]);
 
   if (statusResult.status === 'fulfilled') {
-    state.status = statusResult.value;
+    state.status = statusResult.value || { connected: false, my_info: null };
+    // Update status bar immediately when status changes
+    renderStatusBar(state.status);
   } else {
     console.warn('Status fetch failed:', statusResult.reason);
+    // Set a default disconnected state if status fetch fails
+    state.status = { connected: false, my_info: null };
+    renderStatusBar(state.status);
   }
 
   if (nodesResult.status === 'fulfilled') {
@@ -1512,44 +1598,48 @@ async function pollData() {
     renderNodeList(state.nodes);
     renderNodesGrid(state.nodes);
     dashMap.updateNodes(state.nodes);
-    
-    // Initialize topology graph if active, and update its data
-    if (state.currentView === 'topology') {
-      topology.init();
-      topology.updateData(state);
-    }
-
-    // Pick the best node for SNR/RSSI charts. When the user has explicitly
-    // selected a node, use that. Otherwise fall back to the first remote node
-    // that actually reports signal data — the self (gateway) node never has
-    // inbound SNR/RSSI because you don't receive packets from yourself.
-    let chartNode = state.nodes.find(n => n.id === state.selectedNodeId);
-    if (!chartNode) {
-      chartNode = state.nodes.find(n => n.id !== state.selfId && (n.snr != null || n.rssi != null))
-                  ?? state.nodes.find(n => n.id !== state.selfId)
-                  ?? state.nodes[0];
-    }
-
-    // For utilization trends, prefer the self (gateway) node's device metrics,
-    // but fall back to any node that reports them — the library may not always
-    // populate deviceMetrics on the local node (e.g. no telemetry received yet).
-    const selfNode = state.nodes.find(n => n.id === state.selfId);
-    let chanUtil = selfNode?.channel_utilization ?? null;
-    let airUtil  = selfNode?.air_util_tx ?? null;
-    if (chanUtil == null && airUtil == null) {
-      const utilNode = state.nodes.find(n => n.channel_utilization != null || n.air_util_tx != null);
-      if (utilNode) {
-        chanUtil = utilNode.channel_utilization ?? null;
-        airUtil  = utilNode.air_util_tx ?? null;
-      }
-    }
-    charts.addPoint(chartNode?.snr ?? null, chartNode?.rssi ?? null, state.nodes.length, chanUtil, airUtil);
   } else {
     console.warn('Nodes fetch failed:', nodesResult.reason);
+    // Even if nodes fail, try to render with empty array to clear loading state
+    state.nodes = [];
+    renderNodeList([]);
   }
 
-  // Update status bar and node count badge now that both status and nodes are loaded
-  renderStatusBar(state.status);
+  // Initialize topology graph if active, and update its data
+  if (state.currentView === 'topology') {
+    topology.init();
+    topology.updateData(state);
+  }
+
+  // Pick the best node for SNR/RSSI charts. When the user has explicitly
+  // selected a node, use that. Otherwise fall back to the first remote node
+  // that actually reports signal data — the self (gateway) node never has
+  // inbound SNR/RSSI because you don't receive packets from yourself.
+  let chartNode = state.nodes.find(n => n.id === state.selectedNodeId);
+  if (!chartNode) {
+    chartNode = state.nodes.find(n => n.id !== state.selfId && (n.snr != null || n.rssi != null))
+                ?? state.nodes.find(n => n.id !== state.selfId)
+                ?? state.nodes[0];
+  }
+
+  // For utilization trends, prefer the self (gateway) node's device metrics,
+  // but fall back to any node that reports them — the library may not always
+  // populate deviceMetrics on the local node (e.g. no telemetry received yet).
+  const selfNode = state.nodes.find(n => n.id === state.selfId);
+  let chanUtil = selfNode?.channel_utilization ?? null;
+  let airUtil  = selfNode?.air_util_tx ?? null;
+  if (chanUtil == null && airUtil == null) {
+    const utilNode = state.nodes.find(n => n.channel_utilization != null || n.air_util_tx != null);
+    if (utilNode) {
+      chanUtil = utilNode.channel_utilization ?? null;
+      airUtil  = utilNode.air_util_tx ?? null;
+    }
+  }
+  charts.addPoint(chartNode?.snr ?? null, chartNode?.rssi ?? null, state.nodes.length, chanUtil, airUtil);
+
+  // Update node count badge (status bar is already updated after status fetch)
+  const count = document.getElementById('badge-value');
+  if (count) count.textContent = state.nodes.length;
 
   if (messagesResult.status === 'fulfilled') {
     renderIncomingMessages(messagesResult.value);
@@ -2220,7 +2310,14 @@ async function init() {
   document.getElementById('node-list').innerHTML = `
     <li class="list-placeholder"><div class="spinner"></div>Loading nodes…</li>`;
 
-  await pollData();                          // first immediate fetch
+  try {
+    await pollData();                          // first immediate fetch
+  } catch (err) {
+    console.error('Initial data fetch failed:', err);
+    // Clear loading state even if poll fails
+    document.getElementById('node-list').innerHTML = `
+      <li class="list-placeholder">Failed to load data. Refresh to retry.</li>`;
+  }
   selectConversation(state.activeConversation); // initialise message panel
   // NOTE: we intentionally do NOT auto-fit to markers on first load so the map
   // stays centred on its default view (Durban, South Africa). Users can still

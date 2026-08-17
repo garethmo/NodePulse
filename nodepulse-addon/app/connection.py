@@ -483,15 +483,15 @@ class MeshtasticConnection:
             try:
                 await asyncio.wait_for(
                     asyncio.to_thread(self._request_traceroute_sync, destination),
-                    timeout=90,
+                    timeout=300,
                 )
                 await asyncio.to_thread(self._refresh_node_from_interface, destination)
-                logger.debug("Traceroute dispatch to %s completed", destination)
+                logger.info("Traceroute dispatch to %s completed", destination)
                 success = True
             except asyncio.TimeoutError:
-                logger.error("Traceroute to %s timed out (90s timeout)", destination)
+                logger.info("Traceroute to %s timed out (300s timeout)", destination)
             except Exception as exc:
-                logger.error("Traceroute background dispatch failed (%s): %s", destination, exc)
+                logger.info("Traceroute background dispatch failed (%s): %s", destination, exc)
             finally:
                 if not success:
                     with self._lock:
@@ -2348,6 +2348,18 @@ class MeshtasticConnection:
                                 daemon=True
                             )
                             t.start()
+
+                    # Auto Traceroute Logic — dispatch a traceroute immediately when a new node is discovered
+                    if node_id != self_id and self._config and getattr(self._config, "auto_traceroute_enabled", False):
+                        logger.info("Auto-traceroute triggered: Discovered new node %s", node_id)
+                        # Run in a separate thread to avoid blocking the sync loop
+                        import threading
+                        t = threading.Thread(
+                            target=self._request_traceroute_sync,
+                            args=(node_id,),
+                            daemon=True
+                        )
+                        t.start()
 
             # Merge persisted traceroute results back onto their nodes so a
             # previously-discovered route is shown even before (or without)

@@ -1,6 +1,6 @@
 {
   "name": "NodePulse",
-  "version": "1.17.0",
+  "version": "1.18.0",
   "slug": "nodepulse",
   "description": "Comprehensive dashboard and integration for monitoring Meshtastic networks directly within Home Assistant",
   "url": "https://github.com/garethmo/NodePulse",
@@ -56,6 +56,7 @@
     "telegram_allow_commands": true,
     "auto_responder_enabled": false,
     "auto_responder_message": "Welcome to the mesh! You have been discovered by NodePulse.",
+    "auto_traceroute_enabled": false,
     "scheduled_messages_enabled": true
   },
   "schema": {
@@ -101,6 +102,7 @@
     "telegram_allow_commands": "bool?",
     "auto_responder_enabled": "bool?",
     "auto_responder_message": "str?",
+    "auto_traceroute_enabled": "bool?",
     "scheduled_messages_enabled": "bool?"
   },
   "map": {},

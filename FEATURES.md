@@ -72,12 +72,14 @@ The default view served under HA Ingress, with a responsive 3-column grid on des
 A scrollable grid of node cards, one per mesh node.
 
 Each card shows:
-- **Header**: Long name, node ID, hardware model, stale/cached badge
+- **Header**: Long name, node ID, hardware model, stale/cached badge, **Favorite star (★)** — click to pin/unpin; favorites appear at top of list
 - **Tags**: Comma-separated user-defined labels with inline editor
 - **Metrics grid**: SNR, RSSI, hops away, battery, distance, GPS fix, temperature, humidity, pressure
 - **Traceroute**: Forward and return path with hop-by-hop resolved names and timing
 - **Neighbors**: Per-peer SNR chips when NEIGHBORINFO_APP data is available
 - **Actions**: Traceroute, Request Position, Message, Track in HA, Notify, Delete (red button with confirmation prompt)
+
+**Sorting**: Favorites first → nodes with signal (snr_avg) → by signal strength → by last heard (most recent). Persisted in `localStorage` (`np_favorite_nodes`). Toast notification on toggle.
 
 Free-text filter across name, short name, hardware model, and ID.
 

@@ -35,8 +35,8 @@ def mock_connection():
     conn.run_channel_refresh_loop = AsyncMock()
     conn.expire_pending_acks = AsyncMock()
     conn.get_nodes = AsyncMock(return_value=[
-        {"id": "!12345678", "long_name": "Test Node 1", "snr": 5.0, "battery_level": 80},
-        {"id": "!87654321", "long_name": "Test Node 2", "snr": -2.0, "battery_level": 50}
+        {"id": "!12345678", "long_name": "Test Node 1", "snr": 5.0, "snr_avg": 5.0, "battery_level": 80},
+        {"id": "!87654321", "long_name": "Test Node 2", "snr": -2.0, "snr_avg": -2.0, "battery_level": 50}
     ])
     conn.get_channels = AsyncMock(return_value=[
         {"index": 0, "name": "LongFast", "role": "PRIMARY"}

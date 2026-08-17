@@ -791,6 +791,18 @@ export class MapManager {
     this._map = createMap(this._elementId, savedMapType);
     // Note: heatLayer is created lazily in updateTrails() because leaflet.heat
     // is loaded with `defer` and may not yet be available at init() time.
+
+    // Event delegation for popup action buttons (traceroute, message)
+    this._map.getContainer().addEventListener('click', (e) => {
+      const btn = e.target.closest('.map-popup-btn[data-action]');
+      if (!btn) return;
+      const { action, node } = btn.dataset;
+      if (action === 'traceroute') {
+        this._map.getContainer().dispatchEvent(new CustomEvent('nodepulse:traceroute', { detail: { nodeId: node } }));
+      } else if (action === 'message') {
+        this._map.getContainer().dispatchEvent(new CustomEvent('nodepulse:message', { detail: { nodeId: node } }));
+      }
+    });
   }
 
   /**
@@ -1016,21 +1028,68 @@ export class MapManager {
       }
 
       for (const { path, label } of segments) {
-        // Draw segment-by-segment so we skip individual hops that lack GPS
-        // without dropping the entire route. Even a 2-node partial segment
-        // gives useful topology information.
+        // Resolve a coordinate for every hop in the path. Hops without a GPS
+        // fix (very common for relay nodes) have no marker, so we estimate
+        // their position by linear interpolation between the nearest GPS-fixed
+        // hops on either side. Without this the route would stop at the first
+        // hop that has two GPS-fixed neighbours and hide the multi-hop path.
+        const pts = [];
+        for (let i = 0; i < path.length; i++) {
+          const m = this._markers.get(path[i]);
+          if (m) {
+            const ll = m.getLatLng();
+            // Only accept finite, non-zero coordinates. Some nodes report
+            // (0,0) placeholders before they get a GPS fix, and malformed data
+            // can contain NaN — both would draw bogus lines or crash Leaflet.
+            const valid =
+              Number.isFinite(ll.lat) &&
+              Number.isFinite(ll.lng) &&
+              !(ll.lat === 0 && ll.lng === 0);
+            if (valid) {
+              pts.push([ll.lat, ll.lng]);
+              continue;
+            }
+          }
+          pts.push(null);
+        }
+
+        // Fill gaps: interpolate unknown hops between the last and next
+        // known-GPS positions. Hops at the ends of an unresolvable gap stay
+        // null and are dropped below. lastKnown is re-derived here (reset to
+        // -1) so it tracks the nearest known point to the LEFT of each gap —
+        // the value from the build loop points at the last known index overall
+        // and would extrapolate (and produce NaN) instead of interpolating.
+        let lastKnown = -1;
+        for (let i = 0; i < pts.length; i++) {
+          if (pts[i]) { lastKnown = i; continue; }
+          let nextKnown = -1;
+          for (let j = i + 1; j < pts.length; j++) {
+            if (pts[j]) { nextKnown = j; break; }
+          }
+          if (lastKnown >= 0 && nextKnown >= 0 && lastKnown !== nextKnown) {
+            const a = pts[lastKnown];
+            const b = pts[nextKnown];
+            const frac = (i - lastKnown) / (nextKnown - lastKnown);
+            pts[i] = [a[0] + (b[0] - a[0]) * frac, a[1] + (b[1] - a[1]) * frac];
+            lastKnown = i;
+          }
+        }
+
+        // Draw one line per consecutive hop pair (node → next node) so every
+        // known leg of the route is visible even when an intermediate hop has
+        // no GPS fix.
         for (let i = 0; i < path.length - 1; i++) {
-          const mA = this._markers.get(path[i]);
-          const mB = this._markers.get(path[i + 1]);
-          if (!mA || !mB) continue; // neither hop has a map marker
+          const a = pts[i];
+          const b = pts[i + 1];
+          // Unresolvable gap (no GPS on either side) or stray non-finite
+          // values — skip rather than crash Leaflet's polyline constructor.
+          if (
+            !a || !b ||
+            !Number.isFinite(a[0]) || !Number.isFinite(a[1]) ||
+            !Number.isFinite(b[0]) || !Number.isFinite(b[1])
+          ) continue;
 
-          const lA = mA.getLatLng();
-          const lB = mB.getLatLng();
-          // Skip (0,0) placeholder positions — some nodes report 0,0 before
-          // they have a GPS fix, which draws bogus lines to the ocean.
-          if ((lA.lat === 0 && lA.lng === 0) || (lB.lat === 0 && lB.lng === 0)) continue;
-
-          const line = L.polyline([lA, lB], {
+          const line = L.polyline([a, b], {
             color: COLOR_TRACEROUTE,
             weight: 2.5,
             opacity: 0.8,
@@ -1438,6 +1497,9 @@ export class MapManager {
           ${row('Humidity', hum)}
           ${row('Pressure', pres)}
         </table>
-      </div>`;
+        <div style="display:flex;gap:6px;margin-top:8px;padding-top:8px;border-top:1px solid #2a2a2a">
+          <button class="map-popup-btn" data-action="traceroute" data-node="${escapeHtml(node.id)}" style="display:inline-flex;align-items:center;justify-content:center;flex:1;padding:6px 8px;background:#4fc3f7;color:#0a0e1a;border:none;border-radius:4px;font-size:11px;font-weight:600;cursor:pointer;min-height:28px;white-space:nowrap;">🔍 Traceroute</button>
+          <button class="map-popup-btn" data-action="message" data-node="${escapeHtml(node.id)}" style="display:inline-flex;align-items:center;justify-content:center;flex:1;padding:6px 8px;background:#00d4aa;color:#0a0e1a;border:none;border-radius:4px;font-size:11px;font-weight:600;cursor:pointer;min-height:28px;white-space:nowrap;">💬 Message</button>
+</div>`;
   }
 }

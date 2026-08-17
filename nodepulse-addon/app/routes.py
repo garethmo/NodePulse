@@ -311,6 +311,7 @@ async def handle_status(request: web.Request) -> web.Response:
             # Auto Responder settings
             "auto_responder_enabled": config.auto_responder_enabled,
             "auto_responder_message": config.auto_responder_message,
+            "auto_traceroute_enabled": config.auto_traceroute_enabled,
         }
         # Embed the addon version from config.json so the UI can display it
         # without hardcoding it in the HTML template.

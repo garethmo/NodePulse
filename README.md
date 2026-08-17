@@ -105,6 +105,8 @@ NodePulse is a Home Assistant addon and custom integration that gives you deep v
 | 🎭 **New Device Roles (2.8+)** | TAK, CLIENT_HIDDEN, LOST_AND_FOUND, TAK_TRACKER, ROUTER_LATE, CLIENT_BASE |
 | 🔄 **RebroadcastMode (2.8+)** | ALL, ALL_SKIP_DECODING, LOCAL_ONLY, KNOWN_ONLY, NONE, CORE_PORTNUMS_ONLY |
 | 🔔 **BuzzerMode (2.8+)** | ALL_ENABLED, DISABLED, NOTIFICATIONS_ONLY, SYSTEM_ONLY, DIRECT_MSG_ONLY |
+| ⭐ **Favorite Nodes** | Star (★) button on node cards in Nodes view. Favorites pinned to top, then nodes with signal, then by recency. Persisted in localStorage (`np_favorite_nodes`). Toast on toggle. |
+| 🔍 **Auto Traceroute** | Automatically dispatches traceroute when a new node is discovered. Background thread, non-blocking, 300s timeout, respects serialization. Toggle in Settings → Auto Responder (`auto_traceroute_enabled`, default `false`). |
 
 ---
 

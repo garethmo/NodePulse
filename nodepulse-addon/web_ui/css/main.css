@@ -505,6 +505,33 @@ body::before {
 }
 .leaflet-popup-tip { background: var(--bg-card) !important; }
 
+/* Ensure popup content has enough width and height for buttons */
+.leaflet-popup-content {
+  min-width: 200px !important;
+  max-height: none !important;
+  overflow: visible !important;
+}
+
+/* Map popup action buttons (traceroute, message) */
+.map-popup-btn {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  white-space: nowrap;
+  transition: opacity 0.15s, transform 0.1s;
+  min-height: 28px;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+.map-popup-btn:hover {
+  opacity: 0.85;
+  transform: translateY(-1px);
+}
+.map-popup-btn:active {
+  transform: translateY(0);
+}
+
 /* --- Messaging Panel ------------------------------------------------------ */
 #messaging-card { display: flex; flex-direction: column; }
 
@@ -810,11 +837,34 @@ body::before {
   padding: var(--space-lg);
   cursor: pointer;
   transition: all var(--transition-base);
+  /* Smooth reorder animation */
+  will-change: transform;
 }
 .node-card:hover {
   border-color: var(--border-accent);
   box-shadow: var(--glow-teal);
   transform: translateY(-2px);
+}
+
+/* Smooth reorder animation using FLIP technique */
+.node-card {
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), 
+              box-shadow var(--transition-base),
+              border-color var(--transition-base);
+}
+
+/* Grid container for smooth reordering */
+#nodes-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: var(--space-md);
+  /* Enable FLIP animations */
+  transition: grid-template-rows 0.3s ease;
+}
+
+/* Animate cards when they move */
+.node-card[style*="transform"] {
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .node-card-header {
@@ -826,6 +876,36 @@ body::before {
 .node-card-name { font-size: 16px; font-weight: 700; }
 .node-card-id   { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--text-muted); }
 .node-card-hw   { font-size: 11px; color: var(--text-secondary); background: var(--bg-input); padding: 2px 8px; border-radius: var(--radius-sm); }
+
+/* Favorite button in node card header */
+.node-fav-btn {
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 16px;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color var(--transition-fast), background var(--transition-fast), transform var(--transition-fast);
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.node-fav-btn:hover {
+  color: #ffd54f;
+  background: rgba(255, 213, 79, 0.15);
+  transform: scale(1.1);
+}
+.node-fav-btn.active {
+  color: #ffd54f;
+}
+.node-fav-btn.active:hover {
+  color: #ffd54f;
+  background: rgba(255, 213, 79, 0.25);
+}
 
 .node-metrics {
   display: grid;

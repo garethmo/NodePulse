@@ -18,11 +18,15 @@ All notable changes to NodePulse are documented here.
 - **New RebroadcastMode** (6 values): ALL, ALL_SKIP_DECODING, LOCAL_ONLY, KNOWN_ONLY, NONE, CORE_PORTNUMS_ONLY
 - **New BuzzerMode** (5 values): ALL_ENABLED, DISABLED, NOTIFICATIONS_ONLY, SYSTEM_ONLY, DIRECT_MSG_ONLY
 - **New Device Config Fields**: `rebroadcast_mode`, `buzzer_mode`, `tzdef`, `led_heartbeat_disabled`
+- **Favorite Nodes** — Star (★) button on each node card in the Nodes view. Favorites appear at the top of the list, followed by nodes with signal, then by recency. Persisted in localStorage (`np_favorite_nodes`). Toast notification on toggle.
+- **Auto Traceroute on New Node** — When enabled, automatically dispatches a traceroute immediately when a new node is discovered. Non-blocking background thread, respects 300s timeout and serialization lock. Configurable via `auto_traceroute_enabled` (default `false`) in Settings → Auto Responder.
 
 ### Fixed
 - **OpenTopoMap tile DNS failures** — Corrected subdomain pattern from `abcd` to `abc` (OpenTopoMap only has a/b/c subdomains)
 - **Map type initialization race condition** — Fixed Temporal Dead Zone error where `mapTypeKeyLabels` was used before declaration
-- **MeshBeacon 2.8 enum population** — Manually added 2.8 RegionCode/ModemPreset values not present in meshtastic-python 2.7.x protobuf
+- **MeshBeacon 2.8 enum population** — Manually added 2.8 RegionCode/ModemPreset values not present in meshtastic-python 2.7.x protobuf library
+- **Traceroute timeout** — Increased from 90s to 300s
+- **Traceroute logging** — Failures now logged at INFO level
 
 ## [1.16.0] - 2026-08-14
 ### Added

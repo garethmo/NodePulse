@@ -139,6 +139,7 @@ class Config:
     # Auto Responder Settings
     auto_responder_enabled: bool = False
     auto_responder_message: str = "Welcome to the mesh! You have been discovered by NodePulse."
+    auto_traceroute_enabled: bool = False
 
     # Scheduled Messages
     scheduled_messages_enabled: bool = True
@@ -210,6 +211,7 @@ def load_config() -> Config:
         telegram_allow_commands=bool(raw.get("telegram_allow_commands", True)),
         auto_responder_enabled=bool(raw.get("auto_responder_enabled", False)),
         auto_responder_message=str(raw.get("auto_responder_message", "Welcome to the mesh! You have been discovered by NodePulse.")),
+        auto_traceroute_enabled=bool(raw.get("auto_traceroute_enabled", False)),
         scheduled_messages_enabled=bool(raw.get("scheduled_messages_enabled", True)),
     )
 
