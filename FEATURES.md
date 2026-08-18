@@ -32,6 +32,8 @@ The addon runs as a Home Assistant addon (Docker container) serving a REST API a
 | `/api/traceRoute` | POST | Dispatch a traceroute (fire-and-forget, results on next poll) |
 | `/api/requestPosition` | POST | Request fresh GPS from a specific node |
 | `/api/tags` | GET/PUT | Read and write user-defined node tags |
+| `/api/favorites` | GET | List persisted favorite node IDs |
+| `/api/favorites` | PUT | Mark/unmark a node as favorite (`{ node_id, favorited }`) — returns full list |
 | `/api/position-history` | GET | Position fix history for map trails (optional `/{node_id}` for single-node trail) |
 | `/api/packets` | GET | Packet inspector ring buffer (latest captured packets, optional `?limit=`) |
 | `/api/sniffer/stats` | GET | Live LoRa sniffer statistics (packets/min, unique nodes, portnum distribution) |
@@ -49,9 +51,10 @@ The addon runs as a Home Assistant addon (Docker container) serving a REST API a
 |------|----------|---------|
 | `messages.json` | Last 200 text messages | Message history survives addon restart |
 | `nodes.json` | Every node ever seen | Radio DB is bounded (~250 entries); evicted nodes re-injected as `stale` with last-known position |
-| `traceroutes.json` | Discovered routes per node | Hop-by-hop SNR survives restart |
+| `traceroutes.json` | Discovered routes per node | Hop-by-hop SNR survives restart; targets evicted from the radio DB are re-injected as `stale` so topology links persist |
 | `channels.json` | Channel config | Immediate tab rendering on startup |
 | `tags.json` | User-defined tags per node | `!abc12345` → `["gateway", "roof"]` |
+| `favorites.json` | Favorited node IDs | Durable across reloads — the HA addon iframe can clear `localStorage`, so favorites are stored server-side |
 | `position_history.json` | GPS fix trail per node | Up to 200 fixes/node |
 | `waypoints.json` | Waypoints from mesh + local | Alive/deleted, expires filtered at read time |
 
@@ -75,11 +78,11 @@ Each card shows:
 - **Header**: Long name, node ID, hardware model, stale/cached badge, **Favorite star (★)** — click to pin/unpin; favorites appear at top of list
 - **Tags**: Comma-separated user-defined labels with inline editor
 - **Metrics grid**: SNR, RSSI, hops away, battery, distance, GPS fix, temperature, humidity, pressure
-- **Traceroute**: Forward and return path with hop-by-hop resolved names and timing
+- **Traceroute**: Forward and return path with hop-by-hop resolved names and timing; shows "⏱ Timed out — no route discovered" when the 300s window expires
 - **Neighbors**: Per-peer SNR chips when NEIGHBORINFO_APP data is available
 - **Actions**: Traceroute, Request Position, Message, Track in HA, Notify, Delete (red button with confirmation prompt)
 
-**Sorting**: Favorites first → nodes with signal (snr_avg) → by signal strength → by last heard (most recent). Persisted in `localStorage` (`np_favorite_nodes`). Toast notification on toggle.
+**Sorting**: Favorites first → nodes with signal (snr_avg) → by signal strength → by last heard (most recent). Favorites are persisted **server-side** in `favorites.json` (via `GET/PUT /api/favorites`) so they survive reloads even when the HA addon iframe clears `localStorage`; `localStorage` (`np_favorite_nodes`) is kept only as a fallback. Toast notification on toggle.
 
 Free-text filter across name, short name, hardware model, and ID.
 
@@ -111,6 +114,16 @@ Selection persists in `localStorage` across sessions.
 - Position history trails (deep orange polylines) — last 200 GPS fixes per node
 
 **Export**: KML and GPX download of visible GPS-fixed nodes.
+
+### Web UI — Topology
+
+A force-directed (vis-network) graph of the whole mesh — nodes, roles, and links.
+
+- **Traceroute edges (solid)**: Drawn from persisted `traceroutes.json` results. The full forward path (`Self → relay hops → destination`) and return path are built from raw integer hop numbers canonicalised to `!hex` IDs. Relay hops that the radio's bounded node DB no longer reports are shown as neutral indigo **relay placeholder** nodes so multi-hop routes render completely.
+- **Neighbor edges (dashed)**: Filled in from `NEIGHBORINFO_APP` data for any link not already covered by a traceroute.
+- **Edge colouring**: SNR-based gradient; per-hop SNR labels on traceroute edges.
+- **Timeout records skipped**: `{ timeout: true }` traceroutes never draw bogus edges.
+- **Toggles**: Node names, traceroute edges, neighbor edges, physics, plus a node search box.
 
 ### Web UI — Packet Inspector
 
@@ -286,7 +299,17 @@ All triggers fire the `nodepulse_message` event with payload `{ node_id, directi
 | **User** | `host` (auto-suggested `http://a0d7b954-nodepulse:8099`), `access_key` (optional), `scan_interval` (default 30s, range 10–300) |
 | **Options** | `scan_interval`, `ignored_nodes` (comma-separated node IDs, normalised to `!xxxxxxxx` form) |
 
-Setup validates by hitting the addon's `/api/status` endpoint. The working host is cached to bypass DNS fallback on subsequent polls.
+Setup validates by hitting the addon's `/api/status` endpoint. The working host is cached to bypass DNS fallback on subsequent polls. The options flow preserves all existing keys (including `tracked_nodes` persisted by the Web UI's "Track in HA" toggle) and only updates the edited fields.
+
+---
+
+## Security Model
+
+- **No host-network port exposure** — The addon's REST API listens on `0.0.0.0:8099` inside the container but is **not published** to the host network (`config.json` has no `ports` mapping). It is reachable only through HA Ingress (which requires HA authentication) and the Supervisor network, which the integration's coordinator uses via the addon's DNS names (`local-nodepulse`, `a0d7b954-nodepulse`, `addon_nodepulse`).
+- **Relay views always require auth** — The integration's `/api/nodepulse/track` and `/api/nodepulse/tracked-nodes` views accept either a matching `Authorization: Bearer <SUPERVISOR_TOKEN>` (constant-time comparison) or valid Home Assistant authentication (a long-lived access token or session), even when a Supervisor token is set on HA core. The addon tries the Supervisor token first and falls back to its `ha_access_token` option when the token is missing or rejected — there is no anonymous/fail-open path. The legacy `X-NodePulse-Skip-Token` bypass and the `disable_token_validation` option are removed/deprecated.
+- **Waypoint content is sanitized** — Waypoint `name`, `description`, and `icon` (mesh-controlled data) are stripped of HTML/JS-significant and control characters server-side (`_sanitize_mesh_text`) and HTML-escaped in the Web UI, closing stored-XSS vectors from malicious mesh nodes.
+- **Access key** — An optional `access_key` is forwarded as the `X-NodePulse-Access-Key` header to authenticate with the Meshtastic node; it travels in plaintext over HTTP, so prefer a trusted/supervisor network (see threat-model note in README).
+- **Telegram** — All incoming bot messages are filtered against the configured authorized chat IDs; unauthorized chats are silently dropped.
 
 ---
 

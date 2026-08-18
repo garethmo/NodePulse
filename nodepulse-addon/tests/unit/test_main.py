@@ -236,6 +236,8 @@ class TestBuildApp:
         assert "/api/nodes" in add_get_calls
         assert "/api/send" in add_post_calls
         assert "/api/tags" in add_put_calls
+        assert "/api/favorites" in add_get_calls
+        assert "/api/favorites" in add_put_calls
         assert "/api/device-config" in add_get_calls
 
 

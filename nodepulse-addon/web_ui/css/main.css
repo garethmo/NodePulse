@@ -1047,6 +1047,12 @@ body::before {
   color: var(--text-muted);
   font-size: 10px;
 }
+.node-card-traceroute .traceroute-timeout {
+  color: #ff7043;
+  font-weight: 600;
+  margin: 2px 0;
+  line-height: 1.5;
+}
 
 .node-track-toggle {
   display: inline-flex;

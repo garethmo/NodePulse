@@ -64,7 +64,7 @@ NodePulse is a Home Assistant addon and custom integration that gives you deep v
 | 🗺️ **GPS Mapping** | Device trackers plotted on the native HA map card |
 | 🌡️ **Coverage Heatmap** | Visual heatmap layer on the map showing signal strength (SNR) with dynamic gradient legend |
 | 🗺️ **Map Base Layers** | Four selectable map styles: Dark (CartoDB), Light (CartoDB), **Satellite** (ESRI World Imagery), **Topographical** (OpenTopoMap). Toggle in top-left toolbar, persists across sessions. |
-| 🕸️ **Network Topology** | Force-directed network graph visualizing nodes, roles, and connections (traceroutes & neighbors) with SNR coloring. Includes interactive toggles for node names, edges, physics, and a node search box |
+| 🕸️ **Network Topology** | Force-directed network graph visualizing nodes, roles, and connections (traceroutes & neighbors) with SNR coloring. Traceroute paths draw the full forward/return route (including relay hops shown as neutral placeholder nodes), neighbors fill in as dashed edges. Includes interactive toggles for node names, edges, physics, and a node search box |
 | 💬 **Messaging** | Send broadcast or DM messages via the Web UI; channel tabs appear immediately with real channel names, and the chat shows each sender's short name |
 | 🔍 **Traceroute** | Dispatch traceroutes to any node from the Web UI (fire-and-forget — results appear on the next poll) |
 | 🖥️ **Web UI Dashboard** | Full-featured dashboard served via HA Ingress (no port forwarding). PWA-ready and fully mobile-optimized with slide-in navigation, responsive data tables, and tap-zoom protection. |
@@ -92,7 +92,7 @@ NodePulse is a Home Assistant addon and custom integration that gives you deep v
 | 🐳 **Standalone Docker** | Run NodePulse completely independently of Home Assistant using the `Dockerfile.standalone` container |
 | 🎚️ **Node Signal Filter** | Filter the nodes grid by signal strength (Excellent, Good, Fair, Poor) using a stable rolling `snr_avg` calculation |
 | ☁️ **MQTT Bridge** | Built-in bidirectional MQTT bridge. Ingests traffic from external brokers with a robust geospatial/portnum/node-ID filter pipeline. Optionally forwards packets to the local radio. Includes Web UI configuration. |
-| 🤖 **Telegram Bot** | Bidirectional Telegram Bot bridge. Inbound mesh text messages are automatically forwarded to an authorized Telegram chat. Send broadcasts or DMs back to the mesh from Telegram using bot commands. Includes `/status`, `/nodes`, `/send`, and `/dm` commands. Zero extra dependencies — uses the built-in `aiohttp` library. |
+| 🤖 **Telegram Bot** | Bidirectional Telegram Bot bridge. Inbound mesh text messages are automatically forwarded to an authorized Telegram chat. Send broadcasts or DMs back to the mesh from Telegram using bot commands. Includes `/status`, `/nodes`, `/channels`, `/send`, `/dm`, and `/help` commands. Zero extra dependencies — uses the built-in `aiohttp` library. |
 | 🎛️ **Comprehensive Settings Page** | The Web UI Settings tab reflects every addon configuration option in real time — connection & mesh status, HA integration keys and token validation, the full MQTT bridge config (broker port, credential status, topic, geo filter, portnum allowlist, node blocklist), the Telegram bot (status, token, authorized chats, relay channels/DMs, commands), the auto responder, scan interval, and log level. Secrets are always masked |
 | ⚙️ **Remote Device Configuration** | Configure tab to view and edit the connected mesh radio's config (roles, LoRa, WiFi, MQTT, telemetry, owner names). Schema-driven forms, backend-validated ranges/enums, danger-zone confirmations (ROUTER role, TX disabled, region, credentials), LoRa preset gating, and reboot-required feedback |
 | 📢 **MeshBeacon Config (2.8+)** | New Mesh Beacon section: Listen/Broadcast/Legacy-Split toggles, beacon message (100 bytes), offer/TX channel-region-preset, broadcast interval (min 1h). Greyed out on firmware < 2.8.0 |
@@ -105,8 +105,10 @@ NodePulse is a Home Assistant addon and custom integration that gives you deep v
 | 🎭 **New Device Roles (2.8+)** | TAK, CLIENT_HIDDEN, LOST_AND_FOUND, TAK_TRACKER, ROUTER_LATE, CLIENT_BASE |
 | 🔄 **RebroadcastMode (2.8+)** | ALL, ALL_SKIP_DECODING, LOCAL_ONLY, KNOWN_ONLY, NONE, CORE_PORTNUMS_ONLY |
 | 🔔 **BuzzerMode (2.8+)** | ALL_ENABLED, DISABLED, NOTIFICATIONS_ONLY, SYSTEM_ONLY, DIRECT_MSG_ONLY |
-| ⭐ **Favorite Nodes** | Star (★) button on node cards in Nodes view. Favorites pinned to top, then nodes with signal, then by recency. Persisted in localStorage (`np_favorite_nodes`). Toast on toggle. |
+| ⭐ **Favorite Nodes** | Star (★) button on node cards in Nodes view. Favorites pinned to top, then nodes with signal, then by recency. **Persisted server-side** in `favorites.json` (plus `GET/PUT /api/favorites`) so favorites survive reloads even when the HA addon iframe clears `localStorage`. Toast on toggle. |
 | 🔍 **Auto Traceroute** | Automatically dispatches traceroute when a new node is discovered. Background thread, non-blocking, 300s timeout, respects serialization. Toggle in Settings → Auto Responder (`auto_traceroute_enabled`, default `false`). |
+| ⏱ **Traceroute Timeout Feedback** | When a traceroute times out (300s), the node card shows "⏱ Timed out — no route discovered" with a relative timestamp; the map and topology pages skip timeout records instead of drawing bogus edges |
+| 🗄️ **Persisted Traceroutes** | Discovered routes are stored in `traceroutes.json` and survive addon restarts. Traceroute targets evicted from the radio's bounded node DB are re-injected (as stale) so the topology page keeps drawing their links — even while the radio is offline |
 
 ---
 
@@ -128,7 +130,7 @@ block-beta
     conn["connection.py\nTCP client + reconnect"]
     mqtt["mqtt_bridge.py\nMQTT bridge + filter"]
     telegram["telegram_bot.py\nTelegram bridge"]
-    store["nodes.json, messages.json,\ntraceroutes.json, tags.json,\nposition_history.json, channels.json,\nwaypoints.json persistent stores"]
+    store["nodes.json, messages.json,\ntraceroutes.json, tags.json,\nfavorites.json,\nposition_history.json, channels.json,\nwaypoints.json persistent stores"]
     routes["routes.py\nREST API"]
     ui["web_ui/\nDashboard, Nodes, Map,\nTopology, Messages, Packets, Settings"]
   end
@@ -323,7 +325,8 @@ The official Meshtastic integration can expose a **TCP Proxy** that owns the nod
 | `scan_interval` | int | `30` | How often (seconds) the integration polls the addon (10–300) |
 | `ignored_nodes` | list | `[]` | List of node hex IDs to exclude from all API responses |
 | `ha_base_url` | string | _(auto)_ | Override the Home Assistant base URL for track-in-HA relay |
-| `disable_token_validation` | bool | `false` | Skip supervisor token validation (needed for some custom Docker setups) |
+| `ha_access_token` | string | _(empty)_ | Long-lived HA access token that authenticates the Track-in-HA relay when `SUPERVISOR_TOKEN` is missing or rejected. The Supervisor token is tried first (HAOS); if HA core rejects it (missing/mismatched), the relay retries with this token. Create it in HA under **Profile → Security → Long-lived access tokens**. |
+| `disable_token_validation` | bool | `false` | **Deprecated (no-op)** — token validation is always on. Retained only for backward compatibility with existing configs. |
 
 ### MQTT Bridge Configuration
 
@@ -416,7 +419,7 @@ Once the bot is running, send these commands from your authorized Telegram chat:
 | Command | Description |
 |---|---|
 | `/help` | List all available commands |
-| `/status` | Show radio connection state, visible node count, and battery level |
+| `/status` | Show node name, online/offline state, last heard (relative time), uptime, battery, visible node count, and MAC address |
 | `/nodes` | List the top 20 nodes by last-heard time, with their SNR |
 | `/channels` | List the radio's configured channels with their indices |
 | `/send <message>` | Broadcast a text message to the primary mesh channel (Ch 0) |
@@ -439,7 +442,7 @@ The **Settings** tab in the NodePulse dashboard reflects every addon configurati
 |---|---|
 | **Connection** | Link status, connection mode (Direct/Proxy), Meshtastic host & port, and proxy host & port (only shown in `proxy` mode) |
 | **Mesh** | Visible node count, ignored node IDs, and a one-click **Clear stale nodes** action |
-| **Home Assistant Integration** | HA base URL, access key (masked), and token-validation toggle |
+| **Home Assistant Integration** | HA base URL, access key (masked), and (deprecated) token-validation toggle |
 | **MQTT Bridge** | Forwarding mode, broker address & port, username/password presence (masked), topic, geo-filter bounds, portnum allowlist, and node blocklist |
 | **Telegram Bot** | Status, bot token (masked), authorized chat ID(s), relay channels, DM relay, and command permission |
 | **Auto Responder** | Status and configured welcome message |
@@ -450,16 +453,27 @@ Secrets are always masked (`●●●●●● (set)` / `Not set`), and rows for
 
 ---
 
+## Security
+
+- **No host-port exposure** — The addon's REST API is not published to the host network; it is reachable only via HA Ingress (requires HA authentication) and the Supervisor network. This is intentional and keeps the unauthenticated addon API off your LAN.
+- **Relay endpoints fail closed** — `/api/nodepulse/track` and `/api/nodepulse/tracked-nodes` require a matching `Authorization: Bearer <SUPERVISOR_TOKEN>` or valid Home Assistant authentication (a long-lived access token via the addon's `ha_access_token` option, or an HA session) — there is no anonymous path.
+- **Mesh data is treated as untrusted** — Waypoint name/description/icon are sanitized server-side and HTML-escaped in the Web UI; the Web UI uses no inline event handlers for mesh-controlled values.
+- **Telegram** — Inbound messages are filtered against the authorized chat IDs; unauthorized chats are dropped before any mesh action.
+- **Threat model note** — The optional `access_key` authenticates to the Meshtastic node and travels in plaintext over HTTP. Prefer the Supervisor network (HAOS) or an isolated network for the addon↔integration link; do not expose the addon API to the open internet.
+
+---
+
 ## Troubleshooting
 
-### "Track in HA" toggle fails (502) / addon logs 404 on `/api/nodepulse/*`
+### "Track in HA" toggle fails (502 / 401) or addon logs 404 on `/api/nodepulse/*`
 
-The addon relays the track request to Home Assistant core, which only answers if the **NodePulse custom integration is loaded**. A 404 means HA has no `/api/nodepulse/track` route yet.
+The addon relays the track request to Home Assistant core, which only answers if the **NodePulse custom integration is loaded**. A 404 means HA has no `/api/nodepulse/track` route yet; a 401 means the relay was rejected by token validation.
 
 1. Confirm `custom_components/nodepulse/` is inside your HA `config/custom_components/` directory.
 2. Restart HA, then add the NodePulse integration via **Settings → Integrations → Add Integration**.
 3. Verify in the HA logs that relay views registered.
 4. Once the integration is loaded, the 502s resolve automatically.
+5. **401 Unauthorized** — The relay validates a `Bearer` token against HA core and fails closed. The Supervisor token (injected on HAOS) is tried first; if it is missing or mismatched, the relay retries with the addon's `ha_access_token` (a long-lived HA access token, Profile → Security → Long-lived access tokens). Ensure both containers share `SUPERVISOR_TOKEN`, or set `ha_access_token`. The legacy `disable_token_validation` option no longer disables this check.
 
 ### Integration shows "cannot_connect" (setup fails)
 

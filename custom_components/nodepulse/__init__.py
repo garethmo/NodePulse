@@ -24,6 +24,9 @@ from .const import (
     ATTR_CHANNEL,
     ATTR_TARGET,
     ATTR_TEXT,
+    CONF_IGNORED_NODES,
+    CONF_SCAN_INTERVAL,
+    CONF_TRACKED_NODES,
     DOMAIN,
     PLATFORMS,
 )
@@ -136,9 +139,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
             hass.config_entries.async_update_entry(entry, options=cleaned_options)
     
+    # Register entry-specific HTTP views for the addon Web UI's "Track in HA"
+    # toggle BEFORE the coordinator's first refresh. If the addon is
+    # temporarily unreachable and that first refresh raises, the entry would
+    # otherwise fail to set up and these routes would 404, breaking the addon
+    # relay entirely. The views tolerate a missing coordinator and return 503
+    # until data is available. Each config entry gets its own view instance so
+    # the coordinator is looked up by entry_id, supporting multiple NodePulse
+    # addon instances.
+    hass.http.register_view(NodePulseTrackView(entry.entry_id))
+    hass.http.register_view(NodePulseTrackedNodesView(entry.entry_id))
+
     coordinator = NodePulseCoordinator(hass, entry)
 
-    await coordinator.async_config_entry_first_refresh()
+    try:
+        await coordinator.async_config_entry_first_refresh()
+    except Exception as exc:
+        # Don't let a transient addon connectivity failure take down the whole
+        # entry. The coordinator keeps retrying on its refresh schedule, and
+        # the relay views above return 503 until data becomes available.
+        logger.warning(
+            "NodePulse initial coordinator refresh failed (entry=%s): %s",
+            entry.entry_id, exc,
+        )
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
@@ -162,12 +185,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
 
     hass.async_create_task(_load_notify_platforms())
-
-    # Register entry-specific HTTP views for the addon Web UI's "Track in HA" toggle.
-    # Each config entry gets its own view instance so the coordinator is looked up
-    # by entry_id, supporting multiple NodePulse addon instances.
-    hass.http.register_view(NodePulseTrackView(entry.entry_id))
-    hass.http.register_view(NodePulseTrackedNodesView(entry.entry_id))
 
     # Listen for new mesh messages: fire device-trigger events and write
     # logbook entries.

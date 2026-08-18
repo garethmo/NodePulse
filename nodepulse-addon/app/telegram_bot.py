@@ -249,14 +249,36 @@ class TelegramBot:
         try:
             if command == "/status":
                 status = await self.get_status_callback()
-                info = status.get("my_info", {})
+                connected = bool(status.get("connected"))
+                info = status.get("my_info", {}) or {}
                 batt = info.get("battery_level", "Unknown")
                 mac = info.get("macaddr", "Unknown")
                 nodes_cnt = len(await self.get_nodes_callback())
+
+                if connected:
+                    online = "✅ Online"
+                    self_name = info.get("long_name") or info.get("short_name") or info.get("node_id", "Self")
+                else:
+                    online = "❌ Offline"
+                    self_name = "Radio not connected"
+
+                last_heard = info.get("last_heard")
+                if last_heard:
+                    last_heard_str = self._format_relative_time(last_heard)
+                else:
+                    last_heard_str = "Unknown"
+
+                uptime = info.get("uptime")
+                uptime_str = self._format_uptime(uptime) if uptime else "Unknown"
+
                 await self._send_text(
                     f"📡 *NodePulse Status*\n"
-                    f"Nodes: {nodes_cnt}\n"
+                    f"Node: {self_name}\n"
+                    f"Status: {online}\n"
+                    f"Last heard: {last_heard_str}\n"
+                    f"Uptime: {uptime_str}\n"
                     f"Battery: {batt}%\n"
+                    f"Nodes: {nodes_cnt}\n"
                     f"MAC: {mac}"
                 )
                 
@@ -353,6 +375,50 @@ class TelegramBot:
         except Exception as exc:
             logger.error("Error executing Telegram command %s: %s", command, exc)
             await self._send_text("❌ Error executing command.")
+
+    @staticmethod
+    def _format_relative_time(timestamp: float) -> str:
+        """Human-readable 'Xm ago' style string for a unix timestamp."""
+        try:
+            delta = time.time() - float(timestamp)
+        except (TypeError, ValueError):
+            return "Unknown"
+        if delta < 0:
+            return "just now"
+        seconds = int(delta)
+        if seconds < 60:
+            return f"{seconds}s ago"
+        minutes = seconds // 60
+        if minutes < 60:
+            return f"{minutes}m ago"
+        hours = minutes // 60
+        if hours < 24:
+            return f"{hours}h ago"
+        days = hours // 24
+        return f"{days}d ago"
+
+    @staticmethod
+    def _format_uptime(uptime_seconds) -> str:
+        """Human-readable duration (Xd Yh Zm) for a device uptime in seconds."""
+        try:
+            total = int(uptime_seconds)
+        except (TypeError, ValueError):
+            return "Unknown"
+        if total < 0:
+            return "Unknown"
+        days, rem = divmod(total, 86400)
+        hours, rem = divmod(rem, 3600)
+        minutes = rem // 60
+        parts = []
+        if days:
+            parts.append(f"{days}d")
+        if hours:
+            parts.append(f"{hours}h")
+        if minutes:
+            parts.append(f"{minutes}m")
+        if not parts:
+            parts.append(f"{total}s")
+        return " ".join(parts)
 
     async def _send_text(self, text: str) -> Optional[int]:
         """

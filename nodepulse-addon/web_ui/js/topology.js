@@ -290,20 +290,28 @@ export class TopologyManager {
     // ── Build edge list ──────────────────────────────────────────────────────
     // Priority: traceroute paths (have explicit hop order + SNR).
     if (this._showTraceroutes) {
-      for (const node of nodes) {
-        const tr = node.traceroute;
-        if (!tr || !Array.isArray(tr.route) || tr.route.length < 2) continue;
-        const route = tr.route;
-        for (let i = 0; i < route.length - 1; i++) {
-          const fromId = route[i];
-          const toId   = route[i + 1];
+      // RouteDiscovery stores hop numbers as raw integers; canonicalise them
+      // to the same '!hex' form used as node IDs in this graph (mirrors map.js).
+      const toNodeId = (n) => {
+        if (typeof n === 'string') {
+          const s = n.trim();
+          return s.startsWith('!') ? s : '!' + s;
+        }
+        return '!' + (n >>> 0).toString(16).padStart(8, '0');
+      };
+
+      const addPathEdges = (path, snrList) => {
+        for (let i = 0; i < path.length - 1; i++) {
+          const fromId = path[i];
+          const toId   = path[i + 1];
           if (!fromId || !toId) continue;
           const eid = edgeId(fromId, toId);
           if (edgeSeen.has(eid)) continue;
           edgeSeen.add(eid);
 
-          // Per-hop SNR comes from snr_towards (index matches the route array gap).
-          const hopSnr = tr.snr_towards?.[i] ?? null;
+          // Per-hop SNR: snr_towards[i] aligns with the hop between path[i]
+          // and path[i+1].
+          const hopSnr = snrList?.[i] ?? null;
           newEdges.push({
             id:    eid,
             from:  fromId,
@@ -316,6 +324,25 @@ export class TopologyManager {
             _type: 'traceroute',
           });
         }
+      };
+
+      for (const node of nodes) {
+        const tr = node.traceroute;
+        if (!tr || tr.timeout) continue;
+        const rawRoute = Array.isArray(tr.route) ? tr.route : [];
+        const rawBack  = Array.isArray(tr.route_back) ? tr.route_back : [];
+
+        // Full forward path: self → intermediate hops → responding node.
+        const forward = [state.selfId, ...rawRoute.map(toNodeId)];
+        if (tr.from_id) forward.push(tr.from_id);
+
+        // Return path (if the device reported one).
+        const back = (rawBack.length && tr.from_id)
+          ? [tr.from_id, ...rawBack.map(toNodeId), state.selfId]
+          : [];
+
+        if (forward.length >= 2) addPathEdges(forward, tr.snr_towards);
+        if (back.length >= 2)    addPathEdges(back, tr.snr_back);
       }
     }
 
@@ -345,6 +372,33 @@ export class TopologyManager {
     }
 
     // ── Diff update ──────────────────────────────────────────────────────────
+    // Ensure every edge endpoint exists as a node. vis-network silently drops
+    // edges whose from/to are not present in the nodes DataSet, and traceroute
+    // relay hops (raw node numbers) are frequently absent from the radio's
+    // bounded node DB (and therefore from state.nodes). Without this, multi-hop
+    // routes would render as dangling stubs or not at all. Relay placeholders
+    // use a neutral style so the route stays readable.
+    const endpointIds = new Set();
+    for (const e of newEdges) { endpointIds.add(e.from); endpointIds.add(e.to); }
+    const knownIds = new Set(newNodes.map(n => n.id));
+    for (const eid of endpointIds) {
+      if (!knownIds.has(eid)) {
+        knownIds.add(eid);
+        newNodes.push({
+          id: eid,
+          label: this._showNames ? eid : '',
+          title: `Relay hop — ${eid}`,
+          color: { background: '#5c6bc0', border: '#9fa8da', highlight: { background: '#ffffff', border: '#9fa8da' }, hover: { background: '#ffffff', border: '#9fa8da' } },
+          shape: 'dot',
+          size: 10,
+          opacity: 0.8,
+          _originalLabel: eid,
+          _originalColor: { background: '#5c6bc0', border: '#9fa8da', highlight: { background: '#ffffff', border: '#9fa8da' }, hover: { background: '#ffffff', border: '#9fa8da' } },
+          _role: 'RELAY',
+        });
+      }
+    }
+
     const currentNodeIds = new Set(this._nodesDS.getIds());
     const currentEdgeIds = new Set(this._edgesDS.getIds());
 

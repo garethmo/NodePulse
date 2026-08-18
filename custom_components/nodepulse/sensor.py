@@ -89,10 +89,14 @@ async def async_setup_entry(
                 nid not in coordinator.tracked_nodes or nid not in visible_ids
             ):
                 registered_entities.remove(entity)
-                # Discard by node_id (not unique_id) — the set is keyed on node_id.
-                # Using unique_id here would leave a stale entry that prevents
-                # re-tracking the node after it has been un-tracked.
-                registered_node_ids.discard(nid)
+                # The set is keyed on unique_id (e.g. "{entry_id}_{node_id}_snr"),
+                # NOT node_id, so discarding `nid` alone would leave stale
+                # unique_ids behind and prevent re-tracking this node forever.
+                # Discard every unique_id belonging to this node instead.
+                uid_prefix = f"{entry.entry_id}_{nid}_"
+                stale_ids = [uid for uid in registered_node_ids if uid.startswith(uid_prefix)]
+                for uid in stale_ids:
+                    registered_node_ids.discard(uid)
                 hass.async_create_task(entity.async_remove(force_remove=True))
 
         new_entities = []

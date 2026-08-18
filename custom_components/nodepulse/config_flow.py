@@ -27,6 +27,7 @@ from .const import (
     CONF_HOST,
     CONF_IGNORED_NODES,
     CONF_SCAN_INTERVAL,
+    CONF_TRACKED_NODES,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
 )
@@ -51,7 +52,7 @@ _OPTIONS_SCHEMA = vol.Schema({
 # Extra validation to ensure only supported keys are present
 def _validate_options_data(data: Dict[str, Any]) -> Dict[str, Any]:
     """Filter to only allow known integration options."""
-    allowed_keys = {CONF_SCAN_INTERVAL, CONF_IGNORED_NODES}
+    allowed_keys = {CONF_SCAN_INTERVAL, CONF_IGNORED_NODES, CONF_TRACKED_NODES}
     return {k: v for k, v in data.items() if k in allowed_keys}
 
 
@@ -191,12 +192,13 @@ class NodePulseOptionsFlow(config_entries.OptionsFlow):
             # filter by direct membership rather than re-parsing a string.
             raw_ignored = (user_input.get(CONF_IGNORED_NODES) or "").strip()
             ignored = _normalise_node_ids(raw_ignored)
-            # Only save the integration-specific options we support.
-            # Filter out any addon-specific fields that may have been included.
-            options_data = {
-                CONF_SCAN_INTERVAL: user_input.get(CONF_SCAN_INTERVAL),
-                CONF_IGNORED_NODES: ignored,
-            }
+            # Preserve any keys not edited here (e.g. tracked_nodes, which the
+            # Web UI persists into options). Rebuilding the dict from scratch
+            # used to silently wipe those — S5.
+            options_data = dict(self._config_entry.options)
+            options_data[CONF_SCAN_INTERVAL] = user_input.get(CONF_SCAN_INTERVAL)
+            options_data[CONF_IGNORED_NODES] = ignored
+            options_data = _validate_options_data(options_data)
             return self.async_create_entry(
                 title="",
                 data=options_data,

@@ -13,7 +13,7 @@
  * is easy to trace top-to-bottom.
  */
 
-import { fetchStatus, fetchNodes, fetchChannels, fetchMessages, sendMessage, requestTraceRoute, requestPosition, fetchTrackedNodes, trackNode, clearStaleNodes, fetchTags, setTags, fetchPositionHistory, fetchPackets, fetchSnifferStats, fetchWaypoints, addWaypoint, updateWaypoint, deleteWaypoint, deleteNode, fetchSecurityScan } from './api.js';
+import { fetchStatus, fetchNodes, fetchChannels, fetchMessages, sendMessage, requestTraceRoute, requestPosition, fetchTrackedNodes, trackNode, clearStaleNodes, fetchTags, setTags, fetchFavorites, setFavorite, fetchPositionHistory, fetchPackets, fetchSnifferStats, fetchWaypoints, addWaypoint, updateWaypoint, deleteWaypoint, deleteNode, fetchSecurityScan } from './api.js';
 import { MapManager } from './map.js';
 import { ChartManager } from './charts.js';
 import { TopologyManager } from './topology.js';
@@ -390,23 +390,32 @@ function renderNodesGrid(nodes) {
     let tracerouteHtml = '';
     const tr = node.traceroute;
     if (tr) {
-      const formatHop = (n) => {
-        const id = '!' + (n >>> 0).toString(16).padStart(8, '0');
-        const match = state.nodes.find(nn => nn.id === id);
-        return escapeHtml(match ? (match.short_name || match.long_name || id) : id);
-      };
-      const forward = (tr.route || []).map(formatHop);
-      if (tr.from_id) forward.push(escapeHtml(state.nodes.find(n => n.id === tr.from_id)?.short_name || tr.from_id));
-      const pathStr = forward.length
-        ? `<strong>${escapeHtml(state.selfId || 'Self')}</strong> → ${forward.join(' → ')}`
-        : 'No route discovered';
       const ago = formatRelativeTime(tr.timestamp);
-      tracerouteHtml = `
+      if (tr.timeout) {
+        tracerouteHtml = `
+        <div class="node-card-traceroute">
+          <div class="metric-label">Traceroute</div>
+          <div class="traceroute-timeout">⏱ Timed out — no route discovered</div>
+          <div class="traceroute-time">${ago}</div>
+        </div>`;
+      } else {
+        const formatHop = (n) => {
+          const id = '!' + (n >>> 0).toString(16).padStart(8, '0');
+          const match = state.nodes.find(nn => nn.id === id);
+          return escapeHtml(match ? (match.short_name || match.long_name || id) : id);
+        };
+        const forward = (tr.route || []).map(formatHop);
+        if (tr.from_id) forward.push(escapeHtml(state.nodes.find(n => n.id === tr.from_id)?.short_name || tr.from_id));
+        const pathStr = forward.length
+          ? `<strong>${escapeHtml(state.selfId || 'Self')}</strong> → ${forward.join(' → ')}`
+          : 'No route discovered';
+        tracerouteHtml = `
         <div class="node-card-traceroute">
           <div class="metric-label">Traceroute</div>
           <div class="traceroute-path">${pathStr}</div>
           <div class="traceroute-time">${ago}</div>
         </div>`;
+      }
     }
 
     const qualityLabel = { excellent: 'EXCELLENT', good: 'GOOD', fair: 'FAIR', poor: 'POOR', no_signal: 'NO SIGNAL' };
@@ -575,6 +584,14 @@ async function handleNodeCardAction(event) {
       showToast(`Added ${nodeId} to favorites`, 'success');
     }
     localStorage.setItem('np_favorite_nodes', JSON.stringify([...state.favoriteNodes]));
+    // Persist server-side so favorites survive reloads (localStorage is
+    // unreliable inside the HA addon iframe).
+    try {
+      const result = await setFavorite(nodeId, !isFav);
+      if (Array.isArray(result)) state.favoriteNodes = new Set(result);
+    } catch (err) {
+      showToast(`Could not save favorite: ${err.message}`, 'error');
+    }
     // Re-render to update sort order
     renderNodesGrid(state.nodes);
   } else if (action === 'delete') {
@@ -1436,8 +1453,13 @@ async function renderSettings() {
     // Home Assistant
     _setEl('settings-ha-url',    cfg.ha_base_url || '—');
     _setEl('settings-access-key', cfg.access_key_set ? '••••••• (set)' : 'Not set');
+    _setEl('settings-ha-access-token', cfg.ha_access_token_set ? '••••••• (set)' : 'Not set');
+    // Relay auth is always on. Show which credential is available so a
+    // non-HAOS install can see at a glance whether the Track-in-HA relay
+    // will be accepted (SUPERVISOR_TOKEN injected by HAOS, or ha_access_token).
     _setEl('settings-token-validation',
-      cfg.disable_token_validation ? 'Disabled (accept any token)' : 'Enabled');
+      'Enabled (fail-closed) — ' +
+      (cfg.disable_token_validation ? 'legacy override ignored' : 'SUPERVISOR_TOKEN or HA access token'));
 
     // MQTT Bridge
     const mqttOn = cfg.mqtt_enabled;
@@ -1553,6 +1575,29 @@ async function refreshTrackedNodes() {
     // Non-fatal — tracked state is cosmetic (checkbox state on node cards).
     // The warning is intentionally quiet; the UI degrades gracefully.
     console.warn('Tracked-nodes fetch failed:', err);
+  }
+}
+
+/**
+ * Refresh favorite-node state from the server-side persisted store.
+ *
+ * Favorites are stored server-side (not just localStorage) because the
+ * Home Assistant addon iframe can clear/deny localStorage, which made the
+ * ★ markers vanish after a reload. We sync from the server at startup (and
+ * whenever the toggle handler updates state), then re-render so the stars
+ * and sort order reflect the durable state.
+ */
+async function refreshFavorites() {
+  try {
+    const favs = await fetchFavorites();
+    state.favoriteNodes = new Set(Array.isArray(favs) ? favs : []);
+    localStorage.setItem('np_favorite_nodes', JSON.stringify([...state.favoriteNodes]));
+    if (state.nodes.length > 0) {
+      renderNodesGrid(state.nodes);
+    }
+  } catch (err) {
+    // Non-fatal — keep whatever localStorage has as a fallback.
+    console.warn('Favorites fetch failed:', err);
   }
 }
 
@@ -1700,6 +1745,13 @@ async function pollData() {
     // Fire-and-forget: do NOT await — let it run concurrently so the rest of
     // the UI is already rendered before this potentially-slow call finishes.
     refreshTrackedNodes();
+  }
+
+  // Fast path: sync durable favorites from the server store on the first poll
+  // (and periodically) so ★ markers survive reloads even if localStorage was
+  // cleared. Server-side is authoritative; localStorage is just a fallback.
+  if (isFirstPoll || isDue) {
+    refreshFavorites();
   }
 
   if (state.currentView === 'packets') pollPackets();
@@ -2231,9 +2283,6 @@ async function init() {
       }
     });
   }
-
-  // Expose a global so the popup delete button can call back.
-  window._nodepulse_deleteWaypoint = handleDeleteWaypoint;
 
   // Ruler toggle and panel.
   const rulerBtn = document.getElementById('map-ruler-btn');

@@ -3,7 +3,7 @@ Unit tests for app/routes.py
 """
 import pytest
 import json
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import MagicMock, AsyncMock, patch
 from aiohttp import web
 import asyncio
 
@@ -148,7 +148,54 @@ class TestHandleStatus:
         body = json.loads(resp.body)
         assert "connected" in body
         assert "config" in body
+        assert "ha_access_token_set" in body["config"]
         mock_conn.get_status.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_handle_status_reports_ha_access_token_set(self):
+        mock_conn = AsyncMock()
+        mock_conn.get_status.return_value = {"connected": True, "my_info": {}}
+        mock_conn._scheduled_messages = []
+        mock_conn._scheduled_messages_lock = MagicMock()
+        mock_conn._scheduled_messages_lock.__enter__ = MagicMock(return_value=None)
+        mock_conn._scheduled_messages_lock.__exit__ = MagicMock(return_value=None)
+
+        mock_config = MagicMock()
+        config_attrs = {
+            "connection_type": "tcp",
+            "meshtastic_host": "localhost",
+            "meshtastic_port": 4403,
+            "proxy_host": "",
+            "proxy_port": 8080,
+            "scan_interval": 300,
+            "log_level": "INFO",
+            "ha_base_url": "",
+            "ha_access_token": "ll-tok-456",
+            "disable_token_validation": False,
+            "ignored_nodes": [],
+            "access_key": "",
+            "scheduled_messages_enabled": True,
+            "mqtt_enabled": False,
+            "mqtt_address": "",
+            "mqtt_port": 1883,
+            "mqtt_username": "",
+            "mqtt_password": "",
+            "mqtt_topic": "",
+            "mqtt_forwarding_enabled": False,
+            "mqtt_geo_filter_enabled": False,
+            "mqtt_lat_min": -90.0,
+            "mqtt_lat_max": 90.0,
+            "mqtt_lng_min": -180.0,
+            "mqtt_lng_max": 180.0,
+        }
+        for k, v in config_attrs.items():
+            setattr(mock_config, k, v)
+
+        request = make_request(app_dict={"connection": mock_conn, "config": mock_config})
+        resp = await routes.handle_status(request)
+        assert resp.status == 200
+        body = json.loads(resp.body)
+        assert body["config"]["ha_access_token_set"] is True
 
     @pytest.mark.asyncio
     async def test_handle_status_connection_error(self):
@@ -493,3 +540,172 @@ class TestHandleRequestPosition:
         assert resp.status == 500
         body = json.loads(resp.body)
         assert body == {"error": "Failed to dispatch position request"}
+
+
+# ----------------------------------------------------------------------
+# handle_favorites / handle_set_favorite tests
+# ----------------------------------------------------------------------
+class TestHandleFavorites:
+    @pytest.mark.asyncio
+    async def test_handle_favorites_success(self):
+        mock_conn = AsyncMock()
+        mock_conn.get_favorites.return_value = ["!12345678", "!87654321"]
+        request = make_request(app_dict={"connection": mock_conn}, method="GET", path="/api/favorites")
+        resp = await routes.handle_favorites(request)
+        assert resp.status == 200
+        body = json.loads(resp.body)
+        assert body == ["!12345678", "!87654321"]
+        mock_conn.get_favorites.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_handle_favorites_error(self):
+        mock_conn = AsyncMock()
+        mock_conn.get_favorites.side_effect = Exception("DB error")
+        request = make_request(app_dict={"connection": mock_conn}, method="GET", path="/api/favorites")
+        resp = await routes.handle_favorites(request)
+        assert resp.status == 500
+        body = json.loads(resp.body)
+        assert body == {"error": "Failed to retrieve favorites"}
+
+    @pytest.mark.asyncio
+    async def test_handle_set_favorite_success(self):
+        mock_conn = AsyncMock()
+        mock_conn.set_favorite.return_value = ["!12345678"]
+        request = make_request(
+            app_dict={"connection": mock_conn}, method="PUT", path="/api/favorites",
+            body={"node_id": "!12345678", "favorited": True},
+        )
+        resp = await routes.handle_set_favorite(request)
+        assert resp.status == 200
+        body = json.loads(resp.body)
+        assert body == ["!12345678"]
+        mock_conn.set_favorite.assert_called_once_with("!12345678", True)
+
+    @pytest.mark.asyncio
+    async def test_handle_set_favorite_invalid_node_id(self):
+        mock_conn = AsyncMock()
+        request = make_request(
+            app_dict={"connection": mock_conn}, method="PUT", path="/api/favorites",
+            body={"node_id": "bogus", "favorited": True},
+        )
+        resp = await routes.handle_set_favorite(request)
+        assert resp.status == 400
+        mock_conn.set_favorite.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_handle_set_favorite_invalid_bool(self):
+        mock_conn = AsyncMock()
+        request = make_request(
+            app_dict={"connection": mock_conn}, method="PUT", path="/api/favorites",
+            body={"node_id": "!12345678", "favorited": "yes"},
+        )
+        resp = await routes.handle_set_favorite(request)
+        assert resp.status == 400
+        mock_conn.set_favorite.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_handle_set_favorite_error(self):
+        mock_conn = AsyncMock()
+        mock_conn.set_favorite.side_effect = Exception("DB error")
+        request = make_request(
+            app_dict={"connection": mock_conn}, method="PUT", path="/api/favorites",
+            body={"node_id": "!12345678", "favorited": True},
+        )
+        resp = await routes.handle_set_favorite(request)
+        assert resp.status == 500
+        body = json.loads(resp.body)
+        assert body == {"error": "Failed to set favorite"}
+
+
+# ----------------------------------------------------------------------
+# _relay_to_integration token-selection tests
+# ----------------------------------------------------------------------
+class TestRelayTokenSelection:
+    """Verify the relay sends the Supervisor token, the configured HA access
+    token, or no Bearer header depending on what is available."""
+
+    def _patch_session(self, resp_status=200, resp_json=None, status_for_auth=None):
+        """Patch routes' aiohttp.ClientSession with a recorder that returns
+        a canned response and captures the outbound headers."""
+        recorded = {}
+
+        class _FakeResp:
+            def __init__(self, status, body):
+                self.status = status
+                self._body = body
+                self.headers = {}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def text(self):
+                return self._body
+
+        class _FakeSession:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            def request(self, method, url, **kwargs):
+                recorded["url"] = url
+                recorded["headers"] = kwargs.get("headers", {})
+                auth = recorded["headers"].get("Authorization", "")
+                status = status_for_auth(auth) if status_for_auth else resp_status
+                body = resp_json if resp_json is not None else json.dumps({"node_ids": ["!12345678"]})
+                return _FakeResp(status, body)
+
+        patcher = patch.object(routes.aiohttp, "ClientSession", _FakeSession)
+        return patcher, recorded
+
+    @pytest.mark.asyncio
+    async def test_uses_supervisor_token_when_available(self):
+        request = make_request(app_dict={"config": MagicMock(ha_base_url="", ha_access_token="")})
+        patcher, recorded = self._patch_session()
+        with patcher, patch.dict("os.environ", {"SUPERVISOR_TOKEN": "sup-tok-123"}, clear=True):
+            await routes._relay_to_integration(request, "GET", "/api/nodepulse/tracked-nodes")
+        assert recorded["headers"].get("Authorization") == "Bearer sup-tok-123"
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_ha_access_token(self):
+        request = make_request(app_dict={"config": MagicMock(ha_base_url="", ha_access_token="ll-tok-456")})
+        patcher, recorded = self._patch_session()
+        # No SUPERVISOR_TOKEN in the environment.
+        with patcher, patch.dict("os.environ", {}, clear=True):
+            await routes._relay_to_integration(request, "GET", "/api/nodepulse/tracked-nodes")
+        assert recorded["headers"].get("Authorization") == "Bearer ll-tok-456"
+
+    @pytest.mark.asyncio
+    async def test_supervisor_token_takes_precedence_over_access_token(self):
+        request = make_request(app_dict={"config": MagicMock(ha_base_url="", ha_access_token="ll-tok-456")})
+        patcher, recorded = self._patch_session()
+        with patcher, patch.dict("os.environ", {"SUPERVISOR_TOKEN": "sup-tok-123"}, clear=True):
+            await routes._relay_to_integration(request, "GET", "/api/nodepulse/tracked-nodes")
+        assert recorded["headers"].get("Authorization") == "Bearer sup-tok-123"
+
+    @pytest.mark.asyncio
+    async def test_retries_with_access_token_when_supervisor_token_rejected(self):
+        request = make_request(app_dict={"config": MagicMock(ha_base_url="", ha_access_token="ll-tok-456")})
+        # All candidates reject the Supervisor token (401) but accept the long-lived token.
+        def status_for_auth(auth):
+            return 200 if auth == "Bearer ll-tok-456" else 401
+        patcher, recorded = self._patch_session(status_for_auth=status_for_auth)
+        with patcher, patch.dict("os.environ", {"SUPERVISOR_TOKEN": "sup-tok-123"}, clear=True):
+            await routes._relay_to_integration(request, "GET", "/api/nodepulse/tracked-nodes")
+        assert recorded["headers"].get("Authorization") == "Bearer ll-tok-456"
+
+    @pytest.mark.asyncio
+    async def test_no_token_raises_configuration_error(self):
+        request = make_request(app_dict={"config": MagicMock(ha_base_url="", ha_access_token="")})
+        patcher, recorded = self._patch_session()
+        with patcher, patch.dict("os.environ", {}, clear=True), \
+                pytest.raises(RuntimeError, match="No relay credential configured"):
+            await routes._relay_to_integration(request, "GET", "/api/nodepulse/tracked-nodes")
+        assert "headers" not in recorded

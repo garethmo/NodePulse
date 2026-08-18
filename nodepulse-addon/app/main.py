@@ -42,6 +42,8 @@ from .routes import (
     handle_status,
     handle_set_tags,
     handle_tags,
+    handle_set_favorite,
+    handle_favorites,
     handle_traceroute,
     handle_track_node,
     handle_tracked_nodes,
@@ -178,6 +180,22 @@ async def _on_shutdown(app: web.Application) -> None:
     logger.debug("NodePulse addon shutdown complete")
 
 
+@web.middleware
+async def _no_cache_middleware(request: web.Request, handler):
+    """Strip any HTTP caching so the browser always fetches the latest data.
+
+    The Web UI and API are updated in place (Docker COPY . /app), so a browser
+    that caches an old JS module breaks the whole UI (e.g. app.js imports an
+    export the cached api.js doesn't provide -> module parse error -> stuck on
+    "Loading nodes…"). no-store forces a full re-fetch on every load.
+    """
+    response = await handler(request)
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
+
+
 def build_app(config) -> web.Application:
     """
     Construct and configure the aiohttp Application.
@@ -185,7 +203,7 @@ def build_app(config) -> web.Application:
     Separating construction from running makes this testable without
     actually binding to a port.
     """
-    app = web.Application()
+    app = web.Application(middlewares=[_no_cache_middleware])
 
     # Attach shared state to the app so all route handlers can access it
     # without global variables. aiohttp's Application dict is the idiomatic
@@ -243,6 +261,8 @@ def build_app(config) -> web.Application:
     app.router.add_post("/api/requestPosition", handle_request_position)
     app.router.add_get("/api/tags", handle_tags)
     app.router.add_put("/api/tags", handle_set_tags)
+    app.router.add_get("/api/favorites", handle_favorites)
+    app.router.add_put("/api/favorites", handle_set_favorite)
     app.router.add_get("/api/position-history", handle_position_history)
     app.router.add_get("/api/position-history/{node_id}", handle_position_history)
     app.router.add_get("/api/tracked-nodes", handle_tracked_nodes)

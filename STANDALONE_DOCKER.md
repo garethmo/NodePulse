@@ -27,8 +27,7 @@ Create `~/.nodepulse/config.json`:
   "meshtastic_port": 4403,
   "scan_interval": 30,
   "ignored_nodes": [],
-  "ha_base_url": "",
-  "disable_token_validation": true
+  "ha_base_url": ""
 }
 ```
 

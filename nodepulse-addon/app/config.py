@@ -105,11 +105,17 @@ class Config:
     # container, "localhost" is the addon itself — HA core is reachable on the
     # supervisor network at "homeassistant:8123" (the standard addon->HA host).
     ha_base_url: str = "http://homeassistant:8123"
-    # Disable SUPERVISOR_TOKEN validation for addon-to-integration communication.
-    # Only use this in trusted environments (e.g., non-HAOS installs where token
-    # injection doesn't work correctly). Default is True to work around token
-    # mismatch issues in some environments.
-    disable_token_validation: bool = True
+    # Optional Home Assistant long-lived access token used to authenticate the
+    # addon->HA relay (/api/nodepulse/*) on non-HAOS installs where the
+    # SUPERVISOR_TOKEN environment variable is not injected into the addon
+    # container. On HAOS the Supervisor provides SUPERVISOR_TOKEN automatically
+    # and it takes precedence; this is only a fallback for custom Docker/venv
+    # setups. Create one in HA at Profile -> Security -> Long-lived access tokens.
+    ha_access_token: str = ""
+    # DEPRECATED (2026-08-18): token validation is now always on. This option
+    # is retained only for backward compatibility with existing configs and is
+    # ignored by the relay logic. Default is False.
+    disable_token_validation: bool = False
     
     # MQTT Bridge Settings
     mqtt_enabled: bool = False
@@ -186,6 +192,7 @@ def load_config() -> Config:
         scan_interval=int(raw.get("scan_interval", 30)),
         ignored_nodes=[n for n in raw.get("ignored_nodes", []) if n],
         ha_base_url=(raw.get("ha_base_url") or "http://homeassistant:8123").rstrip("/"),
+        ha_access_token=raw.get("ha_access_token") or "",
         disable_token_validation=bool(raw.get("disable_token_validation", False)),
         mqtt_enabled=bool(raw.get("mqtt_enabled", False)),
         mqtt_address=raw.get("mqtt_address", "mqtt.meshtastic.org"),

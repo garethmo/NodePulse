@@ -9,6 +9,7 @@
   "scan_interval": 30,
   "ignored_nodes": [],
   "ha_base_url": "http://homeassistant:8123",
+  "ha_access_token": "",
   "telegram_enabled": false,
   "telegram_bot_token": "",
   "telegram_chat_id": "",

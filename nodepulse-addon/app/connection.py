@@ -30,6 +30,31 @@ from pubsub import pub
 import re
 import meshtastic.protobuf.config_pb2 as config_pb2
 
+# Characters that would break out of an HTML/JS context if echoed verbatim.
+# Waypoint text arrives from the mesh (untrusted), so we strip these at the
+# ingest boundary as defense-in-depth on top of frontend escaping.
+_HTML_BREAKOUT_CHARS = frozenset("<>&\"'")
+
+
+def _sanitize_mesh_text(value: Any, default: str = "") -> str:
+    """Strip characters that could break out of an HTML/JS context.
+
+    Mesh waypoint fields (name, description, icon) are untrusted network data.
+    This removes HTML-significant and control characters at the ingest boundary
+    so a hostile waypoint can never survive in stored state; the Web UI also
+    escapes on render as a second layer.
+    """
+    if value is None:
+        return default
+    out = []
+    for ch in str(value):
+        if ch in _HTML_BREAKOUT_CHARS:
+            continue
+        if ord(ch) < 0x20 or ord(ch) == 0x7F:  # control chars
+            continue
+        out.append(ch)
+    return "".join(out).strip() or default
+
 # Persistent storage directory. Under HA Supervisor this is /data, which
 # survives addon restarts (unlike the container's ephemeral filesystem). We
 # persist the recent message buffer there so the Web UI's message history is
@@ -40,6 +65,7 @@ _TRACEROUTES_FILE = os.path.join(_DATA_DIR, "traceroutes.json")
 _CHANNELS_FILE = os.path.join(_DATA_DIR, "channels.json")
 _NODES_FILE = os.path.join(_DATA_DIR, "nodes.json")
 _TAGS_FILE = os.path.join(_DATA_DIR, "tags.json")
+_FAVORITES_FILE = os.path.join(_DATA_DIR, "favorites.json")
 _POSITION_HISTORY_FILE = os.path.join(_DATA_DIR, "position_history.json")
 _WAYPOINTS_FILE = os.path.join(_DATA_DIR, "waypoints.json")
 _SCHEDULED_MESSAGES_FILE = os.path.join(_DATA_DIR, "scheduled_messages.json")
@@ -233,6 +259,13 @@ class MeshtasticConnection:
         self._tags_lock = threading.Lock()
         self._tags: Dict[str, List[str]] = {}
         self._load_tags()
+
+        # Persisted set of favorited node IDs. Durable across reloads so the
+        # Web UI can restore favorite markers on startup (localStorage is not
+        # reliable inside the Home Assistant addon iframe).
+        self._favorites_lock = threading.Lock()
+        self._favorites: set = set()
+        self._load_favorites()
 
         # Position history per node: node_id -> [{lat, lng, alt, timestamp}, ...]
         # Capped at _POS_HISTORY_MAX entries per node.
@@ -490,6 +523,24 @@ class MeshtasticConnection:
                 success = True
             except asyncio.TimeoutError:
                 logger.info("Traceroute to %s timed out (300s timeout)", destination)
+                # Record the timeout on the node so the Web UI can show it in
+                # the node card's traceroute box (and skip it when drawing
+                # route lines/edges). A later RouteDiscovery reply overwrites
+                # this marker with the real route via _capture_traceroute.
+                timeout_record = {
+                    "timeout": True,
+                    "from_id": destination,
+                    "timestamp": int(time.time()),
+                }
+                with self._nodes_lock:
+                    node = next(
+                        (n for n in self._nodes if n.get("id") == destination), None
+                    )
+                    if node is not None:
+                        node["traceroute"] = timeout_record
+                with self._traceroutes_lock:
+                    self._traceroutes[destination] = timeout_record
+                self._save_traceroutes()
             except Exception as exc:
                 logger.info("Traceroute background dispatch failed (%s): %s", destination, exc)
             finally:
@@ -518,6 +569,14 @@ class MeshtasticConnection:
     async def set_tags(self, node_id: str, tags: List[str]) -> Dict[str, List[str]]:
         """Set the tags for a single node and persist. Returns the full tags dict."""
         return await asyncio.to_thread(self._set_tags_sync, node_id, tags)
+
+    async def get_favorites(self) -> List[str]:
+        """Return the persisted set of favorite node IDs."""
+        return await asyncio.to_thread(self._get_favorites_sync)
+
+    async def set_favorite(self, node_id: str, favorited: bool) -> List[str]:
+        """Mark/unmark a node as favorite and persist. Returns the full list."""
+        return await asyncio.to_thread(self._set_favorite_sync, node_id, favorited)
 
     async def get_position_history(self, node_id: Optional[str] = None) -> Dict[str, List[Dict]]:
         """Return position history. If node_id is given, return only that node's trail."""
@@ -1365,6 +1424,47 @@ class MeshtasticConnection:
         self._save_tags()
         return result
 
+    def _load_favorites(self) -> None:
+        """Restore the persisted favorite node IDs (best-effort)."""
+        try:
+            if not os.path.exists(_FAVORITES_FILE):
+                return
+            with self._persist_lock:
+                with open(_FAVORITES_FILE, "r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+            if isinstance(data, list):
+                with self._favorites_lock:
+                    self._favorites = {str(n) for n in data if n}
+                logger.debug(
+                    "Restored %s favorited nodes from %s", len(self._favorites), _FAVORITES_FILE
+                )
+        except Exception as exc:
+            logger.debug("Could not load persisted favorites (ignored): %s", exc)
+
+    def _save_favorites(self) -> None:
+        """Persist the favorites list to disk (best-effort)."""
+        try:
+            os.makedirs(_DATA_DIR, exist_ok=True)
+            with self._favorites_lock:
+                snapshot = sorted(self._favorites)
+            self._write_json(snapshot, _FAVORITES_FILE)
+        except Exception as exc:
+            logger.debug("Could not persist favorites (ignored): %s", exc)
+
+    def _get_favorites_sync(self) -> List[str]:
+        with self._favorites_lock:
+            return sorted(self._favorites)
+
+    def _set_favorite_sync(self, node_id: str, favorited: bool) -> List[str]:
+        with self._favorites_lock:
+            if favorited:
+                self._favorites.add(node_id)
+            else:
+                self._favorites.discard(node_id)
+            result = sorted(self._favorites)
+        self._save_favorites()
+        return result
+
     def _load_position_history(self) -> None:
         """Restore persisted position history (best-effort)."""
         try:
@@ -1542,11 +1642,11 @@ class MeshtasticConnection:
             entry = {
                 "id": canonical_id,
                 "wp_id": wp_int_id,
-                "name": (wp.get("name") or "").strip() or canonical_id,
-                "description": (wp.get("description") or "").strip(),
+                "name": _sanitize_mesh_text(wp.get("name"), canonical_id),
+                "description": _sanitize_mesh_text(wp.get("description")),
                 "lat": lat,
                 "lng": lng,
-                "icon": wp.get("icon") or "📍",
+                "icon": _sanitize_mesh_text(wp.get("icon"), "📍"),
                 "expire": wp.get("expire"),          # Unix timestamp or None
                 "locked_to": wp.get("lockedTo"),     # node num or None
                 "from_id": from_id,
@@ -1585,11 +1685,11 @@ class MeshtasticConnection:
         entry = {
             "id": f"local-{uuid.uuid4().hex[:8]}",
             "wp_id": None,
-            "name": (waypoint.get("name") or "Waypoint").strip(),
-            "description": (waypoint.get("description") or "").strip(),
+            "name": _sanitize_mesh_text(waypoint.get("name"), "Waypoint"),
+            "description": _sanitize_mesh_text(waypoint.get("description")),
             "lat": waypoint.get("lat"),
             "lng": waypoint.get("lng"),
-            "icon": waypoint.get("icon") or "📍",
+            "icon": _sanitize_mesh_text(waypoint.get("icon"), "📍"),
             "expire": waypoint.get("expire"),
             "locked_to": None,
             "from_id": None,
@@ -1609,7 +1709,7 @@ class MeshtasticConnection:
                 if wp.get("id") == waypoint_id:
                     for key in ("lat", "lng", "name", "description", "icon"):
                         if key in updates:
-                            wp[key] = updates[key]
+                            wp[key] = _sanitize_mesh_text(updates[key]) if key != "lat" and key != "lng" else updates[key]
                     snapshot = dict(wp)
                     break
             else:
@@ -2087,6 +2187,14 @@ class MeshtasticConnection:
             region = ""
             role = ""
 
+            # Live telemetry for the locally-connected node, read from the
+            # library's node DB (nodesByNum / nodes). Falls back to defaults so
+            # a not-yet-heard self node still yields a usable status.
+            self_battery = None
+            self_uptime = None
+            self_last_heard = None
+            self_macaddr = ""
+
             if my_node_num is not None:
                 try:
                     node_id = "!" + format(int(my_node_num) & 0xFFFFFFFF, "08x")
@@ -2134,6 +2242,18 @@ class MeshtasticConnection:
                 if not role:
                     role = "CLIENT"
 
+                # Telemetry from the self node's device metrics / last-heard.
+                device_metrics = node_data.get("deviceMetrics", {}) or {}
+                self_battery = device_metrics.get("batteryLevel")
+                self_uptime = device_metrics.get("uptimeSeconds")
+                self_last_heard = node_data.get("lastHeard")
+                try:
+                    raw_mac = getattr(my_info, "macaddr", None)
+                    if raw_mac:
+                        self_macaddr = ":".join(f"{b:02x}" for b in bytes(raw_mac))
+                except Exception:
+                    self_macaddr = ""
+
             return {
                 "connected": True,
                 "my_info": {
@@ -2145,6 +2265,10 @@ class MeshtasticConnection:
                     "firmware_version": firmware_version,
                     "region": region,
                     "role": role,
+                    "battery_level": self_battery,
+                    "uptime": self_uptime,
+                    "last_heard": self_last_heard,
+                    "macaddr": self_macaddr,
                 } if my_info else None,
                 "node_count": len(self._interface.nodes or {}),
                 "status_timestamp": int(time.time()),
@@ -2211,7 +2335,32 @@ class MeshtasticConnection:
                 # keep showing nodes rather than going blank; these are the
                 # persisted nodes restored at startup.
                 with self._nodes_lock:
-                    return list(self._nodes)
+                    nodes = list(self._nodes)
+                # Attach any persisted traceroutes so the topology page can
+                # keep drawing links even while the radio is offline, and
+                # re-inject nodes that exist only in the traceroute store
+                # (matching the connected-path behaviour).
+                with self._traceroutes_lock:
+                    traceroutes_snapshot = dict(self._traceroutes)
+                if traceroutes_snapshot:
+                    known = {n.get("id") for n in nodes}
+                    for tid, rec in traceroutes_snapshot.items():
+                        if not rec:
+                            continue
+                        if tid in known:
+                            for n in nodes:
+                                if n.get("id") == tid:
+                                    n["traceroute"] = rec
+                                    break
+                        else:
+                            nodes.append({
+                                "id": tid,
+                                "traceroute": rec,
+                                "stale": True,
+                                "long_name": "",
+                                "short_name": "",
+                            })
+                return nodes
         # _lock is now released — proceed with the merge.
         nodes_raw = dict(self._interface.nodes or {})
 
@@ -2363,10 +2512,25 @@ class MeshtasticConnection:
 
             # Merge persisted traceroute results back onto their nodes so a
             # previously-discovered route is shown even before (or without)
-            # a fresh traceroute request this session.
+            # a fresh traceroute request this session. Nodes that only exist
+            # in the persisted traceroute store (evicted from the radio's
+            # bounded node DB, or never surfaced in a poll) are re-injected
+            # as minimal stale entries so the topology/map can still draw
+            # their discovered links instead of silently dropping them.
             for tid, rec in traceroutes_snapshot.items():
-                if tid in cached and rec:
+                if not rec:
+                    continue
+                if tid in cached:
                     cached[tid]["traceroute"] = rec
+                else:
+                    cached[tid] = {
+                        "id": tid,
+                        "traceroute": rec,
+                        "stale": True,
+                        "long_name": "",
+                        "short_name": "",
+                    }
+                    result.append(cached[tid])
 
             # Re-inject nodes the radio no longer reports (its bounded node DB
             # evicts the oldest heard nodes once full). Any node we have

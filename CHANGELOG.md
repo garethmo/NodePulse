@@ -2,6 +2,33 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.19.1] - 2026-08-18
+### Security
+- **Addon port no longer published to the host network** — Removed `"ports": {"8099/tcp": 8099}` from `config.json`. The addon was reachable unauthenticated from any LAN client (no auth middleware/API key on any route). It is now only reachable via HA Ingress (HA auth) and the supervisor network, which the integration already uses.
+- **Fixed HA integration setup crash** — `async_setup_entry` referenced `CONF_SCAN_INTERVAL`, `CONF_IGNORED_NODES`, and `CONF_TRACKED_NODES` without importing them from `.const`, raising a `NameError` and preventing the integration from loading since 1.8.0.
+- **Stored XSS via malicious mesh waypoints closed** — Waypoint `icon` was inserted unescaped into the map marker HTML and waypoint `id` into an inline `onclick`, so any mesh node could run JavaScript in the dashboard. The icon is now escaped, the delete button uses a `data-` attribute + delegated listener (no inline handlers), `escapeHtml` also escapes single quotes, and `name`/`description`/`icon` are sanitized server-side (`_sanitize_mesh_text`) at the ingest boundary.
+- **Removed the `X-NodePulse-Skip-Token` relay bypass** — The HA relay views (`/api/nodepulse/track`, `/api/nodepulse/tracked-nodes`) previously accepted a `X-NodePulse-Skip-Token` header, requests with no Authorization header, and any request when `SUPERVISOR_TOKEN` was unset (all three defaulted to on). Validation now always requires a Bearer token matching HA core's `SUPERVISOR_TOKEN`; when the token is unset, requests are rejected unless they carry valid Home Assistant authentication. `disable_token_validation` is deprecated and ignored.
+- **Relay auth fallback** — The addon→HA relay previously only sent a Bearer token when `SUPERVISOR_TOKEN` was injected (HAOS), so the Track-in-HA toggle returned 401 on custom Docker/venv installs where the token isn't present. A new `ha_access_token` addon option (a long-lived HA access token) now authenticates the relay, and the integration accepts valid HA auth even when a Supervisor token is set on HA core. The relay tries `SUPERVISOR_TOKEN` first, then falls back to `ha_access_token` when the token is missing or rejected — so Track-in-HA also survives a mismatched token on HAOS.
+
+### Added
+- **Server-Side Favorite Persistence** — Favorites are now stored in `favorites.json` (`/data`) and exposed via new `GET /api/favorites` / `PUT /api/favorites` endpoints, replacing the fragile `localStorage`-only approach. The HA addon iframe can clear/deny `localStorage`, which made ★ markers vanish after a reload. The UI now syncs favorites from the server on the first poll and after every toggle, so they survive reloads reliably. `localStorage` remains only as a fallback.
+- **Traceroute Timeout Surfacing** — When a traceroute request times out (300s), the backend records a `{ timeout: true }` marker on the node and in `traceroutes.json`. The node card now renders "⏱ Timed out — no route discovered" with a relative timestamp, and the map/topology pages skip timeout records instead of drawing stale edges.
+- **Persisted Traceroute Re-injection** — Traceroute targets that were evicted from the radio's bounded node DB (or that only exist in `traceroutes.json`) are now re-injected into the node list as minimal `stale` entries with their route attached, so the topology page can keep drawing discovered links even when the radio no longer reports the node — including while the addon is disconnected/offline.
+- **Telegram `/status` Enhancement** — The `/status` command now reports the node's friendly name, **online/offline** state, **last heard** (relative time), **uptime** (human-readable `Xd Yh Zm`), battery level, node count, and MAC address. Battery and MAC are now actually populated by the backend (previously always "Unknown").
+
+### Fixed
+- **Options flow no longer wipes tracked nodes** — `async_step_init` rebuilt the options dict from scratch (only `scan_interval` + `ignored_nodes`), silently discarding `tracked_nodes` persisted by the Web UI's track toggle. It now preserves existing options and only updates the edited keys.
+- **Untrack → re-track now re-creates sensors** — Sensor discovery bookkeeping was keyed on `unique_id` for add/check but discarded by `node_id` on removal, so re-tracking a node never re-created its entities. Removal now discards every registered `unique_id` belonging to the node.
+- **NaN traceroute interpolation (map crash)** — The map's gap-filling loop could produce `(NaN, NaN)` coordinates when interpolating between traceroute hop positions, throwing `Invalid LatLng object` from Leaflet's `L.polyline` and killing the whole poll cycle (the "Failed to load data" screen). The loop now resets the last-known index properly and skips non-finite coordinates defensively.
+- **Topology link rendering** — Traceroute hops are stored as raw integer node numbers, not `!hex` IDs; the topology page now canonicalises them, builds the full forward (`Self → hops → dest`) and return paths (previously the destination and self were dropped), and injects neutral "relay" placeholder nodes for hops missing from the node DataSet so multi-hop routes render instead of silently disappearing.
+- **Neighbor/traceroute persistence** — Confirmed `neighbors` and `traceroute` both survive the node merge and `nodes.json` persistence round-trip, so the Nodes screen shows them together after restarts.
+- **Changelog gap** — Added the missing 1.18.0 entry (see below) to keep history in sync with `config.json`.
+
+## [1.18.0] - 2026-08-17
+### Added
+- **Favorite Nodes (UI)** — Star (★) button on every node card in the Nodes view; favorites sort to the top of the list, then nodes with signal, then by recency. Toast on toggle. (Later hardened in 1.19.1 with server-side persistence.)
+- **Auto Traceroute on New Node** — When `auto_traceroute_enabled` is on, a traceroute is dispatched automatically the moment a new node is discovered. Non-blocking background thread; respects the 300s timeout and serialization lock. Toggle in Settings → Auto Responder (default `false`).
+
 ## [1.17.0] - 2026-08-15
 ### Added
 - **Meshtastic 2.8 Firmware Support** — Full compatibility with Meshtastic 2.8.x including new module configs, LoRa regions/presets, and device roles.

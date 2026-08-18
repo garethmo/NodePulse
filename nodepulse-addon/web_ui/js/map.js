@@ -355,9 +355,10 @@ localStorage.setItem('nodepulse-map-type', mapTypeKey);
  * visible flicker and lose popup state).
  */
 // Waypoint map marker — distinctive amber pin with emoji icon inside.
+// `icon` is mesh-controlled data, so escape it before inserting into HTML.
 const WAYPOINT_ICON = (icon) => L.divIcon({
   className: '',
-  html: `<div class="map-marker-waypoint">${icon || '\uD83D\uDCCD'}</div>`,
+  html: `<div class="map-marker-waypoint">${escapeHtml(icon) || '\uD83D\uDCCD'}</div>`,
   iconSize: [28, 28],
   iconAnchor: [14, 26],
   popupAnchor: [0, -28],
@@ -409,6 +410,11 @@ export class MapManager {
     this._rulerLabels = [];       // L.Tooltip[]
     this._rulerClickHandler = null;
     this._posHistory = {};        // { node_id: [{ lat, lng, altitude, timestamp }, ...] }
+
+    // Waypoint popup delete: delegated listener (no inline onclick, so
+    // mesh-controlled waypoint IDs can never execute script). Bound once.
+    this._waypointOnDelete = null;
+    this._waypointDeleteBound = false;
   }
 
   /**
@@ -582,6 +588,20 @@ export class MapManager {
    */
   updateWaypoints(waypoints, onDelete, onUpdate) {
     if (!this._map) return;
+
+    // Store the active delete callback and bind the delegated popup click
+    // listener once. Using delegation keeps mesh-controlled waypoint IDs out
+    // of inline event-handler code (XSS-safe).
+    this._waypointOnDelete = typeof onDelete === 'function' ? onDelete : null;
+    if (!this._waypointDeleteBound) {
+      this._waypointDeleteBound = true;
+      document.addEventListener('click', (e) => {
+        const btn = e.target?.closest?.('.waypoint-delete-btn');
+        if (!btn || !this._waypointOnDelete) return;
+        const id = btn.dataset?.waypointId;
+        if (id != null) this._waypointOnDelete(id);
+      });
+    }
     const incoming = waypoints || [];
     const seenIds = new Set(incoming.map(w => w.id));
 
@@ -633,9 +653,11 @@ export class MapManager {
     const from = wp.from_id ? `<tr><td style="color:#8892a4;padding:2px 0">From</td><td style="text-align:right">${escapeHtml(wp.from_id)}</td></tr>` : '';
     const src  = `<tr><td style="color:#8892a4;padding:2px 0">Source</td><td style="text-align:right">${escapeHtml(wp.source || 'local')}</td></tr>`;
     const coords = `<tr><td style="color:#8892a4;padding:2px 0">Coords</td><td style="text-align:right">${wp.lat.toFixed(5)}, ${wp.lng.toFixed(5)}</td></tr>`;
-    // Inline onclick so the popup HTML is self-contained.
+    // Delete button uses a data- attribute + delegated click listener in
+    // updateWaypoints() — never an inline onclick, which would execute
+    // mesh-controlled waypoint IDs as code.
     const delBtn = onDelete
-      ? `<button onclick="window._nodepulse_deleteWaypoint('${wp.id}')" style="margin-top:8px;width:100%;padding:4px;border-radius:4px;background:rgba(255,60,60,0.15);border:1px solid rgba(255,60,60,0.4);color:#ff6b6b;cursor:pointer;font-size:11px">🗑 Delete</button>`
+      ? `<button class="waypoint-delete-btn" data-waypoint-id="${escapeHtml(wp.id)}" style="margin-top:8px;width:100%;padding:4px;border-radius:4px;background:rgba(255,60,60,0.15);border:1px solid rgba(255,60,60,0.4);color:#ff6b6b;cursor:pointer;font-size:11px">🗑 Delete</button>`
       : '';
     return `
       <div style="font-family:Inter,sans-serif;min-width:160px">
@@ -1012,7 +1034,7 @@ export class MapManager {
     let lineIndex = 0;
     for (const { id, marker } of gpsMarkers) {
       const route = marker._nodeData && marker._nodeData.traceroute;
-      if (!route) continue;
+      if (!route || route.timeout) continue;
 
       const segments = [];
 

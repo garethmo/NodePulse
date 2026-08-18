@@ -17,9 +17,11 @@ NodePulse is a Home Assistant addon and custom integration that gives you deep v
 | 📶 **Per-Node Metrics** | SNR, hops away, battery level, last heard, voltage, utilization, uptime, role — one HA device per node |
 | 🗺️ **GPS Mapping** | Device trackers plotted on the native HA map card |
 | 💬 **Messaging** | Send broadcast or DM messages via the Web UI |
-| 🔍 **Traceroute** | Dispatch traceroutes to any node from the Web UI |
+| 🔍 **Traceroute** | Dispatch traceroutes to any node from the Web UI; routes persist in `traceroutes.json`, timeout records show "⏱ Timed out" on the node card, and evicted targets are re-injected so topology links survive |
+| 🕸️ **Network Topology** | Force-directed graph of mesh links (traceroutes + neighbors) with SNR coloring and relay-hop placeholders |
+| ⭐ **Favorites** | Star nodes in the Nodes view — persisted server-side in `favorites.json` so they survive reloads |
 | ☁️ **MQTT Bridge** | Bidirectional MQTT bridge with geospatial/portnum/node-ID filtering and optional radio forwarding |
-| 🤖 **Telegram Bot** | Bidirectional Telegram bridge with `/status`, `/nodes`, `/send`, and `/dm` commands |
+| 🤖 **Telegram Bot** | Bidirectional Telegram bridge with `/status`, `/nodes`, `/channels`, `/send`, `/dm`, and `/help` commands. `/status` reports online state, last heard, uptime, battery, node count, and MAC |
 | 🎛️ **Comprehensive Settings Page** | Web UI Settings tab reflecting every addon configuration option — connection, mesh, HA integration, MQTT, Telegram, auto responder, and logging — with secrets masked |
 | ⚙️ **Remote Device Configuration** | Configure tab to view and edit the connected mesh radio's config (roles, LoRa, WiFi, MQTT, telemetry, owner names) with danger confirmations and reboot-required feedback |
 | 🖥️ **Web UI Dashboard** | Full-featured dashboard served via HA Ingress (no port forwarding) |
@@ -44,7 +46,7 @@ block-beta
     conn["connection.py\nTCP client + reconnect"]
     mqtt["mqtt_bridge.py\nMQTT bridge + filter"]
     telegram["telegram_bot.py\nTelegram bridge"]
-    store["nodes.json, messages.json,\ntraceroutes.json, tags.json,\nposition_history.json, channels.json,\nwaypoints.json persistent stores"]
+    store["nodes.json, messages.json,\ntraceroutes.json, tags.json,\nfavorites.json,\nposition_history.json, channels.json,\nwaypoints.json persistent stores"]
     routes["routes.py\nREST API"]
     ui["web_ui/\nDashboard, Nodes, Map,\nTopology, Messages, Packets, Settings"]
   end
@@ -250,6 +252,7 @@ node's single connection and relays framed packets to multiple clients. To use i
 | `access_key` | string | _(empty)_ | Optional access key if your node requires authentication. Can be set in **either** the addon options or the integration setup — both are relayed to the addon's node connection. Requires a meshtastic library version that supports access keys; ignored otherwise. |
 | `scan_interval` | int | `30` | How often (seconds) the integration polls the addon (10–300) |
 | `ignored_nodes` | list | `[]` | List of node hex IDs to exclude from all API responses |
+| `ha_access_token` | string | _(empty)_ | Long-lived HA access token that authenticates the Track-in-HA relay when `SUPERVISOR_TOKEN` is missing or rejected. On HAOS the Supervisor injects `SUPERVISOR_TOKEN` into both containers and it is tried first; if HA core rejects it (e.g. a mismatched token), the relay retries with this token. Create it in HA under **Profile → Security → Long-lived access tokens**. |
 
 > 💡 After changing `connection_type` (or any add-on option), **uninstall and
 > re-install** the add-on so Home Assistant re-reads `config.json` and
@@ -259,17 +262,19 @@ node's single connection and relays framed packets to multiple clients. To use i
 
 ## Troubleshooting
 
-### "Track in HA" toggle fails (502) / addon logs `404: Not Found` on `/api/nodepulse/*`
+### "Track in HA" toggle fails (502 / 401) / addon logs `404: Not Found` on `/api/nodepulse/*`
 
 The addon relays the track request to Home Assistant core, which only answers
 if the **NodePulse custom integration is loaded**. A `404` here means HA has no
-`/api/nodepulse/track` (or `/api/nodepulse/tracked-nodes`) route yet.
+`/api/nodepulse/track` (or `/api/nodepulse/tracked-nodes`) route yet; a `401`
+means the relay was rejected by the integration's token validation.
 
 1. Confirm `custom_components/nodepulse/` is inside your HA `config/custom_components/` directory.
 2. Restart Home Assistant, then add the **NodePulse** integration via **Settings → Integrations → Add Integration**.
 3. Verify in the HA logs that the relay views registered:
    `Registered NodePulse HTTP relay views at /api/nodepulse/track and /api/nodepulse/tracked-nodes`
 4. Once the integration is loaded, the addon's `GET /api/tracked-nodes` and `POST /api/track-node` 502s resolve automatically.
+5. **401 Unauthorized** — The relay authenticates with the Supervisor token first (HAOS) and falls back to the addon's `ha_access_token` when the token is missing or rejected. Set `ha_access_token` to a long-lived HA access token, or ensure `SUPERVISOR_TOKEN` matches on both the HA core and addon containers. The legacy `disable_token_validation` option is deprecated and no longer bypasses this check.
 
 > 💡 The addon and the integration are **separate pieces**. Installing the addon
 > alone is not enough — the integration must also be installed and set up in HA,

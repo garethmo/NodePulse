@@ -162,6 +162,24 @@ export async function setTags(nodeId, tags) {
   });
 }
 
+/** Fetch the persisted list of favorite node IDs. */
+export async function fetchFavorites() {
+  return _apiFetch('/favorites');
+}
+
+/**
+ * Mark or unmark a node as favorite. Returns the full list of favorite node IDs.
+ * @param {string} nodeId - Node ID hex string (e.g. "!abcd1234").
+ * @param {boolean} favorited - True to favorite, false to unfavorite.
+ */
+export async function setFavorite(nodeId, favorited) {
+  return _apiFetch('/favorites', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ node_id: nodeId, favorited }),
+  });
+}
+
 /**
  * Fetch the most recent captured packets from the packet inspector ring buffer.
  * @param {number} limit - Max entries to return (default 200, max 500).

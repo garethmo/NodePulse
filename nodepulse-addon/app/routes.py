@@ -79,6 +79,19 @@ _working_ha_base: str | None = None
 _RELAY_TIMEOUT_S = 2
 
 
+def _token_fingerprint(token: str) -> str:
+    """Short non-secret fingerprint of a credential for diagnostics.
+
+    Only length and the first/last 4 characters are logged — never the full
+    token. Lets us verify the exact string an HA core instance received
+    matches what the addon config holds (catches whitespace, truncation,
+    encoding issues and cross-instance token mixups).
+    """
+    if not token:
+        return "none"
+    return f"len={len(token)} head={token[:4]} tail={token[-4:]}"
+
+
 async def _relay_to_integration(request: web.Request, method: str, path: str, json_body=None) -> dict:
     """
     Relay an HTTP request to the NodePulse integration's local API, trying each
@@ -100,18 +113,21 @@ async def _relay_to_integration(request: web.Request, method: str, path: str, js
     # then the cached working URL, then the user-configured value (which might
     # be an ingress URL or wrong). This avoids wasting time on a misconfigured
     # ha_base_url that returns 401/403.
-    config = request.app["config"]
     supervisor_token = os.environ.get("SUPERVISOR_TOKEN", "").strip()
-    # When the user has set disable_token_validation, the integration's
-    # _validate_token() checks for "expected" (SUPERVISOR_TOKEN on HA core).
-    # If HA core has SUPERVISOR_TOKEN set but the addon sends no auth header,
-    # _validate_token returns True. If disable_token_validation is False,
-    # we send the token; otherwise we omit the header entirely so the
-    # integration skips the token check.
-    send_token = (
-        not config.disable_token_validation
-        and bool(supervisor_token)
-    )
+    # Relay credentials in preference order: the Supervisor-injected token
+    # (HAOS) first, then the user-configured long-lived HA access token. If
+    # every candidate rejects the first credential with 401/403, the whole
+    # waterfall is retried with the next one, so a missing or mismatched
+    # SUPERVISOR_TOKEN doesn't permanently break Track-in-HA on custom
+    # Docker/venv installs. The legacy X-NodePulse-Skip-Token bypass header
+    # has been removed — token validation is always on.
+    ha_access_token = (request.app["config"].ha_access_token or "").strip()
+    tokens: list[tuple[str, str]] = []
+    seen_tokens: set[str] = set()
+    for label, tok in (("SUPERVISOR_TOKEN", supervisor_token), ("ha_access_token", ha_access_token)):
+        if tok and tok not in seen_tokens:
+            seen_tokens.add(tok)
+            tokens.append((label, tok))
 
     seen: set[str] = set()
     candidates: list[str] = []
@@ -134,89 +150,119 @@ async def _relay_to_integration(request: web.Request, method: str, path: str, js
     last_body = None
     last_url = None
 
+    if not tokens:
+        logger.error(
+            "No relay credential configured: SUPERVISOR_TOKEN env unset and "
+            "addon option 'ha_access_token' is empty"
+        )
+        raise RuntimeError(
+            "No relay credential configured. The addon->HA relay needs either "
+            "the SUPERVISOR_TOKEN (injected automatically on HAOS) or the addon's "
+            "'ha_access_token' option set to a Home Assistant long-lived access "
+            "token (Profile -> Security -> Long-lived access tokens). Note: "
+            "'ha_access_token' is separate from 'access_key', which authenticates "
+            "to your Meshtastic node, not to Home Assistant."
+        )
+
     async with aiohttp.ClientSession() as session:
-        for base in candidates:
-            url = f"{base}{path}"
-            try:
-                kwargs: dict = {
-                    "timeout": aiohttp.ClientTimeout(total=_RELAY_TIMEOUT_S),
-                    "headers": {},
-                }
-                if send_token:
-                    kwargs["headers"]["Authorization"] = f"Bearer {supervisor_token}"
-                if config.disable_token_validation:
-                    kwargs["headers"]["X-NodePulse-Skip-Token"] = "true"
-                if method.upper() == "POST":
-                    kwargs["headers"]["Content-Type"] = "application/json"
-                    kwargs["json"] = json_body
-                logger.debug("Relaying %s %s body=%s", method, url, json_body)
-                async with session.request(method, url, **kwargs) as resp:
-                    last_status = resp.status
-                    last_url = url
-                    raw = await resp.text()
-                    last_body = raw
+        for token_label, token in tokens:
+            for base in candidates:
+                url = f"{base}{path}"
+                try:
+                    kwargs: dict = {
+                        "timeout": aiohttp.ClientTimeout(total=_RELAY_TIMEOUT_S),
+                        "headers": {},
+                    }
+                    if token:
+                        kwargs["headers"]["Authorization"] = f"Bearer {token}"
+                    if method.upper() == "POST":
+                        kwargs["headers"]["Content-Type"] = "application/json"
+                        kwargs["json"] = json_body
                     logger.debug(
-                        "Relay response from %s: status=%s headers=%s body=%s",
-                        url, resp.status, dict(resp.headers), raw[:500],
+                        "Relaying %s %s body=%s token=%s",
+                        method, url, json_body, _token_fingerprint(token),
                     )
-                    if resp.status in (200, 201):
-                        # Cache this base so we go straight here next time.
-                        if _working_ha_base != base:
-                            _working_ha_base = base
-                            logger.debug("HA relay: caching working base URL as %s", base)
-                        try:
-                            return json.loads(raw)
-                        except Exception as exc:
-                            logger.error(
-                                "Integration at %s returned OK but invalid JSON: %s",
-                                base, exc,
-                            )
-                            raise RuntimeError(
-                                f"Integration at {base} returned an unparseable response"
-                            )
-                    # 401/403 means HA auth rejected us. Try the next candidate
-                    # with SUPERVISOR_TOKEN, except if all candidates failed auth.
-                    if resp.status in (401, 403):
-                        if base == _working_ha_base:
-                            _working_ha_base = None
+                    async with session.request(method, url, **kwargs) as resp:
+                        last_status = resp.status
+                        last_url = url
+                        raw = await resp.text()
+                        last_body = raw
                         logger.debug(
-                            "Relay candidate %s returned %s (unauthorized) — trying next",
-                            base, resp.status,
+                            "Relay response from %s: status=%s headers=%s body=%s",
+                            url, resp.status, dict(resp.headers), raw[:500],
                         )
-                        continue
-                    # A real response (even an error) means we found HA core;
-                    # surface its error rather than trying other candidates.
-                    try:
-                        err = json.loads(raw) if raw else {}
-                        detail = err.get("error", "")
-                    except Exception:
-                        # Response wasn't JSON (e.g. HA login page / HTML stack trace).
-                        detail = raw[:200] if raw else ""
-                    raise RuntimeError(
-                        f"Integration at {base} rejected request (HTTP {resp.status}): {detail}".strip()
-                    )
-            except RuntimeError:
-                raise  # propagate the integration's own error message
-            except Exception as exc:
-                # If the cached URL fails, clear it so we re-probe next time.
-                if base == _working_ha_base:
-                    logger.debug("Cached HA base %s is no longer reachable — resetting", base)
-                    _working_ha_base = None
-                logger.debug("Relay candidate %s failed: %s", base, exc)
-                continue
+                        if resp.status in (200, 201):
+                            # Cache this base so we go straight here next time.
+                            if _working_ha_base != base:
+                                _working_ha_base = base
+                                logger.debug("HA relay: caching working base URL as %s", base)
+                            try:
+                                return json.loads(raw)
+                            except Exception as exc:
+                                logger.error(
+                                    "Integration at %s returned OK but invalid JSON: %s",
+                                    base, exc,
+                                )
+                                raise RuntimeError(
+                                    f"Integration at {base} returned an unparseable response"
+                                )
+                        # 401/403 means HA auth rejected us with this credential.
+                        # Try the next candidate; after all candidates fail, the
+                        # outer loop retries the waterfall with the next token.
+                        if resp.status in (401, 403):
+                            if base == _working_ha_base:
+                                _working_ha_base = None
+                            logger.debug(
+                                "Relay candidate %s returned %s (unauthorized) "
+                                "with %s %s — trying next",
+                                base, resp.status,
+                                f"{token_label} (Bearer)" if token else "no auth",
+                                _token_fingerprint(token),
+                            )
+                            continue
+                        # A real response (even an error) means we found HA core;
+                        # surface its error rather than trying other candidates.
+                        try:
+                            err = json.loads(raw) if raw else {}
+                            detail = err.get("error", "")
+                        except Exception:
+                            # Response wasn't JSON (e.g. HA login page / HTML stack trace).
+                            detail = raw[:200] if raw else ""
+                        raise RuntimeError(
+                            f"Integration at {base} rejected request (HTTP {resp.status}): {detail}".strip()
+                        )
+                except RuntimeError:
+                    raise  # propagate the integration's own error message
+                except Exception as exc:
+                    # If the cached URL fails, clear it so we re-probe next time.
+                    if base == _working_ha_base:
+                        logger.debug("Cached HA base %s is no longer reachable — resetting", base)
+                        _working_ha_base = None
+                    logger.debug("Relay candidate %s failed: %s", base, exc)
+                    continue
     logger.error(
         "Could not reach NodePulse integration. last_url=%s last_status=%s last_body=%s",
         last_url, last_status, (last_body or "")[:500],
     )
     if last_status in (401, 403):
+        detail = ""
+        try:
+            parsed = json.loads(last_body or "")
+            detail = parsed.get("reason") or parsed.get("error") or ""
+        except Exception:
+            detail = (last_body or "")[:200]
         raise RuntimeError(
+            f"NodePulse integration rejected the request (HTTP {last_status}): {detail} "
+            if detail else
             f"NodePulse integration rejected the request (HTTP {last_status}). "
             "This usually means the SUPERVISOR_TOKEN is missing or mismatched "
             "between the addon container and HA core. On HAOS ensure the addon "
-            "is installed via the Supervisor add-on store. On custom Docker, "
-            "pass SUPERVISOR_TOKEN to both the HA core and addon containers. "
-            "Alternatively, set 'disable_token_validation' to true in the "
-            "addon config."
+            "is installed via the Supervisor add-on store. On custom Docker/venv, "
+            "either pass SUPERVISOR_TOKEN to both containers, or set the addon's "
+            "'ha_access_token' option to a Home Assistant long-lived access token "
+            "(Profile -> Security -> Long-lived access tokens). Note: 'ha_access_token' "
+            "is a separate option from 'access_key' — 'access_key' authenticates to "
+            "your Meshtastic node, not to Home Assistant, and has no effect on this relay."
         )
     raise RuntimeError(
         f"Could not reach the NodePulse integration. Tried: {', '.join(candidates)}. "
@@ -281,6 +327,7 @@ async def handle_status(request: web.Request) -> web.Response:
             "scan_interval": config.scan_interval,
             "log_level": config.log_level,
             "ha_base_url": config.ha_base_url,
+            "ha_access_token_set": bool(config.ha_access_token),
             "disable_token_validation": config.disable_token_validation,
             "ignored_nodes": list(getattr(config, "ignored_nodes", [])),
             "access_key_set": bool(config.access_key),
@@ -897,6 +944,54 @@ async def handle_set_tags(request: web.Request) -> web.Response:
     except Exception as exc:
         logger.error("Error setting tags (node=%s): %s", node_id, exc)
         return _error_response("Failed to set tags")
+
+
+# ---------------------------------------------------------------------------
+# Route: GET /api/favorites
+# ---------------------------------------------------------------------------
+
+async def handle_favorites(request: web.Request) -> web.Response:
+    """Return the persisted list of favorite node IDs."""
+    conn: MeshtasticConnection = request.app["connection"]
+    try:
+        favorites = await conn.get_favorites()
+        return _json_response(favorites)
+    except Exception as exc:
+        logger.error("Error fetching favorites: %s", exc)
+        return _error_response("Failed to retrieve favorites")
+
+
+# ---------------------------------------------------------------------------
+# Route: PUT /api/favorites
+# ---------------------------------------------------------------------------
+
+async def handle_set_favorite(request: web.Request) -> web.Response:
+    """
+    Mark/unmark a node as favorite. Returns the full list of favorite node IDs.
+
+    Expected JSON body:
+        { "node_id": "!abcd1234", "favorited": true }
+    """
+    conn: MeshtasticConnection = request.app["connection"]
+    try:
+        body: Dict[str, Any] = await request.json()
+    except Exception:
+        return _error_response("Request body must be valid JSON", status=400)
+
+    node_id = (body.get("node_id") or "").strip()
+    if not node_id or not _NODE_ID_RE.match(node_id):
+        return _error_response("'node_id' must be a valid node ID like '!abc12345'", status=400)
+
+    favorited = body.get("favorited")
+    if not isinstance(favorited, bool):
+        return _error_response("'favorited' must be a boolean", status=400)
+
+    try:
+        result = await conn.set_favorite(node_id, favorited)
+        return _json_response(result)
+    except Exception as exc:
+        logger.error("Error setting favorite (node=%s): %s", node_id, exc)
+        return _error_response("Failed to set favorite")
 
 
 async def handle_track_node(request: web.Request) -> web.Response:

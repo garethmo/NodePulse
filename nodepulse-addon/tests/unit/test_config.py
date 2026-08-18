@@ -133,6 +133,37 @@ def test_load_config_minimal():
         assert config.meshtastic_port == 4403
         assert config.scan_interval == 30  # default
         assert config.mqtt_enabled is False  # default
+        assert config.ha_access_token == ""  # default
+        assert config.disable_token_validation is False  # default
+    finally:
+        os.unlink(temp_path)
+        config_module._OPTIONS_FILE = original_options
+
+
+def test_load_config_with_ha_access_token():
+    """Test loading configuration with an HA long-lived access token."""
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        json.dump({
+            "log_level": "info",
+            "connection_type": "direct",
+            "meshtastic_host": "localhost",
+            "meshtastic_port": 4403,
+            "ha_base_url": "http://172.17.0.1:8123",
+            "ha_access_token": "ll-abcdef1234567890",
+            "disable_token_validation": True,
+        }, f)
+        temp_path = f.name
+
+    try:
+        import app.config as config_module
+        original_options = config_module._OPTIONS_FILE
+        config_module._OPTIONS_FILE = temp_path
+
+        config = load_config()
+
+        assert config.ha_base_url == "http://172.17.0.1:8123"
+        assert config.ha_access_token == "ll-abcdef1234567890"
+        assert config.disable_token_validation is True
     finally:
         os.unlink(temp_path)
         config_module._OPTIONS_FILE = original_options

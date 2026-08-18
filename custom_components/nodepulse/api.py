@@ -10,7 +10,8 @@ here over the supervisor network.
 Addon authentication: the addon passes the SUPERVISOR_TOKEN as a Bearer token
 in the Authorization header. This module validates that token against HA core's
 own copy of SUPERVISOR_TOKEN. In environments where the token is not set
-(dev / custom Docker), the check is skipped and network-boundary trust applies.
+(dev / custom Docker), requests are rejected unless they carry valid Home
+Assistant authentication — these endpoints are never open to anonymous callers.
 
 This module registers two HTTP routes on HA core:
 
@@ -23,8 +24,10 @@ This module registers two HTTP routes on HA core:
 
 HA serves these routes on port 8123 by default.
 """
+import inspect
 import logging
 import os
+import secrets
 
 from aiohttp import web
 import voluptuous as vol
@@ -46,35 +49,77 @@ _TRACK_SCHEMA = vol.Schema({
 })
 
 
-def _validate_token(hass: HomeAssistant, request: web.Request) -> bool:
-    """Validate Bearer token against HA's SUPERVISOR_TOKEN.
+async def _call_auth_check(callable_, *args):
+    """Invoke an HA auth helper whether it is sync or async.
 
-    In HAOS the Supervisor injects SUPERVISOR_TOKEN into every addon container
-    and into HA core. The addon passes it as a Bearer token; we compare it
-    against HA core's own copy so only containers from the same Supervisor can
-    call these views. Falls back to allowing the request when the env var is
-    not set (dev / non-HAOS installs where network isolates trust).
-
-    Also allows requests without any Authorization header (addon no longer sends token).
+    HA's auth helpers are ``@callback`` (synchronous) in some versions and
+    ``async def`` in others. ``await``-ing the synchronous form raises
+    TypeError, which previously made the fallback auth path silently report
+    failure even for a valid long-lived access token. This wrapper calls the
+    helper and awaits only when it actually returns an awaitable.
     """
-    if request.headers.get("X-NodePulse-Skip-Token") == "true":
-        logger.debug("Token validation skipped (X-NodePulse-Skip-Token header)")
-        return True
+    try:
+        result = callable_(*args)
+        if inspect.isawaitable(result):
+            result = await result
+        return result
+    except Exception as exc:
+        logger.debug(
+            "Relay auth check %s raised: %s",
+            getattr(callable_, "__name__", repr(callable_)), exc,
+        )
+        return None
 
-    expected = os.environ.get("SUPERVISOR_TOKEN")
-    if not expected:
-        return True
 
+async def _validate_token(hass: HomeAssistant, request: web.Request) -> str | None:
+    """Validate the request's relay authentication.
+
+    Returns ``None`` when the request is accepted, otherwise a short reason
+    string describing why it was rejected. The reason is surfaced in the 401
+    response body so the addon relay can log exactly what failed (this view
+    runs on HA core, so the addon cannot otherwise see why a token was
+    rejected).
+    """
+    expected = os.environ.get("SUPERVISOR_TOKEN", "").strip()
     auth_hdr = request.headers.get("Authorization", "")
-    # Allow requests with no Authorization header (addon doesn't send token anymore)
-    if not auth_hdr:
-        return True
+    bearer = auth_hdr[len("Bearer "):].strip() if auth_hdr.startswith("Bearer ") else ""
 
-    if auth_hdr.startswith("Bearer "):
-        if auth_hdr[7:] == expected:
-            return True
-    logger.warning("NodePulse relay view rejected (bad token or missing auth)")
-    return False
+    if expected and bearer and secrets.compare_digest(bearer, expected):
+        return None
+
+    # Accept valid Home Assistant authentication (session cookie, long-lived
+    # access token, etc.) as a second legitimate path. This keeps the relay
+    # working even when SUPERVISOR_TOKEN is present on HA core but missing or
+    # mismatched on the addon container. These endpoints are still never open
+    # to anonymous callers.
+    header_check = hasattr(getattr(hass, "http", None), "auth") and \
+        hasattr(hass.http.auth, "async_validate_auth_header")
+    access_check = hasattr(getattr(hass, "auth", None), "async_validate_access_token")
+
+    header_user = await _call_auth_check(
+        hass.http.auth.async_validate_auth_header, request
+    ) if header_check else None
+    if header_user is not None:
+        return None
+
+    # Some HA versions validate the raw Bearer token through the auth manager
+    # directly; fall back to that if the header-based path rejected it.
+    token_user = await _call_auth_check(
+        hass.auth.async_validate_access_token, bearer
+    ) if access_check and bearer else None
+    if token_user is not None:
+        return None
+
+    reason = (
+        f"supervisor_token={'set' if expected else 'unset'} "
+        f"bearer={'yes' if bearer else 'no'} "
+        f"bearer_len={len(bearer)} bearer_head={bearer[:4] or '-'} bearer_tail={bearer[-4:] or '-'} "
+        f"header_check={'yes' if header_check else 'missing'} "
+        f"access_check={'yes' if access_check else 'missing'} "
+        f"header_auth={bool(header_user)} access_token_auth={bool(token_user)}"
+    )
+    logger.warning("NodePulse relay view rejected: %s", reason)
+    return reason
 
 
 def _coordinator_for(hass: HomeAssistant):
@@ -101,8 +146,9 @@ class NodePulseTrackView(HomeAssistantView):
 
     async def post(self, request: web.Request) -> web.Response:
         hass: HomeAssistant = request.app["hass"]
-        if not _validate_token(hass, request):
-            return web.json_response({"error": "Unauthorized"}, status=401)
+        reason = await _validate_token(hass, request)
+        if reason:
+            return web.json_response({"error": "Unauthorized", "reason": reason}, status=401)
 
         try:
             body = await request.json()
@@ -197,8 +243,9 @@ class NodePulseTrackedNodesView(HomeAssistantView):
 
     async def get(self, request: web.Request) -> web.Response:
         hass: HomeAssistant = request.app["hass"]
-        if not _validate_token(hass, request):
-            return web.json_response({"error": "Unauthorized"}, status=401)
+        reason = await _validate_token(hass, request)
+        if reason:
+            return web.json_response({"error": "Unauthorized", "reason": reason}, status=401)
         coordinator = self._get_coordinator(hass)
         node_ids = list(coordinator.tracked_nodes) if coordinator else []
         logger.debug("Tracked-nodes request -> %s", node_ids)

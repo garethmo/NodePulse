@@ -358,6 +358,44 @@ class TestGetStatus:
             assert result["connected"] is True
             assert "my_info" in result
 
+    def test_get_status_sync_enriched_self_telemetry(self):
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
+        )
+        conn._connected = True
+
+        my_info = Mock()
+        my_info.my_node_num = 0x12345678
+        my_info.macaddr = b"\x11\x22\x33\x44\x55\x66"
+
+        my_node = {
+            "user": {"longName": "Base", "shortName": "BASE", "hwModel": "HELTEC_V3"},
+            "deviceMetrics": {"batteryLevel": 88, "uptimeSeconds": 90061},
+            "lastHeard": 1700000000,
+        }
+        iface = Mock()
+        iface.myInfo = my_info
+        iface.metadata = None
+        iface.nodes = {"!12345678": my_node}
+        iface.nodesByNum = {0x12345678: my_node}
+        iface.localNode.localConfig = None
+
+        conn._interface = iface
+        with patch.object(conn, "_normalize_role", return_value="CLIENT") as mock_role:
+            result = conn._get_status_sync()
+            mock_role.assert_called()
+
+        assert result["connected"] is True
+        info = result["my_info"]
+        assert info["node_id"] == "!12345678"
+        assert info["long_name"] == "Base"
+        assert info["battery_level"] == 88
+        assert info["uptime"] == 90061
+        assert info["last_heard"] == 1700000000
+        assert info["macaddr"] == "11:22:33:44:55:66"
+
 
 class TestGetNodes:
     @pytest.mark.asyncio
@@ -454,6 +492,50 @@ class TestTags:
             assert result == {"!12345678": ["tag1", "tag2"]}
 
 
+class TestFavorites:
+    @pytest.mark.asyncio
+    async def test_set_favorite(self):
+        conn = create_conn()
+        conn._connected = True
+        with patch.object(conn, "_set_favorite_sync") as mock_set_favorite_sync:
+            mock_set_favorite_sync.return_value = ["!12345678"]
+            result = await conn.set_favorite("!12345678", True)
+            assert result == ["!12345678"]
+
+    @pytest.mark.asyncio
+    async def test_get_favorites(self):
+        conn = create_conn()
+        conn._connected = True
+        with patch.object(conn, "_get_favorites_sync") as mock_get_favorites_sync:
+            mock_get_favorites_sync.return_value = ["!12345678"]
+            result = await conn.get_favorites()
+            assert result == ["!12345678"]
+
+    def test_favorites_persist_roundtrip(self):
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(connection, "_DATA_DIR", tmp), \
+                 patch.object(connection, "_FAVORITES_FILE", os.path.join(tmp, "favorites.json")):
+                conn = MeshtasticConnection(
+                    host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
+                )
+                # Add via the sync setter, which also persists to disk.
+                result = conn._set_favorite_sync("!11111111", True)
+                assert "!11111111" in result
+                result = conn._set_favorite_sync("!22222222", True)
+                assert set(result) == {"!11111111", "!22222222"}
+                # Unfavorite one.
+                result = conn._set_favorite_sync("!11111111", False)
+                assert result == ["!22222222"]
+
+                # A fresh connection loads from the same file.
+                conn2 = MeshtasticConnection(
+                    host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
+                )
+                assert conn2._get_favorites_sync() == ["!22222222"]
+
+
 class TestPositionHistory:
     @pytest.mark.asyncio
     async def test_get_position_history(self):
@@ -492,6 +574,58 @@ class TestWaypoints:
             mock_update_sync.return_value = {"name": "wp1", "lat": 5.0}
             result = await conn.update_waypoint("wp1", {"lat": 5.0})
             assert result["lat"] == 5.0
+
+    def test_capture_waypoint_sanitizes_mesh_fields(self):
+        from app.connection import _sanitize_mesh_text
+
+        assert _sanitize_mesh_text('"><script>alert(1)</script>') == 'scriptalert(1)/script'
+        assert _sanitize_mesh_text("name 'with' quotes") == "name with quotes"
+        assert _sanitize_mesh_text('a&b<c>"d\'e') == "abcde"
+        assert _sanitize_mesh_text(None) == ""
+        assert _sanitize_mesh_text(None, "fallback") == "fallback"
+        assert _sanitize_mesh_text("📍") == "📍"
+        assert _sanitize_mesh_text("\x00\x1fclean\x7f") == "clean"
+
+    def test_capture_waypoint_strips_hostile_payload(self):
+        conn = create_conn()
+        with patch.object(conn, "_save_waypoints"):
+            conn._capture_waypoint({
+                "from": 0x1234,
+                "decoded": {
+                    "waypoint": {
+                        "id": 7,
+                        "name": '"><img src=x onerror=alert(1)>',
+                        "description": "</div><script>steal()</script>",
+                        "icon": '" onload="alert(1)',
+                        "latitudeI": 400000000,
+                        "longitudeI": -100000000,
+                    }
+                },
+            })
+        stored = [w for w in conn._waypoints if w.get("id") == "!00001234-7"]
+        assert stored, "waypoint should have been captured"
+        entry = stored[0]
+        assert "<" not in entry["name"] and ">" not in entry["name"]
+        assert "<" not in entry["description"] and ">" not in entry["description"]
+        assert '"' not in entry["icon"] and "'" not in entry["icon"]
+        assert "<" not in entry["icon"] and ">" not in entry["icon"]
+        assert entry["source"] == "mesh"
+
+    def test_add_waypoint_sync_sanitizes_fields(self):
+        conn = create_conn()
+        with patch.object(conn, "_save_waypoints"):
+            entry = conn._add_waypoint_sync({
+                "name": '<script>x</script>',
+                "description": 'a"b',
+                "icon": "'>",
+                "lat": 1.0,
+                "lng": 2.0,
+            })
+        assert entry["name"] == "scriptx/script"
+        assert entry["description"] == "ab"
+        assert entry["icon"] == "📍"
+        assert entry["lat"] == 1.0
+        assert entry["lng"] == 2.0
 
 
 class TestPacketLog:
