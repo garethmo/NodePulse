@@ -2,7 +2,7 @@
 Unit tests for app/telegram_bot.py
 """
 import pytest
-from unittest.mock import Mock, MagicMock, patch, AsyncMock
+from unittest.mock import Mock, patch, AsyncMock
 import asyncio
 
 from app.telegram_bot import TelegramBot

@@ -1,0 +1,31 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "NodePulse",
+        "description": "Connect to the NodePulse addon. The access key is only needed if your Meshtastic node requires one.",
+        "data": {
+          "host": "Addon URL",
+          "access_key": "Access Key (optional)",
+          "scan_interval": "Scan interval (seconds)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect to the NodePulse addon. Check the URL and that the addon is running.",
+      "access_key": "The access key is too short or contains invalid characters."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "NodePulse Options",
+        "data": {
+          "scan_interval": "Scan interval (seconds)",
+          "ignored_nodes": "Ignored node IDs (comma-separated)"
+        }
+      }
+    },
+    "error": {}
+  }
+}

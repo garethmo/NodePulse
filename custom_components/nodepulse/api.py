@@ -38,8 +38,9 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.update_coordinator import UpdateFailed
 
-from .const import DOMAIN
+from .const import is_valid_node_id
 from .coordinator import NodePulseCoordinator
+from .helpers import coordinator_for
 
 logger = logging.getLogger(__name__)
 
@@ -122,23 +123,8 @@ async def _validate_token(hass: HomeAssistant, request: web.Request) -> str | No
     return reason
 
 
-def _coordinator_for(hass: HomeAssistant):
-    """Return the first loaded NodePulse coordinator, or None."""
-    data = hass.data.get(DOMAIN)
-    if not data:
-        return None
-    for coordinator in data.values():
-        return coordinator
-    return None
-
-
 class NodePulseTrackView(HomeAssistantView):
     """Local relay endpoint for the addon Web UI's per-node track toggle."""
-
-    def __init__(self, entry_id: str) -> None:
-        """Initialize the view."""
-        super().__init__()
-        self.entry_id = entry_id
 
     url = "/api/nodepulse/track"
     name = "api:nodepulse_track"
@@ -165,11 +151,20 @@ class NodePulseTrackView(HomeAssistantView):
         node_id = body["node_id"].strip()
         enabled = body["enabled"]
 
+        # Reject malformed ids before they can flow into config-entry options
+        # and entity unique_ids (S8).
+        if not is_valid_node_id(node_id):
+            logger.warning("Track request rejected: invalid node id %r", node_id)
+            return web.json_response(
+                {"error": f"Invalid node id {node_id!r} (expected '!hex', e.g. !890bae69)"},
+                status=400,
+            )
+
         logger.debug("Track request: node_id=%s enabled=%s", node_id, enabled)
 
         coordinator = self._get_coordinator(hass)
         if coordinator is None:
-            logger.error("Track request rejected: NodePulse integration not loaded for entry %s", self.entry_id)
+            logger.error("Track request rejected: NodePulse integration not loaded")
             return web.json_response(
                 {"error": "NodePulse integration not loaded"}, status=503
             )
@@ -185,14 +180,6 @@ class NodePulseTrackView(HomeAssistantView):
                 logger.debug("Persisted tracked nodes to config entry options")
                 hass.async_create_task(coordinator.async_refresh())
                 logger.debug("Scheduled background coordinator refresh after tracking change")
-        except ValueError as err:
-            logger.warning(
-                "Track request failed validation for %s: %s",
-                node_id, err,
-            )
-            return web.json_response(
-                {"error": "Invalid request"}, status=400
-            )
         except HomeAssistantError as err:
             logger.error(
                 "Track request failed with Home Assistant error for %s: %s",
@@ -223,20 +210,18 @@ class NodePulseTrackView(HomeAssistantView):
         )
         return web.json_response({"node_id": node_id, "enabled": enabled})
 
-    def _get_coordinator(self, hass: HomeAssistant) -> NodePulseCoordinator | None:
-        """Get the coordinator for this view's config entry."""
-        data = hass.data.get(DOMAIN)
-        if not data:
-            return None
-        return data.get(self.entry_id)
+    @staticmethod
+    def _get_coordinator(hass: HomeAssistant) -> NodePulseCoordinator | None:
+        """Get the first loaded coordinator.
+
+        The view is registered once per HA core process (Q3) rather than once
+        per config entry, so it resolves whichever entry is currently loaded
+        instead of being bound to a stale entry id.
+        """
+        return coordinator_for(hass)
 
 
 class NodePulseTrackedNodesView(HomeAssistantView):
-    def __init__(self, entry_id: str) -> None:
-        """Initialize the view."""
-        super().__init__()
-        self.entry_id = entry_id
-
     url = "/api/nodepulse/tracked-nodes"
     name = "api:nodepulse_tracked_nodes"
     requires_auth = False
@@ -251,9 +236,7 @@ class NodePulseTrackedNodesView(HomeAssistantView):
         logger.debug("Tracked-nodes request -> %s", node_ids)
         return web.json_response({"node_ids": node_ids})
 
-    def _get_coordinator(self, hass: HomeAssistant) -> NodePulseCoordinator | None:
-        """Get the coordinator for this view's config entry."""
-        data = hass.data.get(DOMAIN)
-        if not data:
-            return None
-        return data.get(self.entry_id)
+    @staticmethod
+    def _get_coordinator(hass: HomeAssistant) -> NodePulseCoordinator | None:
+        """Get the first loaded coordinator (see NodePulseTrackView)."""
+        return coordinator_for(hass)

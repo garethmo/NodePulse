@@ -28,6 +28,8 @@ from .const import (
     CONF_TRACKED_NODES,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
+    is_valid_node_id,
+    normalize_node_id,
 )
 from .host_candidates import host_candidates_for_addon
 
@@ -38,6 +40,11 @@ logger = logging.getLogger(__name__)
 # recent ones rather than flooding the logbook and device triggers. A normal
 # poll surfaces only a handful of genuinely new messages.
 _NEW_MESSAGE_REPLAY_THRESHOLD = 5
+
+# The integration retains at most this many of the most recent mesh messages
+# in ``coordinator.data["messages"]``. Keeps the HA-side buffer bounded (S11)
+# while still giving the message sensors a rolling window of history.
+_MESSAGE_HISTORY_LIMIT = 500
 
 
 class NodePulseCoordinator(DataUpdateCoordinator):
@@ -87,22 +94,6 @@ class NodePulseCoordinator(DataUpdateCoordinator):
             config_entry.options.get(CONF_TRACKED_NODES, [])
         )
 
-        # Bookkeeping for dynamic per-node entity discovery. Kept on the
-        # coordinator (per config entry) rather than module-level so a reload
-        # (e.g. triggered by the "Track in HA" toggle) resets cleanly and
-        # entities are re-created instead of being skipped forever. One pair
-        # per platform because each platform tracks its own created entities.
-        self.registered_sensor_ids: Set[str] = set()
-        self.registered_sensor_entities: List[Any] = []
-        self.registered_tracker_ids: Set[str] = set()
-        self.registered_tracker_entities: List[Any] = []
-        # Declared here (not monkey-patched in platform setup) so static
-        # analysis can see the full coordinator state.
-        self.registered_binary_ids: Set[str] = set()
-        self.registered_binary_entities: List[Any] = []
-        self.registered_geo_ids: Set[str] = set()
-        self.registered_geo_entities: List[Any] = []
-
         # Message IDs already handed to the logbook / device-trigger systems,
         # so each arriving message is processed exactly once. Bounded so it
         # can't grow without limit across long uptimes.
@@ -127,10 +118,15 @@ class NodePulseCoordinator(DataUpdateCoordinator):
         Add or remove a node from the tracked set.
 
         Returns True if the membership changed (so the caller knows whether to
-        persist + rediscover), False if it was already in the requested state.
+        persist + rediscover), False if it was already in the requested state
+        or the id is not a valid canonical ``!hex`` node id (S8).
         """
         node_id = (node_id or "").strip()
-        if not node_id:
+        if not is_valid_node_id(node_id):
+            logger.warning(
+                "Ignoring invalid tracked-node id %r (expected '!hex', e.g. !890bae69)",
+                node_id,
+            )
             return False
         if enabled:
             if node_id in self.tracked_nodes:
@@ -141,6 +137,23 @@ class NodePulseCoordinator(DataUpdateCoordinator):
             return False
         self.tracked_nodes.discard(node_id)
         return True
+
+    def get_node(self, node_id: str) -> Dict[str, Any] | None:
+        """Return a node dict by id using the per-refresh index (O(1)).
+
+        Prefer this over scanning ``data["nodes"]`` in entity properties, which
+        is called for every entity on every state write (S10).
+        """
+        data = self.data or {}
+        index = data.get("nodes_by_id")
+        if index is None:
+            # Fallback: index not yet built (e.g. data from before the index
+            # was introduced). Linear scan is acceptable in this rare case.
+            for node in data.get("nodes", []):
+                if node.get("id") == node_id:
+                    return node
+            return None
+        return index.get(node_id)
 
     @staticmethod
     def _message_key(message: Dict[str, Any]) -> Any:
@@ -366,10 +379,33 @@ class NodePulseCoordinator(DataUpdateCoordinator):
                 new_traceroutes.append(nid)
                 self._last_traceroute_ts[nid] = ts
 
+        # Bound the HA-side message buffer (S11): keep only the most recent
+        # messages so ``coordinator.data`` can't grow without limit across a
+        # long uptime. New-message detection above already ran against the full
+        # batch, so nothing new is lost.
+        messages = messages[-_MESSAGE_HISTORY_LIMIT:]
+
+        # Pre-index nodes and messages once per refresh so entity properties do
+        # O(1) lookups instead of rescaming the full lists (S10/S11).
+        nodes_by_id: Dict[str, Any] = {}
+        for node in nodes:
+            nid = node.get("id")
+            if nid:
+                nodes_by_id[nid] = node
+
+        messages_by_node: Dict[str, List[Dict[str, Any]]] = {}
+        for m in messages:
+            for mid in (m.get("from_id"), m.get("to_id")):
+                norm = normalize_node_id(mid)
+                if norm:
+                    messages_by_node.setdefault(norm, []).append(m)
+
         return {
             "status": status,
             "nodes": nodes,
+            "nodes_by_id": nodes_by_id,
             "messages": messages,
+            "messages_by_node": messages_by_node,
             "channels": channels or [],
             "new_messages": new_messages,
             "new_traceroutes": new_traceroutes,

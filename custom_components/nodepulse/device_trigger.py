@@ -29,18 +29,9 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.typing import ConfigType
 
 from .const import DOMAIN
+from .helpers import coordinator_for
 
 logger = logging.getLogger(__name__)
-
-
-def _coordinator_for(hass: HomeAssistant):
-    """Return the first loaded NodePulse coordinator, or None."""
-    data = hass.data.get(DOMAIN)
-    if not data:
-        return None
-    for coordinator in data.values():
-        return coordinator
-    return None
 
 _TRIGGER_TYPES = {
     "message_received",
@@ -126,7 +117,7 @@ def _is_mesh_node_device(hass: HomeAssistant, device_id: str) -> bool:
     node_id = _async_get_node_id(hass, device_id)
     if not node_id or not node_id.startswith("!"):
         return False
-    coordinator = _coordinator_for(hass)
+    coordinator = coordinator_for(hass)
     if coordinator is None:
         return True  # be permissive if coordinator isn't ready yet
     nodes = (coordinator.data or {}).get("nodes", [])
@@ -159,7 +150,23 @@ def async_attach_trigger(
         def _handle(event):
             if not _match(event):
                 return
-            hass.async_create_task(action(event))
+            # Build proper automation trigger variables (Q6) instead of passing
+            # the raw bus Event, so ``trigger.platform`` / ``trigger.type`` etc.
+            # are available to the automation.
+            hass.async_run_hass_job(
+                action,
+                {
+                    "trigger": {
+                        "platform": "device",
+                        "domain": DOMAIN,
+                        "device_id": device_id,
+                        "type": trigger_type,
+                        EVENT_NODE_ID: node_id,
+                    },
+                    "event": event.data,
+                },
+                event.context,
+            )
 
         return hass.bus.async_listen(EVENT_TRACEROUTE_COMPLETE, _handle)
 
@@ -187,7 +194,26 @@ def async_attach_trigger(
     def _handle_msg(event):
         if not _match_msg(event):
             return
-        hass.async_create_task(action(event))
+        payload = event.data
+        hass.async_run_hass_job(
+            action,
+            {
+                "trigger": {
+                    "platform": "device",
+                    "domain": DOMAIN,
+                    "device_id": device_id,
+                    "type": trigger_type,
+                    EVENT_NODE_ID: node_id,
+                    EVENT_DIRECTION: direction,
+                    EVENT_CHANNEL: payload.get(EVENT_CHANNEL),
+                    EVENT_IS_DM: payload.get(EVENT_IS_DM),
+                    EVENT_FROM_ID: payload.get(EVENT_FROM_ID),
+                    EVENT_TEXT: payload.get(EVENT_TEXT),
+                },
+                "event": payload,
+            },
+            event.context,
+        )
 
     return hass.bus.async_listen(EVENT_MESH_MESSAGE, _handle_msg)
 

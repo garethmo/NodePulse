@@ -2,6 +2,12 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.19.2] - 2026-08-19
+### Fixed
+- **Traceroute spam no longer wedges the app** — Running many traceroutes in quick succession could pile up an unbounded number of background tasks and threads (each serialized traceroute can block for up to 300 s), eventually freezing the addon. The pending queue is now capped (8); further requests are rejected with `dispatched: false` instead of being accepted and frozen.
+- **Traceroute replies are attributed to the right node** — RouteDiscovery replies are now matched to the request that produced them instead of blindly popping the oldest pending request. This prevents replies from timed-out requests or auto-traceroutes from being stored under the wrong node and from leaking stale queue entries.
+- **Auto-traceroute joins the queue** — Auto-traceroutes triggered by newly-discovered nodes are now registered in the bounded pending queue (deduped) and respect the cap, so they can no longer spawn an unbounded number of threads or steal a manual request's reply.
+
 ## [1.16.0] - 2026-08-14
 ### Added
 - **Comprehensive Test Coverage** — Added extensive unit and E2E test suite with 80 tests covering core functionality. Includes unit tests for configuration management, security scanning, MQTT bridge filtering, and API route handlers. E2E tests expanded to cover additional API endpoints including position history, waypoints, tags, traceroute, and node management. Coverage reporting integrated with pytest-cov, achieving 26% overall coverage with 95%+ coverage on critical modules like config.py and security_scanner.py.

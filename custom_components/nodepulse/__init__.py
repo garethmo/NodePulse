@@ -18,7 +18,6 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.discovery import async_load_platform
 
 from .const import (
     ATTR_CHANNEL,
@@ -32,6 +31,7 @@ from .const import (
 )
 from .coordinator import NodePulseCoordinator
 from .api import NodePulseTrackView, NodePulseTrackedNodesView
+from .helpers import coordinator_for
 
 from .device_trigger import (
     EVENT_MESH_MESSAGE,
@@ -68,15 +68,6 @@ _REQUEST_POSITION_SCHEMA = vol.Schema({vol.Required(ATTR_TARGET): _NODE_ID})
 _TRACE_ROUTE_SCHEMA = vol.Schema({vol.Required(ATTR_TARGET): _NODE_ID})
 
 
-def _coordinator_for(hass: HomeAssistant) -> NodePulseCoordinator | None:
-    data = hass.data.get(DOMAIN)
-    if not data:
-        return None
-    for coordinator in data.values():
-        return coordinator
-    return None
-
-
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the NodePulse integration (integration level, once).
 
@@ -84,9 +75,14 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     remain available across config-entry (un)loads and work correctly when
     multiple NodePulse addons (config entries) are configured. Each handler
     resolves the target coordinator at call time.
+
+    The HTTP relay views are also registered exactly once here (Q3). Their URL
+    and name are fixed, so registering per config entry would collide when an
+    entry is reloaded or a second entry is added. The views resolve the
+    coordinator at request time instead of being bound to a specific entry.
     """
     async def _send_message(call):
-        coordinator = _coordinator_for(hass)
+        coordinator = coordinator_for(hass)
         if coordinator is None:
             raise HomeAssistantError("NodePulse is not configured")
         target = call.data.get(ATTR_TARGET)
@@ -97,13 +93,13 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         )
 
     async def _request_position(call):
-        coordinator = _coordinator_for(hass)
+        coordinator = coordinator_for(hass)
         if coordinator is None:
             raise HomeAssistantError("NodePulse is not configured")
         await coordinator.async_request_position(call.data[ATTR_TARGET])
 
     async def _trace_route(call):
-        coordinator = _coordinator_for(hass)
+        coordinator = coordinator_for(hass)
         if coordinator is None:
             raise HomeAssistantError("NodePulse is not configured")
         await coordinator.async_trace_route(call.data[ATTR_TARGET])
@@ -118,6 +114,10 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     hass.services.async_register(
         DOMAIN, SERVICE_TRACE_ROUTE, _trace_route, schema=_TRACE_ROUTE_SCHEMA
     )
+
+    hass.http.register_view(NodePulseTrackView())
+    hass.http.register_view(NodePulseTrackedNodesView())
+
     return True
 
 
@@ -138,17 +138,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 set(current_options.keys()) - allowed_keys
             )
             hass.config_entries.async_update_entry(entry, options=cleaned_options)
-    
-    # Register entry-specific HTTP views for the addon Web UI's "Track in HA"
-    # toggle BEFORE the coordinator's first refresh. If the addon is
-    # temporarily unreachable and that first refresh raises, the entry would
-    # otherwise fail to set up and these routes would 404, breaking the addon
-    # relay entirely. The views tolerate a missing coordinator and return 503
-    # until data is available. Each config entry gets its own view instance so
-    # the coordinator is looked up by entry_id, supporting multiple NodePulse
-    # addon instances.
-    hass.http.register_view(NodePulseTrackView(entry.entry_id))
-    hass.http.register_view(NodePulseTrackedNodesView(entry.entry_id))
 
     coordinator = NodePulseCoordinator(hass, entry)
 
@@ -157,7 +146,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     except Exception as exc:
         # Don't let a transient addon connectivity failure take down the whole
         # entry. The coordinator keeps retrying on its refresh schedule, and
-        # the relay views above return 503 until data becomes available.
+        # the relay views (registered once in async_setup) return 503 until
+        # data becomes available.
         logger.warning(
             "NodePulse initial coordinator refresh failed (entry=%s): %s",
             entry.entry_id, exc,
@@ -165,26 +155,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
-    # Forward to all platform modules (binary_sensor, sensor, device_tracker).
+    # Forward to all platform modules (binary_sensor, sensor, device_tracker,
+    # geo_location, notify). The notify platform is now a real config-entry
+    # platform so its entities are tracked and unloaded with the entry (Q2).
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-
-    # Register the notify platform so `notify.mesh_<entry>` entities exist,
-    # plus one entity per configured channel (matching the official Meshtastic
-    # integration's per-channel notify targets).
-    async def _load_notify_platforms():
-        base = {"entry_id": entry.entry_id}
-        await async_load_platform(hass, "notify", DOMAIN, base, {})
-        channels = (coordinator.data or {}).get("channels") or []
-        for ch in channels:
-            await async_load_platform(
-                hass,
-                "notify",
-                DOMAIN,
-                {**base, "channel": ch},
-                {},
-            )
-
-    hass.async_create_task(_load_notify_platforms())
 
     # Listen for new mesh messages: fire device-trigger events and write
     # logbook entries.
@@ -203,6 +177,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
+def _self_node_id(status) -> str | None:
+    """Return the canonical ``!hex`` self/gateway node id, or None.
+
+    The addon reports ``my_node_num`` as an int, but a malformed payload (or a
+    legacy addon that serialised it as a string) would otherwise crash the whole
+    event-listener callback on ``int()`` (Q16). Coerce defensively and fall
+    back to None so a bad value can never break message processing.
+    """
+    my_info = (status or {}).get("my_info") or {}
+    my_num = my_info.get("my_node_num")
+    if my_num is None:
+        return None
+    try:
+        return "!" + format(int(my_num) & 0xFFFFFFFF, "08x")
+    except (TypeError, ValueError):
+        return None
+
+
 def _on_data_update(hass: HomeAssistant, coordinator: NodePulseCoordinator, entry: ConfigEntry) -> None:
     """React to a coordinator refresh: surface new messages and events."""
     data = coordinator.data or {}
@@ -219,40 +211,45 @@ def _on_data_update(hass: HomeAssistant, coordinator: NodePulseCoordinator, entr
     if not new_messages:
         return
 
-    status = data.get("status", {})
-    my_info = status.get("my_info") or {}
-    my_num = my_info.get("my_node_num")
-    self_id = ("!" + format(int(my_num), "08x")) if my_num is not None else None
+    self_id = _self_node_id(data.get("status"))
 
     for msg in new_messages:
-        from_id = msg.get("from_id")
-        to_id = msg.get("to_id")
-        is_outgoing = (from_id == self_id) if self_id else bool(msg.get("outgoing"))
+        try:
+            _handle_new_message(hass, entry, msg, self_id)
+        except Exception:  # noqa: BLE001 - one bad message must not kill the listener
+            logger.exception("NodePulse failed to process a new mesh message: %r", msg)
 
-        if is_outgoing:
-            # A sent message is attributed to the gateway (local) device,
-            # matching the official integration where gateway nodes expose the
-            # richer "sent" triggers. Fall back to the recipient for DMs.
-            node_id = self_id or to_id
-            direction = "sent"
-        else:
-            # A received message is attributed to its sender's device.
-            node_id = from_id
-            direction = "received"
 
-        hass.bus.async_fire(
-            EVENT_MESH_MESSAGE,
-            {
-                EVENT_NODE_ID: node_id,
-                EVENT_DIRECTION: direction,
-                EVENT_CHANNEL: msg.get("channel", 0),
-                EVENT_IS_DM: bool(msg.get("is_dm")),
-                EVENT_TEXT: msg.get("text", ""),
-                EVENT_FROM_ID: from_id,
-            },
-        )
+def _handle_new_message(hass, entry, msg, self_id) -> None:
+    """Process a single new mesh message into events + logbook entries (Q5)."""
+    from_id = msg.get("from_id")
+    to_id = msg.get("to_id")
+    is_outgoing = (from_id == self_id) if self_id else bool(msg.get("outgoing"))
 
-        _logbook_message(hass, entry, msg, node_id, direction)
+    if is_outgoing:
+        # A sent message is attributed to the gateway (local) device,
+        # matching the official integration where gateway nodes expose the
+        # richer "sent" triggers. Fall back to the recipient for DMs.
+        node_id = self_id or to_id
+        direction = "sent"
+    else:
+        # A received message is attributed to its sender's device.
+        node_id = from_id
+        direction = "received"
+
+    hass.bus.async_fire(
+        EVENT_MESH_MESSAGE,
+        {
+            EVENT_NODE_ID: node_id,
+            EVENT_DIRECTION: direction,
+            EVENT_CHANNEL: msg.get("channel", 0),
+            EVENT_IS_DM: bool(msg.get("is_dm")),
+            EVENT_TEXT: msg.get("text", ""),
+            EVENT_FROM_ID: from_id,
+        },
+    )
+
+    _logbook_message(hass, entry, msg, node_id, direction)
 
 
 def _logbook_message(
@@ -280,23 +277,15 @@ def _logbook_message(
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload a config entry and clean up resources."""
+    """Unload a config entry and clean up resources.
+
+    ``notify`` is now a regular entry-tracked platform (part of ``PLATFORMS``),
+    so ``async_unload_platforms`` unloads it like any other platform — there is
+    no separate legacy load path to track anymore (Q2/Q9).
+    """
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
-    # Check the notify unload independently — its result must be AND-ed in so we
-    # don't remove the coordinator from hass.data if either platform failed to
-    # unload cleanly. (B4: previously the notify result was ignored.)
-    try:
-        notify_unloaded = await hass.config_entries.async_unload_platforms(entry, ["notify"])
-    except ValueError as err:
-        # If the notify platform wasn't loaded, treat this as successful unload
-        if "not loaded" in str(err):
-            notify_unloaded = True
-        else:
-            # Re-raise if it's a different ValueError
-            raise
-
-    if unloaded and notify_unloaded:
+    if unloaded:
         hass.data[DOMAIN].pop(entry.entry_id, None)
 
     # When the last config entry is gone, remove the integration-level service

@@ -221,7 +221,7 @@ The `custom_components/nodepulse/` package registers entities, services, device 
 
 | Entity | ID Suffix | Device Class | Unit | Description |
 |--------|-----------|--------------|------|-------------|
-| SNR | `_{node_id}_snr` | `signal_strength` | dB | Last received signal-to-noise ratio |
+| SNR | `_{node_id}_snr` | — | dB | Last received signal-to-noise ratio |
 | RSSI | `_{node_id}_rssi` | `signal_strength` | dBm | Last received signal strength |
 | Hops Away | `_{node_id}_hops` | — | — | How many hops from the local node |
 | Last Heard | `_{node_id}_last_heard` | `timestamp` | — | When the node was last heard |
@@ -240,22 +240,26 @@ The `custom_components/nodepulse/` package registers entities, services, device 
 | Gas Resistance | `_{node_id}_gas_resistance` | — | MΩ | Gas sensor resistance (e.g. MQ-135) |
 | Distance | `_{node_id}_distance` | — | km | Haversine distance from self/gateway node |
 | Neighbor Count | `_{node_id}_neighbor_count` | — | — | Number of peers this node sees from NEIGHBORINFO_APP |
-| Scheduled Message | `_{node_id}_scheduled` | — | — | Message queued for future delivery |
+| Position Fixes | `_{node_id}_position_fix_count` | — | — | Number of recorded GPS trail points |
 | Message Received | `_{node_id}_message_received` | — | — | Text of last received message |
 | Message Sent | `_{node_id}_message_sent` | — | — | Text of last sent message |
+| Tags | `_{node_id}_tags` | — | — | User-defined tags, comma-separated |
+| Signal Quality | `_{node_id}_signal_quality` | — | — | Rolling rating: excellent / good / fair / poor / no_signal |
+
+> **Entity IDs:** per-node sensors (and the per-node binary sensor/tracker) use `_attr_has_entity_name`, so the resolved entity ID is prefixed by the node's friendly name — e.g. `sensor.r1_mini_snr`, `binary_sensor.r1_mini_online`. The suffix shown is the `unique_id` suffix (`{entry_id}_{node_id}_<metric>`).
 
 ### Binary Sensors
 
 | Entity | ID | Purpose |
 |--------|----|---------|
 | Connection | `binary_sensor.nodepulse_connection` | True when the addon's TCP link to the meshtastic node is up |
-| Online | `binary_sensor.nodepulse_<node>_online` | True if the node was heard within the last 3 hours |
+| Online | `binary_sensor.<node_name>_online` | True if the node was heard within the last 3 hours |
 
 ### Device Trackers
 
 | Entity | Source Type | Extra Attributes |
 |--------|-------------|-----------------|
-| `device_tracker.nodepulse_<node>` | `GPS` | `altitude`, `snr`, `rssi`, `hops_away`, `hw_model`, `short_name`, `last_position_fix`, `stale` |
+| `device_tracker.<node_name>_location` | `GPS` | `altitude`, `snr`, `rssi`, `hops_away`, `hw_model`, `short_name`, `last_position_fix`, `stale` |
 
 Created only for nodes with a valid GPS fix. Plots directly on the native Home Assistant map card. The `stale` attribute is `True` for nodes that the radio has evicted from its bounded DB but are kept visible from the persistent store.
 
@@ -263,8 +267,8 @@ Created only for nodes with a valid GPS fix. Plots directly on the native Home A
 
 | Entity | Scope |
 |--------|-------|
-| `notify.mesh_<entry>` | Gateway — supports `target` (DM) and `data.channel` |
-| `notify.mesh_<entry>_channel_<name>` | Per configured channel — always broadcasts on that channel |
+| `notify.nodepulse` | Gateway — supports `target` (DM) and `data.channel` |
+| `notify.nodepulse_<name>` | Per configured channel — always broadcasts on that channel |
 
 ### Services
 
@@ -327,13 +331,17 @@ NodePulse Addon (Python / aiohttp :8099)
       │
       ▼ (REST /api/* via HA Ingress)
 NodePulse Integration (Python / DataUpdateCoordinator)
+  ├── coordinator.py — DataUpdateCoordinator + addon REST client
   ├── binary_sensor.py — Connection + Online
-  ├── sensor.py — 19 per-node metric sensors
+  ├── sensor.py — 24 per-node metric sensors
   ├── device_tracker.py — GPS device trackers
+  ├── geo_location.py — Geo location entities for the native map card
   ├── notify.py — Gateway + per-channel notify entities
   ├── device_action.py — 3 actions per node
   ├── device_trigger.py — 3 triggers per node
   ├── api.py — Track/tracked-nodes HTTP views
+  ├── helpers.py — shared coordinator lookup + entity discovery
+  ├── config_flow.py — setup/options wizard
   └── services.yaml → 3 integration services
 ```
 

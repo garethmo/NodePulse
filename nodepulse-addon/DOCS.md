@@ -318,6 +318,11 @@ python -m app.main
 # Open http://localhost:8099/ui/index.html
 ```
 
+> ⚠️ `dev_options.json` ships with empty placeholder secrets (`access_key`,
+> `ha_access_token`, `telegram_bot_token`). **Never commit real tokens or
+> access keys** — keep placeholders empty and put real values only in
+> `/data/options.json` (HAOS) or an uncommitted local copy.
+
 ---
 
 ## Contributing

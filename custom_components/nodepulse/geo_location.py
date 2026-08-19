@@ -6,24 +6,23 @@ HA renders these on the built-in map card natively.
 
 Each entity exposes:
   - Current lat/lng (matching the node's latest position)
-  - An extra ``trail_geojson`` attribute containing a GeoJSON LineString
-    of the node's position history trail (when available).
+  - Node metadata (SNR, hops, short name, position-fix count) as extra
+    attributes.
 
-The HA Map card natively plots ``geo_location`` entities and can render
-their trails via a ``geo_json_source`` configuration.
+The HA Map card natively plots ``geo_location`` entities.
 """
-import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from homeassistant.components.geo_location import GeolocationEvent
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import NodePulseCoordinator
+from .helpers import NodeDiscovery
 
 logger = logging.getLogger(__name__)
 
@@ -33,66 +32,37 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Dynamic geo_location discovery — same pattern as sensor.py."""
+    """Dynamic geo_location discovery — shared NodeDiscovery helper (Q12)."""
     coordinator: NodePulseCoordinator = hass.data[DOMAIN][entry.entry_id]
-    # Reset discovery bookkeeping on each setup (also runs after a reload), so
-    # entities are re-created rather than skipped by a stale set.
-    coordinator.registered_geo_ids = set()
-    coordinator.registered_geo_entities = []
-    registered_node_ids = coordinator.registered_geo_ids
-    registered_entities = coordinator.registered_geo_entities
 
-    @callback
-    def _discover() -> None:
-        nodes: List[Dict] = (coordinator.data or {}).get("nodes", [])
-        visible_ids = {n.get("id") for n in nodes if n.get("id")}
+    def _has_gps_fix(node: Dict[str, Any]) -> bool:
+        lat = node.get("latitude")
+        lon = node.get("longitude")
+        if lat is None or lon is None:
+            return False
+        return not (abs(lat) < 1e-9 and abs(lon) < 1e-9)
 
-        # Remove entities for nodes no longer tracked or gone.
-        for entity in list(registered_entities):
-            nid = getattr(entity, "_node_id", None)
-            if nid is not None and (
-                nid not in coordinator.tracked_nodes or nid not in visible_ids
-            ):
-                registered_entities.remove(entity)
-                registered_node_ids.discard(nid)
-                hass.async_create_task(entity.async_remove(force_remove=True))
-
-        new_entities = []
-        for node in nodes:
-            node_id = node.get("id")
-            if not node_id or node_id in registered_node_ids:
-                continue
-            if node_id not in coordinator.tracked_nodes:
-                continue
-            lat = node.get("latitude")
-            lon = node.get("longitude")
-            if lat is None or lon is None:
-                continue
-            if abs(lat) < 1e-9 and abs(lon) < 1e-9:
-                continue
-
-            registered_node_ids.add(node_id)
-            new_entities.append(NodeGeoLocation(coordinator, entry, node_id))
-            logger.debug("Registering geo_location for node (node_id=%s)", node_id)
-
-        if new_entities:
-            async_add_entities(new_entities)
-
-    _discover()
-    entry.async_on_unload(coordinator.async_add_listener(_discover))
+    discovery = NodeDiscovery(coordinator, entry)
+    discovery.attach(
+        hass,
+        async_add_entities,
+        should_create=_has_gps_fix,
+        make_entities=lambda node: NodeGeoLocation(coordinator, entry, node["id"]),
+    )
 
 
 class NodeGeoLocation(CoordinatorEntity, GeolocationEvent):
     """Geo location entity for one Meshtastic node.
 
-    Appears on the HA native map card. Provides the current position and
-    a ``trail_geojson`` extra attribute for trail rendering.
+    Appears on the HA native map card and provides the current position plus
+    a few scalar node metrics as extra attributes. Position-history trails are
+    not exposed by the coordinator (the addon serves them separately to the
+    Web UI), so there is intentionally no ``trail_geojson`` attribute (Q13).
     """
 
     _attr_has_entity_name = True
     _attr_name = "Map Location"
     _attr_icon = "mdi:map-marker-radius"
-    _attr_source_type = "gps"
     # Required by GeolocationEvent.source (@cached_property → self._attr_source).
     # Must be set at class level; omitting it causes an AttributeError on every
     # state write because the cached_property resolver raises before HA can catch it.
@@ -110,8 +80,7 @@ class NodeGeoLocation(CoordinatorEntity, GeolocationEvent):
 
         name = f"Mesh Node {node_id}"
         model = "Meshtastic Node"
-        nodes = (coordinator.data or {}).get("nodes", [])
-        node = next((n for n in nodes if n.get("id") == node_id), None)
+        node = coordinator.get_node(node_id)
         if node:
             short = node.get("short_name")
             long_n = node.get("long_name")
@@ -132,11 +101,7 @@ class NodeGeoLocation(CoordinatorEntity, GeolocationEvent):
         }
 
     def _get_node(self) -> Optional[Dict[str, Any]]:
-        nodes = (self.coordinator.data or {}).get("nodes", [])
-        for node in nodes:
-            if node.get("id") == self._node_id:
-                return node
-        return None
+        return self.coordinator.get_node(self._node_id)
 
     @property
     def latitude(self) -> Optional[float]:
@@ -175,24 +140,3 @@ class NodeGeoLocation(CoordinatorEntity, GeolocationEvent):
     @property
     def available(self) -> bool:
         return super().available and self._get_node() is not None
-
-    @property
-    def trail_geojson(self) -> Optional[Dict[str, Any]]:
-        """Return GeoJSON LineString of the node's position history trail.
-
-        The Home Assistant Map card can render this via a
-        ``geo_json_source`` configuration to draw the node's GPS trail.
-        """
-        node = self._get_node()
-        if not node:
-            return None
-        trail = node.get("position_fix_count")
-        # Position history is stored per-node in the addon; we surface
-        # the count only here since the full trail is large. The Web UI
-        # fetches it separately from /api/position-history if needed.
-        # Return a minimal LineString using available lat/lng from the node
-        # if we had stored history, but for now return None since the
-        # coordinator doesn't surface the full trail in /api/nodes.
-        # TODO: When the coordinator stores position history per node,
-        # build a LineString from the trail coordinates.
-        return None

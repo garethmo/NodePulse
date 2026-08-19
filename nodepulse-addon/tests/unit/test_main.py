@@ -3,8 +3,7 @@ Unit tests for app/main.py
 """
 import asyncio
 import pytest
-from unittest.mock import Mock, MagicMock, patch, AsyncMock
-from aiohttp import web
+from unittest.mock import Mock, patch, AsyncMock
 
 from app import main
 
@@ -230,7 +229,6 @@ class TestBuildApp:
         add_get_calls = [call[0][0] for call in mock_app.router.add_get.call_args_list]
         add_post_calls = [call[0][0] for call in mock_app.router.add_post.call_args_list]
         add_put_calls = [call[0][0] for call in mock_app.router.add_put.call_args_list]
-        add_delete_calls = [call[0][0] for call in mock_app.router.add_delete.call_args_list]
 
         assert "/api/status" in add_get_calls
         assert "/api/nodes" in add_get_calls
@@ -248,7 +246,7 @@ class TestServeIndex:
         
         with patch("app.main.web.FileResponse") as mock_file_response:
             mock_file_response.return_value = Mock()
-            result = await main._serve_index(mock_request)
+            await main._serve_index(mock_request)
             mock_file_response.assert_called_once()
 
 

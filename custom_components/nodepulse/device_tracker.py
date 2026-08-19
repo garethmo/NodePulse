@@ -14,17 +14,18 @@ we are receiving position data from the mesh. TrackerEntity is the correct
 choice for externally-reported GPS coordinates.
 """
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from homeassistant.components.device_tracker import SourceType
 from homeassistant.components.device_tracker.config_entry import TrackerEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import NodePulseCoordinator
+from .helpers import NodeDiscovery
 
 logger = logging.getLogger(__name__)
 
@@ -35,63 +36,28 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """
-    Dynamic tracker discovery — same pattern as sensor.py.
+    Dynamic tracker discovery — shared NodeDiscovery helper (Q12).
 
     We only create a tracker for nodes that actually report GPS coordinates.
     Nodes without GPS still appear in the node list panel and sensors but
     do not clutter the HA map with unknown-location pins.
     """
     coordinator: NodePulseCoordinator = hass.data[DOMAIN][entry.entry_id]
-    # Reset discovery bookkeeping on each setup so a reload re-creates trackers
-    # instead of skipping them due to a stale set.
-    coordinator.registered_tracker_ids = set()
-    coordinator.registered_tracker_entities = []
-    registered_node_ids = coordinator.registered_tracker_ids
-    registered_entities = coordinator.registered_tracker_entities
 
-    @callback
-    def _discover_new_trackers() -> None:
-        nodes: List[Dict] = (coordinator.data or {}).get("nodes", [])
-        visible_ids = {n.get("id") for n in nodes if n.get("id")}
+    def _has_gps_fix(node: Dict[str, Any]) -> bool:
+        lat = node.get("latitude")
+        lon = node.get("longitude")
+        if lat is None or lon is None:
+            return False
+        return not (abs(lat) < 1e-9 and abs(lon) < 1e-9)
 
-        # Remove trackers for nodes that are no longer tracked (or gone).
-        for entity in list(registered_entities):
-            nid = getattr(entity, "_node_id", None)
-            if nid is not None and (
-                nid not in coordinator.tracked_nodes or nid not in visible_ids
-            ):
-                registered_entities.remove(entity)
-                registered_node_ids.discard(nid)
-                hass.async_create_task(entity.async_remove(force_remove=True))
-
-        new_trackers = []
-
-        for node in nodes:
-            node_id = node.get("id")
-            if not node_id or node_id in registered_node_ids:
-                continue
-
-            # Only one tracked node gets a tracker (the Web UI toggle drives
-            # this), and only if it has reported at least one GPS fix.
-            if node_id not in coordinator.tracked_nodes:
-                continue
-
-            lat = node.get("latitude")
-            lon = node.get("longitude")
-            if lat is None or lon is None:
-                continue
-            if abs(lat) < 1e-9 and abs(lon) < 1e-9:
-                continue
-
-            registered_node_ids.add(node_id)
-            new_trackers.append(NodeTracker(coordinator, entry, node_id))
-            logger.debug("Registering device tracker for node (node_id=%s)", node_id)
-
-        if new_trackers:
-            async_add_entities(new_trackers)
-
-    _discover_new_trackers()
-    entry.async_on_unload(coordinator.async_add_listener(_discover_new_trackers))
+    discovery = NodeDiscovery(coordinator, entry)
+    discovery.attach(
+        hass,
+        async_add_entities,
+        should_create=_has_gps_fix,
+        make_entities=lambda node: NodeTracker(coordinator, entry, node["id"]),
+    )
 
 
 class NodeTracker(CoordinatorEntity, TrackerEntity):
@@ -121,8 +87,7 @@ class NodeTracker(CoordinatorEntity, TrackerEntity):
         # Falls back to the hex ID if node data isn't loaded yet.
         name = f"Mesh Node {node_id}"
         model = "Meshtastic Node"
-        nodes = (coordinator.data or {}).get("nodes", [])
-        node = next((n for n in nodes if n.get("id") == node_id), None)
+        node = coordinator.get_node(node_id)
         if node:
             short = node.get("short_name")
             long_n = node.get("long_name")
@@ -143,11 +108,7 @@ class NodeTracker(CoordinatorEntity, TrackerEntity):
         }
 
     def _get_node(self) -> Optional[Dict[str, Any]]:
-        nodes = (self.coordinator.data or {}).get("nodes", [])
-        for node in nodes:
-            if node.get("id") == self._node_id:
-                return node
-        return None
+        return self.coordinator.get_node(self._node_id)
 
     @property
     def latitude(self) -> Optional[float]:

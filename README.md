@@ -70,7 +70,7 @@ NodePulse is a Home Assistant addon and custom integration that gives you deep v
 | 🖥️ **Web UI Dashboard** | Full-featured dashboard served via HA Ingress (no port forwarding). PWA-ready and fully mobile-optimized with slide-in navigation, responsive data tables, and tap-zoom protection. |
 | 📦 **Packet Inspector** | Real-time packet capture ring buffer showing every inbound Meshtastic packet with portnum, source/destination (with short names), channel, SNR, hop count, ACK status, and expandable JSON detail. Sort/filter by column headers, export to JSON/CSV, and view live sniffer stats. Fully responsive on mobile screens. |
 | 🔐 **Security Scanner** | Auto-detect weak or duplicate encryption keys across mesh channels with instantaneous server-side classification. Displays findings and highlights unencrypted/weak packets inline in the Packet Inspector. |
-| 📨 **Notify Platform** | `notify.mesh_<entry>` entity — send mesh messages from any automation/script, plus one `notify.mesh_<entry>_channel_<name>` entity per configured channel |
+| 📨 **Notify Platform** | `notify.nodepulse` entity — send mesh messages from any automation/script, plus one `notify.nodepulse_<name>` entity per configured channel |
 | ⚡ **Service Actions** | `nodepulse.send_message`, `nodepulse.request_position`, `nodepulse.trace_route` |
 | 🤖 **Device Triggers & Actions** | Automate on message received/sent (and `channel_message.received`); send message / request position / trace route per node device |
 | 📜 **Logbook** | Mesh messages recorded in the Home Assistant logbook timeline |
@@ -143,7 +143,7 @@ block-beta
     bs["binary_sensor.py"]
     sens["sensor.py"]
     dt["device_tracker.py"]
-    notify["notify.py\nMesh notify platform"]
+    notify["notify.py\nNotify entities"]
   end
 
   Node -->|"TCP stream"| conn
@@ -455,6 +455,8 @@ Secrets are always masked (`●●●●●● (set)` / `Not set`), and rows for
 
 ## Security
 
+See [SECURITY.md](./SECURITY.md) for the full threat model. Summary:
+
 - **No host-port exposure** — The addon's REST API is not published to the host network; it is reachable only via HA Ingress (requires HA authentication) and the Supervisor network. This is intentional and keeps the unauthenticated addon API off your LAN.
 - **Relay endpoints fail closed** — `/api/nodepulse/track` and `/api/nodepulse/tracked-nodes` require a matching `Authorization: Bearer <SUPERVISOR_TOKEN>` or valid Home Assistant authentication (a long-lived access token via the addon's `ha_access_token` option, or an HA session) — there is no anonymous path.
 - **Mesh data is treated as untrusted** — Waypoint name/description/icon are sanitized server-side and HTML-escaped in the Web UI; the Web UI uses no inline event handlers for mesh-controlled values.
@@ -554,6 +556,9 @@ python3 -m pytest tests/ --cov=app --cov-report=term-missing --cov-report=html -
 ---
 
 ## Contributing
+
+See [DEV.md](./DEV.md) for the contributor guide (architecture, lint/test
+commands, and contribution checklist).
 
 - All code comments, commit messages, and documentation must be in English.
 - Run the linter before submitting a PR.

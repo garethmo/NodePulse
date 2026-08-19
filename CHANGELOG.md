@@ -2,6 +2,27 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.16.8] - 2026-08-19
+### Breaking
+- **Entity IDs changed** — Per-node sensors are now device-prefixed (`sensor.<node_name>_snr`, e.g. `sensor.r1_mini_snr`) instead of the old colliding `sensor.snr` ids, and the notify entities moved from `notify.mesh_<entry>` to `notify.nodepulse` / `notify.nodepulse_<name>`. Automations referencing the old IDs must be updated. After installing, do a **full Home Assistant restart** (not Reload) and re-track your nodes if needed.
+
+### Added
+- **Integration unit tests (Q1)** — Dependency-free pure-logic tests in `tests/test_nodepulse_integration_pure.py` (24 cases) covering `const.py` node-id helpers and the new `validation.py` (`normalise_node_ids`, `validated_access_key`). Runs with plain pytest; no HA runtime required.
+- **`validation.py`** — Config-flow input helpers extracted out of `config_flow.py` into a HA-free module so they can be unit-tested and reused.
+
+### Changed
+- **Notify platform rewritten (Q2/Q9/Q18)** — `notify.py` now uses the modern `NotifyEntity` API with a proper `async_setup_entry`; `notify` was added to `PLATFORMS` so entities unload cleanly with the entry. One gateway entity (`notify.nodepulse`) plus one per configured channel (`notify.nodepulse_<name>`), replacing the old `notify.mesh_<entry>` naming. Channels are clamped to the valid 0–7 range.
+- **Shared entity discovery (Q11/Q12)** — New `helpers.NodeDiscovery` replaces the copy-pasted register/remove loop in the sensor, binary_sensor, device_tracker and geo_location platforms, and `helpers.coordinator_for(hass)` replaces four duplicated `_coordinator_for` implementations. The discovery loop keeps the tracked-nodes gate and re-creates entities on untrack → re-track.
+- **Stable config-entry unique_id (Q10)** — The config flow now derives the entry unique_id from the gateway `node_id` in `/api/status` instead of the host URL, so the same addon reachable via multiple aliases no longer creates duplicate entries.
+
+### Fixed
+- **HTTP views registered once (Q3)** — Track/tracked-nodes views are now entry-agnostic and registered a single time in `async_setup`; reloads and a second config entry can no longer collide on URL/name.
+- **Device-trigger variables (Q6)** — Device triggers build a proper trigger-variables dict and call `async_run_hass_job`; automations can now read `trigger.platform` / `trigger.type`.
+- **Unified entity naming (Q7)** — All node sensors set `_attr_has_entity_name`; per-node sensor entity_ids change to device-prefixed names (old colliding ids were broken).
+- **SNR sensor (Q8)** — Removed the mismatched `SIGNAL_STRENGTH` device class (unit stays `dB`).
+- **Defensive payload coercion (Q16/Q17)** — `as_int`/`as_float` helpers and try/except guards applied to addon payload parsing in `__init__.py`, `binary_sensor.py` and `sensor.py`; `normalize_node_id` returns `None` for whitespace-only input; tags join coerces to strings.
+- **Addon cleanup (Q4/Q14/Q15)** — `Tuple` import added in `connection.py`; dead `except ValueError` removed in `api.py`; unused imports/vars, inline imports and multi-import lines cleaned in the addon and `geo_location.py`.
+
 ## [1.19.1] - 2026-08-18
 ### Security
 - **Addon port no longer published to the host network** — Removed `"ports": {"8099/tcp": 8099}` from `config.json`. The addon was reachable unauthenticated from any LAN client (no auth middleware/API key on any route). It is now only reachable via HA Ingress (HA auth) and the supervisor network, which the integration already uses.

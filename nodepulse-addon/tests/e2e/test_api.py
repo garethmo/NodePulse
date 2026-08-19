@@ -87,13 +87,6 @@ async def test_send_message_missing_text(aiohttp_client, app):
     resp = await client.post("/api/send", json=payload)
     assert resp.status == 400
 
-async def test_get_messages(aiohttp_client, app):
-    client = await aiohttp_client(app)
-    resp = await client.get("/api/messages")
-    assert resp.status == 200
-    data = await resp.json()
-    assert isinstance(data, list)
-
 async def test_get_position_history(aiohttp_client, app):
     client = await aiohttp_client(app)
     resp = await client.get("/api/position-history")

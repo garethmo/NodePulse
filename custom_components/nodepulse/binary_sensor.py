@@ -13,19 +13,20 @@ the mesh goes offline for more than N minutes).
 """
 import logging
 from time import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
     BinarySensorEntity,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import NodePulseCoordinator
+from .helpers import NodeDiscovery, as_float
 
 logger = logging.getLogger(__name__)
 
@@ -41,47 +42,17 @@ async def async_setup_entry(
     """Register the connection status and per-node online binary sensors."""
     coordinator: NodePulseCoordinator = hass.data[DOMAIN][entry.entry_id]
 
-    # Reset discovery bookkeeping so a reload re-creates entities.
-    coordinator.registered_binary_ids = set()
-    coordinator.registered_binary_entities = []
-    registered_node_ids = coordinator.registered_binary_ids
-    registered_entities = coordinator.registered_binary_entities
-
-    @callback
-    def _discover_online_sensors() -> None:
-        nodes: List[Dict] = (coordinator.data or {}).get("nodes", [])
-        visible_ids = {n.get("id") for n in nodes if n.get("id")}
-
-        # Remove entities for nodes no longer tracked or gone.
-        for entity in list(registered_entities):
-            nid = getattr(entity, "_node_id", None)
-            if nid is not None and (
-                nid not in coordinator.tracked_nodes or nid not in visible_ids
-            ):
-                registered_entities.remove(entity)
-                registered_node_ids.discard(nid)
-                hass.async_create_task(entity.async_remove(force_remove=True))
-
-        new_entities = []
-        for node in nodes:
-            node_id = node.get("id")
-            if not node_id or node_id in registered_node_ids:
-                continue
-            if node_id not in coordinator.tracked_nodes:
-                continue
-            registered_node_ids.add(node_id)
-            registered_entities.append(NodeOnlineSensor(coordinator, entry, node_id))
-            new_entities.append(registered_entities[-1])
-            logger.debug("Registering per-node online binary sensor (node_id=%s)", node_id)
-
-        if new_entities:
-            async_add_entities(new_entities)
-
     # Global connection status sensor (always present).
     async_add_entities([NodePulseConnectionSensor(coordinator, entry)])
 
-    _discover_online_sensors()
-    entry.async_on_unload(coordinator.async_add_listener(_discover_online_sensors))
+    # Per-node "online" sensors via the shared discovery helper (Q12).
+    discovery = NodeDiscovery(coordinator, entry)
+    discovery.attach(
+        hass,
+        async_add_entities,
+        should_create=lambda node: True,
+        make_entities=lambda node: NodeOnlineSensor(coordinator, entry, node["id"]),
+    )
 
 
 class NodePulseConnectionSensor(CoordinatorEntity, BinarySensorEntity):
@@ -131,8 +102,7 @@ class NodeOnlineSensor(CoordinatorEntity, BinarySensorEntity):
         self._node_id = node_id
         self._attr_unique_id = f"{entry.entry_id}_{node_id}_online"
         # Group under the same per-node device as the sensors.
-        nodes = (coordinator.data or {}).get("nodes", [])
-        node = next((n for n in nodes if n.get("id") == node_id), None)
+        node = coordinator.get_node(node_id)
         name = node_id
         if node:
             long_n = node.get("long_name")
@@ -150,11 +120,7 @@ class NodeOnlineSensor(CoordinatorEntity, BinarySensorEntity):
         }
 
     def _get_node(self) -> Optional[Dict[str, Any]]:
-        nodes = (self.coordinator.data or {}).get("nodes", [])
-        for node in nodes:
-            if node.get("id") == self._node_id:
-                return node
-        return None
+        return self.coordinator.get_node(self._node_id)
 
     @property
     def is_on(self) -> bool:
@@ -162,11 +128,11 @@ class NodeOnlineSensor(CoordinatorEntity, BinarySensorEntity):
         node = self._get_node()
         if not node:
             return False
-        last_heard = node.get("last_heard")
-        if not last_heard:
+        last_heard = as_float(node.get("last_heard"))
+        if last_heard is None:
             return False
 
-        return (time() - float(last_heard)) <= NODE_ONLINE_THRESHOLD
+        return (time() - last_heard) <= NODE_ONLINE_THRESHOLD
 
     @property
     def available(self) -> bool:

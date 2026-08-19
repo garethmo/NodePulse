@@ -28,18 +28,9 @@ from homeassistant.helpers.template import TemplateVarsType
 
 from .const import ATTR_CHANNEL, ATTR_TEXT, DOMAIN
 from .coordinator import NodePulseCoordinator
+from .helpers import coordinator_for
 
 logger = logging.getLogger(__name__)
-
-
-def _coordinator_for(hass: HomeAssistant):
-    """Return the first loaded NodePulse coordinator, or None."""
-    data = hass.data.get(DOMAIN)
-    if not data:
-        return None
-    for coordinator in data.values():
-        return coordinator
-    return None
 
 _ACTION_TYPES = {"send_message", "request_position", "trace_route"}
 
@@ -94,7 +85,7 @@ async def async_call_action_from_config(
     if node_id is None:
         raise InvalidDeviceAutomationConfig(f"Unknown NodePulse device {device_id}")
 
-    coordinator: NodePulseCoordinator = _coordinator_for(hass)
+    coordinator: NodePulseCoordinator = coordinator_for(hass)
     if coordinator is None:
         raise InvalidDeviceAutomationConfig("NodePulse integration not loaded")
 
@@ -112,8 +103,8 @@ async def async_call_action_from_config(
             await coordinator.async_request_position(node_id)
         elif action_type == "trace_route":
             await coordinator.async_trace_route(node_id)
-    except Exception as exc:  # surface to the automation's error log
-        logger.error("NodePulse device action %s failed: %s", action_type, exc)
+    except Exception:  # surface to the automation's error log
+        logger.exception("NodePulse device action %s failed", action_type)
 
 
 @callback

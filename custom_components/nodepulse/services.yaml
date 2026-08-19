@@ -1,9 +1,6 @@
 send_message:
   name: Send Meshtastic Message
   description: Send a text message over the mesh via the NodePulse addon.
-  target:
-    entity:
-      integration: nodepulse
   fields:
     text:
       name: Text
@@ -24,9 +21,6 @@ send_message:
 request_position:
   name: Request Position
   description: Ask a node to report its current GPS position.
-  target:
-    entity:
-      integration: nodepulse
   fields:
     target:
       name: Destination
@@ -37,9 +31,6 @@ request_position:
 trace_route:
   name: Trace Route
   description: Dispatch a traceroute towards a destination node.
-  target:
-    entity:
-      integration: nodepulse
   fields:
     target:
       name: Destination

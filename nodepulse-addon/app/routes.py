@@ -363,16 +363,15 @@ async def handle_status(request: web.Request) -> web.Response:
         # Embed the addon version from config.json so the UI can display it
         # without hardcoding it in the HTML template.
         try:
-            import json as _json, os as _os
             # HA Supervisor mounts config.json one level above the app/ package.
             _cfg_candidates = [
-                _os.path.join(_os.path.dirname(__file__), "..", "config.json"),
+                os.path.join(os.path.dirname(__file__), "..", "config.json"),
                 "/data/config.json",
             ]
             for _p in _cfg_candidates:
-                if _os.path.exists(_p):
+                if os.path.exists(_p):
                     with open(_p) as _f:
-                        status["addon_version"] = _json.load(_f).get("version", "")
+                        status["addon_version"] = json.load(_f).get("version", "")
                     break
         except Exception:
             status["addon_version"] = ""

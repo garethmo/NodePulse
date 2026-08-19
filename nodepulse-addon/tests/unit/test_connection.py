@@ -3,12 +3,9 @@ Unit tests for app/connection.py
 """
 import pytest
 from unittest.mock import Mock, MagicMock, patch, AsyncMock
-import asyncio
-import json
 import os
 import tempfile
 import time
-import collections
 
 from app import connection
 from app.connection import MeshtasticConnection
@@ -167,7 +164,7 @@ class TestNodeSerialization:
         assert result == []
 
 
-class TestGetStatus:
+class TestGetStatusNoInterface:
     @pytest.mark.asyncio
     async def test_get_status_no_interface(self):
         mock_config = Mock()
@@ -182,7 +179,7 @@ class TestGetStatus:
         assert result["my_info"] is None
 
 
-class TestGetNodes:
+class TestGetNodesNoInterface:
     @pytest.mark.asyncio
     async def test_get_nodes_no_interface(self):
         mock_config = Mock()
@@ -196,7 +193,7 @@ class TestGetNodes:
         assert result == []
 
 
-class TestGetChannels:
+class TestGetChannelsNoInterface:
     @pytest.mark.asyncio
     async def test_get_channels_no_interface(self):
         mock_config = Mock()
@@ -460,6 +457,81 @@ class TestRequestTraceroute:
         with patch.object(conn, "_request_traceroute_sync") as mock_request_sync:
             mock_request_sync.return_value = None
             await conn.request_traceroute("!12345678")
+
+    @staticmethod
+    def _route_payload():
+        from meshtastic.protobuf.mesh_pb2 import RouteDiscovery
+        rd = RouteDiscovery()
+        rd.route.extend([0x11111111, 0x22222222])
+        return rd.SerializeToString()
+
+    @pytest.mark.asyncio
+    async def test_request_traceroute_dedupes_pending(self):
+        conn = create_conn()
+        conn._connected = True
+        with patch.object(conn, "_request_traceroute_sync"):
+            # Simulate a request already in the pending queue, then ask again.
+            with conn._lock:
+                conn._pending_traceroute_dests.append("!12345678")
+            result = await conn.request_traceroute("!12345678")
+            assert result is True
+            with conn._lock:
+                assert conn._pending_traceroute_dests.count("!12345678") == 1
+
+    @pytest.mark.asyncio
+    async def test_request_traceroute_rejects_when_queue_full(self):
+        conn = create_conn()
+        conn._connected = True
+        with patch.object(conn, "_request_traceroute_sync") as mock_request_sync:
+            with conn._lock:
+                conn._pending_traceroute_dests.extend(
+                    [f"!dead00{i:02x}" for i in range(connection._MAX_PENDING_TRACEROUTES)]
+                )
+            result = await conn.request_traceroute("!12345678")
+            assert result is False
+            mock_request_sync.assert_not_called()
+            with conn._lock:
+                assert len(conn._pending_traceroute_dests) == connection._MAX_PENDING_TRACEROUTES
+
+    def test_capture_traceroute_matches_by_origin(self):
+        conn = create_conn()
+        with conn._lock:
+            conn._pending_traceroute_dests.extend(["!11111111", "!22222222"])
+        conn._nodes = [{"id": "!22222222"}]
+        conn._traceroutes = {}
+        with patch.object(conn, "_save_traceroutes"):
+            conn._capture_traceroute({
+                "from": 0x22222222,
+                "decoded": {"payload": TestRequestTraceroute._route_payload()},
+            })
+        with conn._lock:
+            assert conn._pending_traceroute_dests == ["!11111111"]
+        assert conn._traceroutes.get("!22222222") is not None
+        assert conn._traceroutes.get("!11111111") is None
+
+    def test_capture_traceroute_falls_back_to_oldest(self):
+        conn = create_conn()
+        with conn._lock:
+            conn._pending_traceroute_dests.extend(["!11111111", "!22222222"])
+        conn._traceroutes = {}
+        with patch.object(conn, "_save_traceroutes"):
+            conn._capture_traceroute({
+                "from": 0x33333333,
+                "decoded": {"payload": TestRequestTraceroute._route_payload()},
+            })
+        with conn._lock:
+            assert conn._pending_traceroute_dests == ["!22222222"]
+        assert conn._traceroutes.get("!11111111") is not None
+
+    def test_capture_traceroute_attributes_to_origin_when_no_pending(self):
+        conn = create_conn()
+        conn._traceroutes = {}
+        with patch.object(conn, "_save_traceroutes"):
+            conn._capture_traceroute({
+                "from": 0x33333333,
+                "decoded": {"payload": TestRequestTraceroute._route_payload()},
+            })
+        assert conn._traceroutes.get("!33333333") is not None
 
 
 class TestRequestPosition:
@@ -865,3 +937,169 @@ class TestDirectSyncCoverage:
             await conn.disconnect()
             assert conn._connected is False
             mock_close_sync.assert_called_once()
+
+
+class TestOnMeshReceive:
+    """Packet-path tests for the pubsub listener (T5)."""
+
+    def _conn_with_interface(self):
+        conn = create_conn()
+        conn._interface = MagicMock()
+        conn._interface.nodes = {
+            0x1234: {"user": {"shortName": "AB", "longName": "Alpha Bravo"}},
+        }
+        conn._interface.myInfo = MagicMock()
+        conn._interface.myInfo.my_node_num = 0x9999
+        return conn
+
+    def test_broadcast_text_captured(self):
+        conn = self._conn_with_interface()
+        with patch.object(conn, "_schedule_save"):
+            conn._on_mesh_receive({
+                "from": 0x1234,
+                "to": 0xFFFFFFFF,
+                "channel": 0,
+                "rxSnr": -5.0,
+                "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "hello mesh"},
+            })
+        assert len(conn._messages) == 1
+        entry = conn._messages[0]
+        assert entry["text"] == "hello mesh"
+        assert entry["from_id"] == "!00001234"
+        assert entry["from_name"] == "AB"
+        assert entry["conversation"] == "ch:0"
+        assert entry["is_dm"] is False
+        assert entry["outgoing"] is False
+        assert entry["rx_snr"] == -5.0
+
+    def test_direct_message_conversation_key(self):
+        conn = self._conn_with_interface()
+        with patch.object(conn, "_schedule_save"):
+            conn._on_mesh_receive({
+                "from": 0x1234,
+                "to": 0x5678,
+                "channel": 0,
+                "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "hey you"},
+            })
+        assert len(conn._messages) == 1
+        entry = conn._messages[0]
+        assert entry["is_dm"] is True
+        assert entry["conversation"] == "dm:!00001234"
+
+    def test_outgoing_message_detected(self):
+        conn = self._conn_with_interface()
+        with patch.object(conn, "_schedule_save"):
+            conn._on_mesh_receive({
+                "from": 0x9999,
+                "to": 0x1234,
+                "channel": 0,
+                "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "self sent"},
+            })
+        assert conn._messages[0]["outgoing"] is True
+
+    def test_snr_history_recorded(self):
+        conn = self._conn_with_interface()
+        with patch.object(conn, "_schedule_save"):
+            conn._on_mesh_receive({
+                "from": 0x1234,
+                "to": 0xFFFFFFFF,
+                "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "snr"},
+                "rxSnr": -3.5,
+            })
+        assert conn._snr_history.get("!00001234") is not None
+        assert list(conn._snr_history["!00001234"]) == [-3.5]
+
+    def test_packet_without_text_ignored(self):
+        conn = self._conn_with_interface()
+        with patch.object(conn, "_schedule_save"):
+            conn._on_mesh_receive({
+                "from": 0x1234,
+                "to": 0xFFFFFFFF,
+                "decoded": {"portnum": "TELEMETRY_APP"},
+            })
+        assert len(conn._messages) == 0
+
+    def test_telegram_forward_callback_invoked(self):
+        conn = self._conn_with_interface()
+        received = []
+        conn._telegram_forward_callback = lambda entry: received.append(entry)
+        with patch.object(conn, "_schedule_save"):
+            conn._on_mesh_receive({
+                "from": 0x1234,
+                "to": 0xFFFFFFFF,
+                "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "forward me"},
+            })
+        assert len(received) == 1
+        assert received[0]["text"] == "forward me"
+
+    def test_forward_callback_exception_ignored(self):
+        conn = self._conn_with_interface()
+
+        def boom(_entry):
+            raise RuntimeError("callback failure")
+
+        conn._telegram_forward_callback = boom
+        with patch.object(conn, "_schedule_save"):
+            conn._on_mesh_receive({
+                "from": 0x1234,
+                "to": 0xFFFFFFFF,
+                "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "still captured"},
+            })
+        # The receive thread must survive a failing callback.
+        assert len(conn._messages) == 1
+
+    def test_malformed_packet_does_not_crash(self):
+        conn = self._conn_with_interface()
+        with patch.object(conn, "_schedule_save"):
+            conn._on_mesh_receive({"decoded": {"portnum": "POSITION_APP"}})
+        assert len(conn._messages) == 0
+
+
+class TestCapturePosition:
+    def _position_payload(self, lat_i=400000000, lng_i=-100000000, alt=123):
+        from meshtastic.protobuf.mesh_pb2 import Position
+        pos = Position()
+        pos.latitude_i = lat_i
+        pos.longitude_i = lng_i
+        pos.altitude = alt
+        return pos.SerializeToString()
+
+    def test_captures_position_into_node_cache(self):
+        conn = create_conn()
+        conn._nodes = [{"id": "!00001234"}]
+        conn._pending_position_dests.add("!00001234")
+        with patch.object(conn, "_save_position_history"):
+            conn._capture_position({
+                "from": 0x1234,
+                "rxSnr": -7.0,
+                "rxRssi": -90,
+                "decoded": {"payload": self._position_payload()},
+            })
+        assert "!00001234" not in conn._pending_position_dests
+        node = conn._nodes[0]
+        assert node["latitude"] == pytest.approx(40.0)
+        assert node["longitude"] == pytest.approx(-10.0)
+        assert node["altitude"] == 123
+        assert node["last_position_fix"] is not None
+        assert "!00001234" in conn._pos_history
+
+    def test_unrequested_position_ignored_for_cache(self):
+        conn = create_conn()
+        conn._nodes = [{"id": "!00001234"}]
+        with patch.object(conn, "_save_position_history"):
+            conn._capture_position({
+                "from": 0x1234,
+                "decoded": {"payload": self._position_payload()},
+            })
+        # History is still recorded for trails, but the cache is not updated
+        # because we never asked for this position.
+        node = conn._nodes[0]
+        assert node.get("latitude") is None
+        assert "!00001234" in conn._pos_history
+
+    def test_missing_payload_ignored(self):
+        conn = create_conn()
+        conn._pending_position_dests.add("!00001234")
+        conn._capture_position({"from": 0x1234, "decoded": {}})
+        assert "!00001234" in conn._pending_position_dests
+        assert conn._pos_history == {}

@@ -32,12 +32,13 @@ from homeassistant.const import (
     UnitOfPressure,
     UnitOfTime,
 )
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import NodePulseCoordinator
+from .helpers import NodeDiscovery, as_float, as_int
 
 logger = logging.getLogger(__name__)
 
@@ -56,105 +57,61 @@ async def async_setup_entry(
     """
     coordinator: NodePulseCoordinator = hass.data[DOMAIN][entry.entry_id]
 
-    # Reset discovery bookkeeping on each setup (also runs after a reload), so
-    # entities are re-created rather than skipped by a stale module-level set.
-    coordinator.registered_sensor_ids = set()
-    coordinator.registered_sensor_entities = []
-
-    # Track which node IDs already have entities so we don't duplicate them.
-    registered_node_ids = coordinator.registered_sensor_ids
-    # Keep references so we can remove entities when a node is untracked.
-    registered_entities = coordinator.registered_sensor_entities
-
     # Always create the aggregate node count sensor immediately.
     async_add_entities([NodeCountSensor(coordinator, entry)])
 
-
-    @callback
-    def _discover_new_nodes() -> None:
-        """Called after every coordinator update to find and register new nodes.
+    def _make_sensors(node: Dict[str, Any]) -> List:
+        """Build the full set of per-node sensors, keeping only those with data.
 
         Only nodes the user has chosen to track (coordinator.tracked_nodes) get
         per-node sensor entities. This lets the Web UI's "Track in HA" toggle
         selectively create entities for individual nodes instead of importing
         the whole mesh at once.
         """
-        nodes: List[Dict] = (coordinator.data or {}).get("nodes", [])
-        visible_ids = {n.get("id") for n in nodes if n.get("id")}
+        node_id = node["id"]
+        sensor_set = [
+            NodeSnrSensor(coordinator, entry, node_id),
+            NodeRssiSensor(coordinator, entry, node_id),
+            NodeHopsSensor(coordinator, entry, node_id),
+            NodeLastHeardSensor(coordinator, entry, node_id),
+            NodeBatterySensor(coordinator, entry, node_id),
+            NodeTemperatureSensor(coordinator, entry, node_id),
+            NodeHumiditySensor(coordinator, entry, node_id),
+            NodePressureSensor(coordinator, entry, node_id),
+            NodeVoltageSensor(coordinator, entry, node_id),
+            NodeChannelUtilSensor(coordinator, entry, node_id),
+            NodeAirUtilTxSensor(coordinator, entry, node_id),
+            NodeUptimeSensor(coordinator, entry, node_id),
+            NodeRoleSensor(coordinator, entry, node_id),
+            NodeGasResistanceSensor(coordinator, entry, node_id),
+            NodeLatitudeSensor(coordinator, entry, node_id),
+            NodeLongitudeSensor(coordinator, entry, node_id),
+            NodeAltitudeSensor(coordinator, entry, node_id),
+            NodeMessageReceivedSensor(coordinator, entry, node_id),
+            NodeMessageSentSensor(coordinator, entry, node_id),
+            NodeDistanceSensor(coordinator, entry, node_id),
+            NodeNeighborCountSensor(coordinator, entry, node_id),
+            NodePositionFixCountSensor(coordinator, entry, node_id),
+            NodeTagsSensor(coordinator, entry, node_id),
+            NodeSignalQualitySensor(coordinator, entry, node_id),
+        ]
 
-        # Remove entities for nodes that are no longer tracked (or gone).
-        for entity in list(registered_entities):
-            nid = getattr(entity, "_node_id", None)
-            if nid is not None and (
-                nid not in coordinator.tracked_nodes or nid not in visible_ids
-            ):
-                registered_entities.remove(entity)
-                # The set is keyed on unique_id (e.g. "{entry_id}_{node_id}_snr"),
-                # NOT node_id, so discarding `nid` alone would leave stale
-                # unique_ids behind and prevent re-tracking this node forever.
-                # Discard every unique_id belonging to this node instead.
-                uid_prefix = f"{entry.entry_id}_{nid}_"
-                stale_ids = [uid for uid in registered_node_ids if uid.startswith(uid_prefix)]
-                for uid in stale_ids:
-                    registered_node_ids.discard(uid)
-                hass.async_create_task(entity.async_remove(force_remove=True))
+        # Only add sensors that currently have a value to avoid cluttering the
+        # UI with "Unknown" metrics for features the node doesn't have.
+        out = []
+        for sensor in sensor_set:
+            if sensor.native_value is not None:
+                out.append(sensor)
+                logger.debug("Registering new node sensor %s", sensor.unique_id)
+        return out
 
-        new_entities = []
-        for node in nodes:
-            node_id = node.get("id")
-            if not node_id:
-                continue
-            # Per-node entities are created ONLY for tracked nodes.
-            if node_id not in coordinator.tracked_nodes:
-                continue
-
-            # We instantiate the full set of potential sensors for this node.
-            sensor_set = [
-                NodeSnrSensor(coordinator, entry, node_id),
-                NodeRssiSensor(coordinator, entry, node_id),
-                NodeHopsSensor(coordinator, entry, node_id),
-                NodeLastHeardSensor(coordinator, entry, node_id),
-                NodeBatterySensor(coordinator, entry, node_id),
-                NodeTemperatureSensor(coordinator, entry, node_id),
-                NodeHumiditySensor(coordinator, entry, node_id),
-                NodePressureSensor(coordinator, entry, node_id),
-                NodeVoltageSensor(coordinator, entry, node_id),
-                NodeChannelUtilSensor(coordinator, entry, node_id),
-                NodeAirUtilTxSensor(coordinator, entry, node_id),
-                NodeUptimeSensor(coordinator, entry, node_id),
-                NodeRoleSensor(coordinator, entry, node_id),
-                NodeGasResistanceSensor(coordinator, entry, node_id),
-                NodeLatitudeSensor(coordinator, entry, node_id),
-                NodeLongitudeSensor(coordinator, entry, node_id),
-                NodeAltitudeSensor(coordinator, entry, node_id),
-                NodeMessageReceivedSensor(coordinator, entry, node_id),
-                NodeMessageSentSensor(coordinator, entry, node_id),
-                NodeDistanceSensor(coordinator, entry, node_id),
-                NodeNeighborCountSensor(coordinator, entry, node_id),
-                NodePositionFixCountSensor(coordinator, entry, node_id),
-                NodeTagsSensor(coordinator, entry, node_id),
-                NodeSignalQualitySensor(coordinator, entry, node_id),
-            ]
-
-            for sensor in sensor_set:
-                if sensor.unique_id in registered_node_ids:
-                    continue
-                # Only add if it currently has a value to avoid cluttering the UI
-                # with "Unknown" metrics for features the node doesn't have.
-                if sensor.native_value is not None:
-                    registered_node_ids.add(sensor.unique_id)
-                    registered_entities.append(sensor)
-                    new_entities.append(sensor)
-                    logger.debug("Registering new node sensor %s", sensor.unique_id)
-
-        if new_entities:
-            async_add_entities(new_entities)
-
-    # Run discovery for the already-loaded initial data.
-    _discover_new_nodes()
-
-    # Subscribe to future updates — HA will call this after every poll cycle.
-    entry.async_on_unload(coordinator.async_add_listener(_discover_new_nodes))
+    discovery = NodeDiscovery(coordinator, entry)
+    discovery.attach(
+        hass,
+        async_add_entities,
+        should_create=lambda node: True,
+        make_entities=_make_sensors,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -189,9 +146,15 @@ class _NodeSensorBase(CoordinatorEntity, SensorEntity):
 
     Subclasses only need to define _metric_key and the standard HA sensor
     attributes (_attr_name, _attr_native_unit_of_measurement, etc.).
+
+    ``_attr_has_entity_name`` is set here (not per subclass) so every per-node
+    sensor gets the device-prefixed friendly name and a unique entity_id
+    (Q7). Without it, N nodes would all produce ``sensor.snr``-style
+    colliding ids.
     """
 
     _metric_key: str  # key in the node dict from the API
+    _attr_has_entity_name = True
 
     def __init__(
         self,
@@ -205,12 +168,8 @@ class _NodeSensorBase(CoordinatorEntity, SensorEntity):
         self._attr_device_info = _node_device_info(entry, node_id, coordinator)
 
     def _get_node(self) -> Optional[Dict[str, Any]]:
-        """Find this node's dict in the coordinator data."""
-        nodes = (self.coordinator.data or {}).get("nodes", [])
-        for node in nodes:
-            if node.get("id") == self._node_id:
-                return node
-        return None
+        """Return this node's dict via the coordinator's per-refresh index (O(1))."""
+        return self.coordinator.get_node(self._node_id)
 
     @property
     def native_value(self) -> Any:
@@ -226,8 +185,9 @@ class _NodeSensorBase(CoordinatorEntity, SensorEntity):
         We intentionally do NOT mark a sensor unavailable just because its node
         is momentarily absent from the node list — nodes routinely drop in and
         out of the mesh, and flipping entities to "unavailable" on every blip
-        spams the logbook with useless "Unavailable" entries while the last
-        known value (still shown by the entity) remains meaningful. The
+        spams the logbook with useless "Unavailable" entries. The trade-off is
+        that while the entity stays "available" its state reads "unknown"
+        (``native_value`` is None); the last known value is NOT retained. The
         coordinator's ``last_update_success`` flag still drives availability so
         a genuine addon outage correctly marks everything unavailable.
         """
@@ -240,7 +200,6 @@ class _NodeSensorBase(CoordinatorEntity, SensorEntity):
 
 class NodeSnrSensor(_NodeSensorBase):
     _metric_key = "snr"
-    _attr_device_class = SensorDeviceClass.SIGNAL_STRENGTH
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "dB"
 
@@ -288,10 +247,13 @@ class NodeLastHeardSensor(_NodeSensorBase):
     def native_value(self):
         """Convert Unix epoch seconds to an aware datetime for the HA sensor."""
         node = self._get_node()
-        epoch = node.get("last_heard") if node else None
+        epoch = as_float(node.get("last_heard")) if node else None
         if epoch is None:
             return None
-        return datetime.fromtimestamp(epoch, tz=timezone.utc)
+        try:
+            return datetime.fromtimestamp(epoch, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
 
 
 class NodeBatterySensor(_NodeSensorBase):
@@ -498,16 +460,27 @@ class NodeMessageSensor(_NodeSensorBase):
         """
         status = (self.coordinator.data or {}).get("status", {})
         my_info = status.get("my_info") or {}
-        my_num = my_info.get("my_node_num")
+        my_num = as_int(my_info.get("my_node_num"))
         if my_num is not None:
-            return self._norm_node_id("!" + format(int(my_num), "08x"))
+            return self._norm_node_id("!" + format(my_num & 0xFFFFFFFF, "08x"))
         return None
 
     def _node_messages(self) -> List[Dict[str, Any]]:
-        """Return received/sent messages involving this node, oldest first."""
-        messages = (self.coordinator.data or {}).get("messages", [])
+        """Return received/sent messages involving this node, oldest first.
+
+        Uses the coordinator's per-refresh ``messages_by_node`` index so this
+        is O(messages for this node) rather than a scan of the whole buffer on
+        every state write (S11).
+        """
         node_id = self._norm_node_id(self._node_id)
-        self_id = self._self_node_id()
+        if not node_id:
+            return []
+        data = self.coordinator.data or {}
+        index = data.get("messages_by_node")
+        if index is None:
+            messages: List[Dict[str, Any]] = data.get("messages", [])
+        else:
+            messages = index.get(node_id, [])
 
         out = []
         for m in messages:
@@ -573,12 +546,11 @@ class NodeDistanceSensor(_NodeSensorBase):
         # Find the self node from coordinator data.
         status = (self.coordinator.data or {}).get("status", {})
         my_info = status.get("my_info") or {}
-        my_num = my_info.get("my_node_num")
+        my_num = as_int(my_info.get("my_node_num"))
         if my_num is None:
             return None
-        self_id = "!" + format(int(my_num), "08x")
-        nodes = (self.coordinator.data or {}).get("nodes", [])
-        self_node = next((n for n in nodes if n.get("id") == self_id), None)
+        self_id = "!" + format(my_num & 0xFFFFFFFF, "08x")
+        self_node = self.coordinator.get_node(self_id)
         if not self_node or self_node.get("latitude") is None or self_node.get("longitude") is None:
             return None
         R = 6371.0
@@ -645,7 +617,7 @@ class NodeTagsSensor(_NodeSensorBase):
         tags = node.get("tags")
         if not tags or not isinstance(tags, list):
             return None
-        return ", ".join(tags)
+        return ", ".join(str(t) for t in tags)
 
 
 class NodeSignalQualitySensor(_NodeSensorBase):
@@ -679,8 +651,7 @@ def _node_device_info(entry: ConfigEntry, node_id: str, coordinator) -> Dict:
     name = f"Mesh Node {node_id}"
     model = "Meshtastic Node"
 
-    nodes = (coordinator.data or {}).get("nodes", [])
-    node = next((n for n in nodes if n.get("id") == node_id), None)
+    node = coordinator.get_node(node_id)
     if node:
         short = node.get("short_name")
         long_n = node.get("long_name")

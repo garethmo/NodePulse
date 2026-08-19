@@ -184,7 +184,7 @@ The container stores persistent data (node DB, messages, tags, position history)
 ## What doesn't work without HA
 
 - **Track in HA** toggles (sensor entities)
-- **HA notify platform** (`notify.mesh_*`)
+- **HA notify platform** (`notify.nodepulse` / `notify.nodepulse_<name>`)
 - **HA device tracker** entities on the HA map
 - **Logbook entries** in HA
 

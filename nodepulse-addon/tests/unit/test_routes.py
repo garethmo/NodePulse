@@ -4,8 +4,6 @@ Unit tests for app/routes.py
 import pytest
 import json
 from unittest.mock import MagicMock, AsyncMock, patch
-from aiohttp import web
-import asyncio
 
 # Import the module under test
 from app import routes

@@ -16,7 +16,6 @@ Shutdown sequence (on SIGTERM from HA Supervisor):
 """
 import asyncio
 import time
-import dataclasses
 import logging
 from pathlib import Path
 
@@ -117,7 +116,8 @@ async def _on_startup(app: web.Application) -> None:
                 for msg in to_send:
                     # Message payload: (destination, text, channel)
                     dest = msg.get("to_id")
-                    if dest == "": dest = None
+                    if dest == "":
+                        dest = None
                     await conn.send_message(
                         text=msg["text"],
                         destination=dest,

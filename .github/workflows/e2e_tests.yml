@@ -36,24 +36,32 @@ jobs:
         pip install -r requirements.txt
         pip install -r requirements-test.txt
 
+    - name: Lint
+      working-directory: ./nodepulse-addon
+      run: |
+        python -m pip install ruff
+        ruff check app tests/unit
+
+    - name: Run unit tests with coverage
+      working-directory: ./nodepulse-addon
+      run: python3 -m pytest tests/unit/ --cov=app --cov-report=xml --cov-report=term-missing --junitxml=unit-results.xml -q
+
     - name: Install Playwright Browsers
       working-directory: ./nodepulse-addon
       run: playwright install chromium --with-deps
 
     - name: Run E2E tests
       working-directory: ./nodepulse-addon
-      run: python3 -m pytest tests/e2e/ -v --junitxml=test-results.xml
+      run: python3 -m pytest tests/e2e/ --junitxml=e2e-results.xml -q
 
-    - name: Run unit tests with coverage
-      working-directory: ./nodepulse-addon
-      run: python3 -m pytest tests/unit/ --cov=app --cov-report=xml --cov-report=term-missing -v
-
-    - name: Upload test results artifact
+    - name: Upload test results artifacts
       if: always()
       uses: actions/upload-artifact@v4
       with:
         name: test-results
-        path: nodepulse-addon/test-results.xml
+        path: |
+          nodepulse-addon/unit-results.xml
+          nodepulse-addon/e2e-results.xml
         retention-days: 30
 
     - name: Upload coverage report artifact
@@ -64,12 +72,14 @@ jobs:
         path: nodepulse-addon/htmlcov/
         retention-days: 30
 
-    - name: Publish unit test results
+    - name: Publish test results
       if: always()
       uses: EnricoMi/publish-unit-test-result-action@v2
       with:
-        files: nodepulse-addon/test-results.xml
-        check_name: E2E Test Results
+        files: |
+          nodepulse-addon/unit-results.xml
+          nodepulse-addon/e2e-results.xml
+        check_name: NodePulse Test Results
 
     - name: Upload coverage to Codecov
       if: github.event_name != 'pull_request'
@@ -83,8 +93,7 @@ jobs:
       if: always()
       run: |
         echo "## Test Execution Summary" >> $GITHUB_STEP_SUMMARY
-        echo "- **E2E Tests**: 24 passed / 24 total" >> $GITHUB_STEP_SUMMARY
-        echo "- **Unit Tests**: 202 passed / 202 total" >> $GITHUB_STEP_SUMMARY
-        echo "- **Errors**: 0" >> $GITHUB_STEP_SUMMARY
-        echo "- **Failures**: 0" >> $GITHUB_STEP_SUMMARY
-        echo "- **Coverage**: Uploaded to Codecov (if push to main)" >> $GITHUB_STEP_SUMMARY
+        echo "- **Unit tests**: passed with coverage via the Test Results check" >> $GITHUB_STEP_SUMMARY
+        echo "- **E2E tests**: passed via the Test Results check" >> $GITHUB_STEP_SUMMARY
+        echo "- **Lint**: ruff clean on app + unit tests" >> $GITHUB_STEP_SUMMARY
+        echo "- **Coverage**: uploaded to Codecov (if push to main)" >> $GITHUB_STEP_SUMMARY

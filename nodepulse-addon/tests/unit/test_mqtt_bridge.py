@@ -1,4 +1,3 @@
-import pytest
 from unittest.mock import Mock
 from app.mqtt_bridge import MqttBridge
 

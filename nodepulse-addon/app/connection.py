@@ -22,7 +22,7 @@ import os
 import threading
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import meshtastic
 import meshtastic.tcp_interface
@@ -83,6 +83,14 @@ _POS_HISTORY_MAX = 200
 # Minimum delay (seconds) between traceroute persistence flushes, so a burst of
 # traceroute replies cannot spawn a save thread on every single capture.
 _TRACEROUTE_SAVE_DEBOUNCE = 1.0
+
+# Max number of traceroutes that may be queued (pending send or awaiting a
+# RouteDiscovery reply) at once. Dispatches are serialized and each can block
+# for up to 300 s, so without a cap a burst of requests would create an
+# unbounded pile-up of background tasks and threads that eventually wedges the
+# app. Once the queue is full, further requests are rejected (the UI sees
+# "dispatched": false) instead of being accepted and frozen.
+_MAX_PENDING_TRACEROUTES = 8
 
 # Debounce for persisting the node list. Node updates arrive with every poll,
 # so we coalesce them into at most one disk write per window.
@@ -494,25 +502,44 @@ class MeshtasticConnection:
         ack) is performed in a background task so the HTTP request does not
         exceed the addon ingress proxy timeout (which returns HTTP 503). The
         UI polls ``/api/nodes`` to see the discovered route once it arrives.
+
+        Returns ``False`` when the pending queue is full so a burst of requests
+        cannot pile up an unbounded number of background tasks/threads.
         """
+        # Register the request (deduped, bounded) before spawning the task so a
+        # RouteDiscovery reply can be matched to it even if the dispatch task is
+        # still queued behind the serialization lock.
+        with self._lock:
+            if destination in self._pending_traceroute_dests:
+                logger.debug("Traceroute to %s already pending — skipping duplicate", destination)
+                return True
+            if len(self._pending_traceroute_dests) >= _MAX_PENDING_TRACEROUTES:
+                logger.warning(
+                    "Too many pending traceroutes (%d) — rejecting request to %s",
+                    len(self._pending_traceroute_dests), destination,
+                )
+                return False
+            self._pending_traceroute_dests.append(destination)
         logger.debug("Requesting traceroute to %s", destination)
         try:
             loop = asyncio.get_running_loop()
             loop.create_task(self._traceroute_dispatch(destination))
         except RuntimeError:
-            await asyncio.to_thread(self._request_traceroute_sync, destination)
+            # No running loop (shutdown): fall back to a direct call. Clean up
+            # our queue entry since no dispatch task will run to do so.
+            try:
+                await asyncio.to_thread(self._request_traceroute_sync, destination)
+            finally:
+                with self._lock:
+                    try:
+                        self._pending_traceroute_dests.remove(destination)
+                    except ValueError:
+                        pass
         return True
 
     async def _traceroute_dispatch(self, destination: str) -> None:
         """Background: perform the blocking send + cache refresh for a traceroute."""
         async with self._trace_dispatch_lock:
-            # Push AFTER acquiring the serialization lock so push + dispatch
-            # are atomic. _capture_traceroute pops the list when a RouteDiscovery
-            # reply arrives; with serialized dispatches the oldest pending
-            # destination is always the active one.
-            with self._lock:
-                self._pending_traceroute_dests.append(destination)
-            success = False
             try:
                 await asyncio.wait_for(
                     asyncio.to_thread(self._request_traceroute_sync, destination),
@@ -520,7 +547,6 @@ class MeshtasticConnection:
                 )
                 await asyncio.to_thread(self._refresh_node_from_interface, destination)
                 logger.info("Traceroute dispatch to %s completed", destination)
-                success = True
             except asyncio.TimeoutError:
                 logger.info("Traceroute to %s timed out (300s timeout)", destination)
                 # Record the timeout on the node so the Web UI can show it in
@@ -544,12 +570,14 @@ class MeshtasticConnection:
             except Exception as exc:
                 logger.info("Traceroute background dispatch failed (%s): %s", destination, exc)
             finally:
-                if not success:
-                    with self._lock:
-                        try:
-                            self._pending_traceroute_dests.remove(destination)
-                        except ValueError:
-                            pass
+                # Always reclaim our queue slot. On success _capture_traceroute
+                # already removed it (matched by node id); the try/except makes
+                # a double removal a no-op.
+                with self._lock:
+                    try:
+                        self._pending_traceroute_dests.remove(destination)
+                    except ValueError:
+                        pass
 
     async def request_position(self, destination: str) -> bool:
         """Request a fresh GPS position from a specific destination node."""
@@ -1993,12 +2021,20 @@ class MeshtasticConnection:
             # Store under the node this route belongs to. Prefer the node the
             # user asked about if we have a pending request; otherwise the
             # reply's origin. A re-request simply overwrites the previous result.
-            # Pop the oldest pending destination (FIFO). Dispatches are
-            # serialized by _trace_dispatch_lock, so the first element in the
-            # queue is always the active trace.
+            #
+            # Match by node id: when the reply's origin is itself a pending
+            # destination (the common case — the target answers, or an
+            # auto-traceroute ran for it) we remove exactly that entry. When the
+            # reply came from an intermediate hop we fall back to the oldest
+            # pending entry, which is the active serialized dispatch. This
+            # avoids the old FIFO pop misattributing a reply to the wrong node
+            # (e.g. when a timed-out request was already removed from the queue,
+            # or when auto-traceroutes are in flight).
             target_id = from_id
             with self._lock:
-                if self._pending_traceroute_dests:
+                if from_id in self._pending_traceroute_dests:
+                    self._pending_traceroute_dests.remove(from_id)
+                elif self._pending_traceroute_dests:
                     target_id = self._pending_traceroute_dests.pop(0)
 
             logger.debug(
@@ -2500,11 +2536,39 @@ class MeshtasticConnection:
 
                     # Auto Traceroute Logic — dispatch a traceroute immediately when a new node is discovered
                     if node_id != self_id and self._config and getattr(self._config, "auto_traceroute_enabled", False):
+                        # Quick pre-check to avoid spawning threads when the queue is
+                        # saturated. We cannot acquire _lock while holding _nodes_lock,
+                        # so the authoritative (locked) cap check happens in the thread.
+                        if len(self._pending_traceroute_dests) >= _MAX_PENDING_TRACEROUTES:
+                            logger.debug("Skipping auto-traceroute for %s: queue full", node_id)
+                            continue
                         logger.info("Auto-traceroute triggered: Discovered new node %s", node_id)
                         # Run in a separate thread to avoid blocking the sync loop
+                        # and to respect lock ordering (cannot acquire _lock while
+                        # holding _nodes_lock). Register the destination in the
+                        # pending queue (deduped, bounded) so its RouteDiscovery
+                        # reply is attributed to it and not to a manual request.
+                        def _auto_traceroute_thread(dest: str) -> None:
+                            with self._lock:
+                                if dest in self._pending_traceroute_dests:
+                                    logger.debug("Skipping auto-traceroute for %s: already pending", dest)
+                                    return
+                                if len(self._pending_traceroute_dests) >= _MAX_PENDING_TRACEROUTES:
+                                    logger.debug("Skipping auto-traceroute for %s: queue full", dest)
+                                    return
+                                self._pending_traceroute_dests.append(dest)
+                            try:
+                                self._request_traceroute_sync(dest)
+                            finally:
+                                with self._lock:
+                                    try:
+                                        self._pending_traceroute_dests.remove(dest)
+                                    except ValueError:
+                                        pass
+
                         import threading
                         t = threading.Thread(
-                            target=self._request_traceroute_sync,
+                            target=_auto_traceroute_thread,
                             args=(node_id,),
                             daemon=True
                         )
