@@ -17,13 +17,14 @@ Filter pipeline (in evaluation order — cheapest check first):
      packet types (TEXT_MESSAGE_APP, TELEMETRY_APP, etc.).
 """
 import asyncio
+import contextlib
 import logging
-from typing import Callable, Optional
-
 import uuid
+from collections.abc import Callable
+
 import aiomqtt
-from meshtastic.protobuf.mqtt_pb2 import ServiceEnvelope
 from google.protobuf.json_format import MessageToDict
+from meshtastic.protobuf.mqtt_pb2 import ServiceEnvelope
 
 logger = logging.getLogger(__name__)
 
@@ -37,13 +38,17 @@ class MqttBridge:
         self,
         config,
         packet_callback: Callable,
-        forward_callback: Optional[Callable] = None,
+        forward_callback: Callable | None = None,
     ):
         self._config = config
         self.packet_callback = packet_callback
         self.forward_callback = forward_callback
-        self.client: Optional[aiomqtt.Client] = None
-        self._task: Optional[asyncio.Task] = None
+        self.client: aiomqtt.Client | None = None
+        self._task: asyncio.Task | None = None
+
+        # Strong references to bridge-forward Tasks (asyncio keeps only weak
+        # refs); each task discards itself when it finishes.
+        self._forward_tasks: set = set()
 
         self.enabled = config.mqtt_enabled
         self.address = config.mqtt_address
@@ -78,10 +83,8 @@ class MqttBridge:
     async def stop(self) -> None:
         if self._task:
             self._task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._task
-            except asyncio.CancelledError:
-                pass
 
     async def _run_loop(self) -> None:
         """Persistent connect → subscribe → receive loop with exponential backoff."""
@@ -157,9 +160,11 @@ class MqttBridge:
 
             # Optionally bridge the filtered packet to the local radio.
             if self.forwarding_enabled and self.forward_callback:
-                asyncio.create_task(self.forward_callback(topic, payload))
+                task = asyncio.create_task(self.forward_callback(topic, payload))
+                self._forward_tasks.add(task)
+                task.add_done_callback(self._forward_tasks.discard)
 
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.error("Failed to process MQTT message (topic=%s): %s", topic, exc)
 
     def _apply_filters(self, packet_dict: dict) -> bool:
@@ -170,7 +175,7 @@ class MqttBridge:
         Stages run cheapest-first to short-circuit early.
         """
         from_id = packet_dict.get("from")
-        from_hex: Optional[str] = None
+        from_hex: str | None = None
 
         # Stage 1: Node-ID blocklist
         if from_id:

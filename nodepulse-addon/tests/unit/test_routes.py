@@ -1,12 +1,14 @@
 """
 Unit tests for app/routes.py
 """
-import pytest
 import json
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 # Import the module under test
 from app import routes
+
 
 # ----------------------------------------------------------------------
 # Helper to create a mock request

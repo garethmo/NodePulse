@@ -12,7 +12,6 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
-from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +39,7 @@ _CONNECTION_TYPES = (CONNECTION_TYPE_DIRECT, CONNECTION_TYPE_PROXY)
 DEFAULT_PROXY_PORT = 4403
 
 
-def parse_int_list(value, default) -> List[int]:
+def parse_int_list(value, default) -> list[int]:
     """
     Parse a list-of-int config option into a clean list of ints.
 
@@ -74,11 +73,11 @@ def parse_int_list(value, default) -> List[int]:
                 continue
             try:
                 channels.append(int(item))
-            except (TypeError, ValueError):
+            except (TypeError, ValueError) as err:
                 raise RuntimeError(
                     f"Invalid telegram_forward_channels entry {item!r}: "
                     "expected channel indices like 0, 1, 2."
-                )
+                ) from err
         return channels or list(default)
     raise RuntimeError(
         f"Invalid telegram_forward_channels value {value!r}: expected a list "
@@ -94,11 +93,11 @@ class Config:
     connection_type: str
     meshtastic_host: str
     meshtastic_port: int
-    proxy_host: Optional[str]
+    proxy_host: str | None
     proxy_port: int
-    access_key: Optional[str]
+    access_key: str | None
     scan_interval: int
-    ignored_nodes: List[str] = field(default_factory=list)
+    ignored_nodes: list[str] = field(default_factory=list)
     # Base URL of the Home Assistant core instance that hosts the NodePulse
     # custom integration. The integration's relay endpoints (/api/nodepulse/*)
     # are served by HA core, NOT by this addon. From inside the addon's Docker
@@ -129,16 +128,16 @@ class Config:
     mqtt_lat_max: float = 0.0
     mqtt_lng_min: float = 0.0
     mqtt_lng_max: float = 0.0
-    mqtt_portnum_allowlist: List[str] = field(default_factory=list)
-    mqtt_node_blocklist: List[str] = field(default_factory=list)
+    mqtt_portnum_allowlist: list[str] = field(default_factory=list)
+    mqtt_node_blocklist: list[str] = field(default_factory=list)
     mqtt_forwarding_enabled: bool = False
 
     # Telegram Integration Settings
     telegram_enabled: bool = False
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""  # Deprecated: use telegram_authorized_chat_ids
-    telegram_authorized_chat_ids: List[str] = field(default_factory=list)  # List of authorized chat IDs (private and groups)
-    telegram_forward_channels: List[int] = field(default_factory=lambda: [0])
+    telegram_authorized_chat_ids: list[str] = field(default_factory=list)  # List of authorized chat IDs (private and groups)
+    telegram_forward_channels: list[int] = field(default_factory=lambda: [0])
     telegram_forward_dms: bool = True
     telegram_allow_commands: bool = True
 
@@ -164,13 +163,13 @@ def load_config() -> Config:
     logger.debug("Loading addon configuration (path=%s)", options_path)
 
     try:
-        with open(options_path, "r", encoding="utf-8") as fh:
+        with open(options_path, encoding="utf-8") as fh:
             raw = json.load(fh)
     except FileNotFoundError:
         raise RuntimeError(
             f"No options file found at {_OPTIONS_FILE} or {_DEV_OPTIONS_FILE}. "
             "Create dev_options.json for local development."
-        )
+        ) from None
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"Options file is not valid JSON: {exc}") from exc
 

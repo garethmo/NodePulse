@@ -1,16 +1,18 @@
 """
 Unit tests for app/security_scanner.py
 """
-import pytest
 from unittest.mock import MagicMock
+
+import pytest
+
 from app.security_scanner import (
-    _resolve_psk,
-    _key_fingerprint,
-    _classify_key,
-    _channel_is_disabled,
-    scan_channel_keys,
     _DEFAULT_PSK_BYTES,
-    _PSK_DEFAULT_SHORTHAND
+    _PSK_DEFAULT_SHORTHAND,
+    _channel_is_disabled,
+    _classify_key,
+    _key_fingerprint,
+    _resolve_psk,
+    scan_channel_keys,
 )
 
 

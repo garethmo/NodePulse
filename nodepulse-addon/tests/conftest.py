@@ -1,18 +1,20 @@
 import os
 import sys
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 import pytest_asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
 
 # Add app to path so we can import it
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "app")))
 
-from app.main import build_app
-from app.config import Config
-
 # Route is referenced by _abort_cdn below; the browser import stays local to the
 # async_page fixture so a bare pytest run (no Playwright) still collects.
-from playwright.async_api import Route  # noqa: E402
+from playwright.async_api import Route
+
+from app.config import Config
+from app.main import build_app
+
 
 @pytest.fixture
 def mock_config():
@@ -388,6 +390,6 @@ async def async_page():
             await page.route("**cdn.jsdelivr.net**", _abort_cdn)
             yield page
             await browser.close()
-    except Exception as exc:  # pragma: no cover - env-dependent
+    except Exception as exc:  # pragma: no cover - env-dependent  # noqa: BLE001
         pytest.skip(f"Playwright browser unavailable: {exc}")
 

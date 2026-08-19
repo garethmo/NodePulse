@@ -1,11 +1,20 @@
 """
 Unit tests for app/config.py
 """
-import os
 import json
-import pytest
+import os
 import tempfile
-from app.config import Config, load_config, parse_int_list, resolve_target, CONNECTION_TYPE_DIRECT, CONNECTION_TYPE_PROXY
+
+import pytest
+
+from app.config import (
+    CONNECTION_TYPE_DIRECT,
+    CONNECTION_TYPE_PROXY,
+    Config,
+    load_config,
+    parse_int_list,
+    resolve_target,
+)
 
 
 def test_parse_int_list_string():

@@ -1,7 +1,5 @@
 import pytest
-
-from meshtastic.protobuf import config_pb2
-from meshtastic.protobuf import module_config_pb2
+from meshtastic.protobuf import config_pb2, module_config_pb2
 
 from app.device_config import build_config_registry, validate_and_apply_patch
 
@@ -95,7 +93,7 @@ class TestConfirmGates:
 
     def test_lora_tx_disabled_with_confirm_applies(self):
         node = FakeNode()
-        ok, reboot = validate_and_apply_patch(
+        ok, _reboot = validate_and_apply_patch(
             "lora", {"tx_enabled": False, "confirm": True}, node, _fake_interface()
         )
         assert ok is True
@@ -164,7 +162,7 @@ class TestFieldConstraints:
 
     def test_unknown_field_ignored(self):
         node = FakeNode()
-        ok, reboot = validate_and_apply_patch(
+        ok, _reboot = validate_and_apply_patch(
             "device", {"role": "CLIENT", "not_a_real_field": 1}, node, _fake_interface()
         )
         assert ok is True

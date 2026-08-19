@@ -1,9 +1,11 @@
 from unittest.mock import Mock
+
 from app.mqtt_bridge import MqttBridge
+
 
 def test_mqtt_bridge_initializes_without_error():
     """Basic sanity check that MqttBridge can be instantiated."""
-    # Minimal configuration – only the fields accessed in __init__ are needed.
+    # Minimal configuration - only the fields accessed in __init__ are needed.
     config = Mock()
     config.mqtt_enabled = False
     config.mqtt_address = ""
@@ -19,6 +21,6 @@ def test_mqtt_bridge_initializes_without_error():
         "mqtt_lng_min", "mqtt_lng_max"
     ]:
         setattr(config, attr, set())
-    # packet_callback is a no‑op function.
+    # packet_callback is a no-op function.
     bridge = MqttBridge(config, packet_callback=lambda _: None)
     assert bridge is not None

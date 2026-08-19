@@ -1,0 +1,19 @@
+# Ruff lint configuration for the NodePulse addon backend.
+# Kept deliberately strict but achievable: default pycodestyle subset + pyflakes,
+# plus pyupgrade (UP), flake8-bugbear (B) + blind-except (BLE), isort (I),
+# flake8-simplify (SIM), and ruff-specific (RUF). E501 (line length) is NOT
+# enforced — the codebase intentionally uses long, descriptive lines.
+# Intentional `except Exception` catches are marked `# noqa: BLE001`.
+
+# Oldest supported runtime (local dev + HA addon base image is 3.10/3.12);
+# kept at 3.10 so UP017 prefers the portable `timezone.utc` over `datetime.UTC`.
+target-version = "py310"
+
+[lint]
+select = ["E4", "E7", "E9", "F", "UP", "B", "BLE", "I", "RUF", "SIM"]
+ignore = [
+    "RUF013",  # explicit `Optional`/implicit-Optional style is a preference, not a bug
+]
+
+[lint.isort]
+known-first-party = ["app"]

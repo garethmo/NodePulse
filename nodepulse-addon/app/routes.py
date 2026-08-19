@@ -13,10 +13,10 @@ import datetime
 import json
 import logging
 import os
-from typing import Any, Dict
+import re
+from typing import Any
 
 import aiohttp
-import re
 from aiohttp import web
 
 from .connection import MeshtasticConnection
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 _NODE_ID_RE = re.compile(r"^![0-9a-fA-F]{1,8}$")
 
 
-def _validate_destination(body: Dict[str, Any]):
+def _validate_destination(body: dict[str, Any]):
     """Extract and validate a 'destination' node ID from a request body.
 
     Returns the stripped destination string, or None if missing/invalid.
@@ -205,7 +205,7 @@ async def _relay_to_integration(request: web.Request, method: str, path: str, js
                                 )
                                 raise RuntimeError(
                                     f"Integration at {base} returned an unparseable response"
-                                )
+                                ) from exc
                         # 401/403 means HA auth rejected us with this credential.
                         # Try the next candidate; after all candidates fail, the
                         # outer loop retries the waterfall with the next token.
@@ -225,7 +225,7 @@ async def _relay_to_integration(request: web.Request, method: str, path: str, js
                         try:
                             err = json.loads(raw) if raw else {}
                             detail = err.get("error", "")
-                        except Exception:
+                        except Exception:  # noqa: BLE001
                             # Response wasn't JSON (e.g. HA login page / HTML stack trace).
                             detail = raw[:200] if raw else ""
                         raise RuntimeError(
@@ -233,7 +233,7 @@ async def _relay_to_integration(request: web.Request, method: str, path: str, js
                         )
                 except RuntimeError:
                     raise  # propagate the integration's own error message
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     # If the cached URL fails, clear it so we re-probe next time.
                     if base == _working_ha_base:
                         logger.debug("Cached HA base %s is no longer reachable — resetting", base)
@@ -249,7 +249,7 @@ async def _relay_to_integration(request: web.Request, method: str, path: str, js
         try:
             parsed = json.loads(last_body or "")
             detail = parsed.get("reason") or parsed.get("error") or ""
-        except Exception:
+        except Exception:  # noqa: BLE001
             detail = (last_body or "")[:200]
         raise RuntimeError(
             f"NodePulse integration rejected the request (HTTP {last_status}): {detail} "
@@ -373,7 +373,7 @@ async def handle_status(request: web.Request) -> web.Response:
                     with open(_p) as _f:
                         status["addon_version"] = json.load(_f).get("version", "")
                     break
-        except Exception:
+        except Exception:  # noqa: BLE001
             status["addon_version"] = ""
         # Attach scheduled messages stats
         with conn._scheduled_messages_lock:
@@ -384,7 +384,7 @@ async def handle_status(request: web.Request) -> web.Response:
                 status["next_scheduled_time"] = None
 
         return _json_response(status)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.error("Error fetching status: %s", exc)
         return _error_response("Failed to retrieve status")
 
@@ -410,7 +410,7 @@ async def handle_nodes(request: web.Request) -> web.Response:
         # Filter out nodes the user has asked to ignore by their hex ID.
         visible_nodes = [n for n in nodes if n.get("id") not in ignored]
         return _json_response(visible_nodes)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.error("Error fetching nodes: %s", exc)
         return _error_response("Failed to retrieve nodes")
 
@@ -428,7 +428,7 @@ async def handle_clear_stale_nodes(request: web.Request) -> web.Response:
     try:
         removed = await conn.clear_stale_nodes()
         return _json_response({"removed": removed})
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.error("Error clearing stale nodes: %s", exc)
         return _error_response("Failed to clear stale nodes")
 
@@ -449,7 +449,7 @@ async def handle_delete_node(request: web.Request) -> web.Response:
         if not deleted:
             return _error_response("Node not found", status=404)
         return _json_response({"deleted": node_id})
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.error("Error deleting node %s: %s", node_id, exc)
         return _error_response("Failed to delete node")
 
@@ -492,7 +492,7 @@ async def handle_search_messages(request: web.Request) -> web.Response:
         return _json_response(matched)
     except ValueError:
         return _error_response("'limit' must be an integer", status=400)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.error("Error searching messages: %s", exc)
         return _error_response("Failed to search messages")
 
@@ -513,7 +513,7 @@ async def handle_messages(request: web.Request) -> web.Response:
     try:
         messages = await conn.get_messages()
         return _json_response(messages)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.error("Error fetching messages: %s", exc)
         return _error_response("Failed to retrieve messages")
 
@@ -587,7 +587,7 @@ async def handle_export_messages(request: web.Request) -> web.Response:
                 "Content-Disposition": f'attachment; filename="{filename}"'
             },
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.error("Error exporting messages: %s", exc)
         return _error_response("Failed to export messages")
 
@@ -602,7 +602,7 @@ async def handle_get_waypoints(request: web.Request) -> web.Response:
     try:
         waypoints = await conn.get_waypoints()
         return _json_response(waypoints)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.error("Error fetching waypoints: %s", exc)
         return _error_response("Failed to retrieve waypoints")
 
@@ -635,7 +635,7 @@ async def handle_add_waypoint(request: web.Request) -> web.Response:
         }
         entry = await conn.add_waypoint(waypoint)
         return _json_response(entry)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.error("Error adding waypoint: %s", exc)
         return _error_response("Failed to add waypoint")
 
@@ -667,7 +667,7 @@ async def handle_update_waypoint(request: web.Request) -> web.Response:
         if updated is None:
             return _error_response("Waypoint not found", status=404)
         return _json_response(updated)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.error("Error updating waypoint %s: %s", waypoint_id, exc)
         return _error_response("Failed to update waypoint")
 
@@ -683,7 +683,7 @@ async def handle_delete_waypoint(request: web.Request) -> web.Response:
         if not deleted:
             return _error_response("Waypoint not found", status=404)
         return _json_response({"deleted": waypoint_id})
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.error("Error deleting waypoint %s: %s", waypoint_id, exc)
         return _error_response("Failed to delete waypoint")
 
@@ -699,7 +699,7 @@ async def handle_channels(request: web.Request) -> web.Response:
         channels = await conn.refresh_channels()
         logger.debug("Channels fetched: count=%s, data=%s", len(channels) if channels else 0, channels)
         return _json_response(channels)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.error("Error fetching channels: %s", exc)
         return _error_response("Failed to retrieve channels")
 
@@ -726,8 +726,8 @@ async def handle_send(request: web.Request) -> web.Response:
     conn: MeshtasticConnection = request.app["connection"]
 
     try:
-        body: Dict[str, Any] = await request.json()
-    except Exception:
+        body: dict[str, Any] = await request.json()
+    except Exception:  # noqa: BLE001
         return _error_response("Request body must be valid JSON", status=400)
 
     text = body.get("text", "").strip()
@@ -766,7 +766,7 @@ async def handle_send(request: web.Request) -> web.Response:
             if success:
                 return _json_response({"sent": True})
             return _error_response("Message was not accepted by the Meshtastic interface", status=502)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.error(
                 "Unhandled error in send handler (destination=%s): %s", destination, exc
             )
@@ -794,8 +794,8 @@ async def handle_traceroute(request: web.Request) -> web.Response:
     conn: MeshtasticConnection = request.app["connection"]
 
     try:
-        body: Dict[str, Any] = await request.json()
-    except Exception:
+        body: dict[str, Any] = await request.json()
+    except Exception:  # noqa: BLE001
         return _error_response("Request body must be valid JSON", status=400)
 
     destination = _validate_destination(body)
@@ -805,7 +805,7 @@ async def handle_traceroute(request: web.Request) -> web.Response:
     try:
         success = await conn.request_traceroute(destination)
         return _json_response({"dispatched": success})
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.error(
             "Traceroute dispatch failed (destination=%s): %s", destination, exc
         )
@@ -826,8 +826,8 @@ async def handle_request_position(request: web.Request) -> web.Response:
     conn: MeshtasticConnection = request.app["connection"]
 
     try:
-        body: Dict[str, Any] = await request.json()
-    except Exception:
+        body: dict[str, Any] = await request.json()
+    except Exception:  # noqa: BLE001
         return _error_response("Request body must be valid JSON", status=400)
 
     destination = _validate_destination(body)
@@ -837,7 +837,7 @@ async def handle_request_position(request: web.Request) -> web.Response:
     try:
         success = await conn.request_position(destination)
         return _json_response({"dispatched": success})
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.error(
             "Position request dispatch failed (destination=%s): %s", destination, exc
         )
@@ -863,7 +863,7 @@ async def handle_tracked_nodes(request: web.Request) -> web.Response:
         return _json_response({"node_ids": node_ids})
     except RuntimeError as exc:
         return _error_response(str(exc), status=502)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.error("Failed to fetch tracked nodes from integration: %s", exc)
         return _error_response("Failed to reach NodePulse integration")
 
@@ -890,7 +890,7 @@ async def handle_position_history(request: web.Request) -> web.Response:
     try:
         data = await conn.get_position_history(node_id)
         return _json_response(data)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.error("Error fetching position history: %s", exc)
         return _error_response("Failed to retrieve position history")
 
@@ -905,7 +905,7 @@ async def handle_tags(request: web.Request) -> web.Response:
     try:
         tags = await conn.get_tags()
         return _json_response(tags)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.error("Error fetching tags: %s", exc)
         return _error_response("Failed to retrieve tags")
 
@@ -923,8 +923,8 @@ async def handle_set_tags(request: web.Request) -> web.Response:
     """
     conn: MeshtasticConnection = request.app["connection"]
     try:
-        body: Dict[str, Any] = await request.json()
-    except Exception:
+        body: dict[str, Any] = await request.json()
+    except Exception:  # noqa: BLE001
         return _error_response("Request body must be valid JSON", status=400)
 
     node_id = (body.get("node_id") or "").strip()
@@ -940,7 +940,7 @@ async def handle_set_tags(request: web.Request) -> web.Response:
         return _json_response(result)
     except ValueError as exc:
         return _error_response(str(exc), status=400)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.error("Error setting tags (node=%s): %s", node_id, exc)
         return _error_response("Failed to set tags")
 
@@ -955,7 +955,7 @@ async def handle_favorites(request: web.Request) -> web.Response:
     try:
         favorites = await conn.get_favorites()
         return _json_response(favorites)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.error("Error fetching favorites: %s", exc)
         return _error_response("Failed to retrieve favorites")
 
@@ -973,8 +973,8 @@ async def handle_set_favorite(request: web.Request) -> web.Response:
     """
     conn: MeshtasticConnection = request.app["connection"]
     try:
-        body: Dict[str, Any] = await request.json()
-    except Exception:
+        body: dict[str, Any] = await request.json()
+    except Exception:  # noqa: BLE001
         return _error_response("Request body must be valid JSON", status=400)
 
     node_id = (body.get("node_id") or "").strip()
@@ -988,7 +988,7 @@ async def handle_set_favorite(request: web.Request) -> web.Response:
     try:
         result = await conn.set_favorite(node_id, favorited)
         return _json_response(result)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.error("Error setting favorite (node=%s): %s", node_id, exc)
         return _error_response("Failed to set favorite")
 
@@ -1006,8 +1006,8 @@ async def handle_track_node(request: web.Request) -> web.Response:
     device_tracker + sensor set for that node.
     """
     try:
-        body: Dict[str, Any] = await request.json()
-    except Exception:
+        body: dict[str, Any] = await request.json()
+    except Exception:  # noqa: BLE001
         return _error_response("Request body must be valid JSON", status=400)
 
     node_id = (body.get("node_id") or "").strip()
@@ -1025,7 +1025,7 @@ async def handle_track_node(request: web.Request) -> web.Response:
     except RuntimeError as exc:
         logger.error("Track-node relay rejected by integration (node=%s): %s", node_id, exc)
         return _error_response(str(exc), status=502)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.error(
             "Failed to relay track-node request to integration (node=%s): %s",
             node_id, exc,
@@ -1056,7 +1056,7 @@ async def handle_packets(request: web.Request) -> web.Response:
     try:
         packets = await conn.get_packet_log(limit)
         return _json_response(packets)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.error("Error fetching packet log: %s", exc)
         return _error_response("Failed to retrieve packet log")
 
@@ -1085,7 +1085,7 @@ async def handle_sniffer_stats(request: web.Request) -> web.Response:
     try:
         stats = await conn.get_sniffer_stats()
         return _json_response(stats)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.error("Error fetching sniffer stats: %s", exc)
         return _error_response("Failed to retrieve sniffer stats")
 
@@ -1108,7 +1108,7 @@ async def handle_get_device_config(request: web.Request) -> web.Response:
         return _json_response(config_data)
     except ConnectionError as exc:
         return _error_response(str(exc), status=503)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.error("Error reading device config: %s", exc)
         return _error_response("Failed to read device configuration")
 
@@ -1135,8 +1135,8 @@ async def handle_put_device_config_section(request: web.Request) -> web.Response
         return _error_response("section is required in the URL path", status=400)
 
     try:
-        body: Dict[str, Any] = await request.json()
-    except Exception:
+        body: dict[str, Any] = await request.json()
+    except Exception:  # noqa: BLE001
         return _error_response("Request body must be valid JSON", status=400)
 
     if not isinstance(body, dict) or not body:
@@ -1150,7 +1150,7 @@ async def handle_put_device_config_section(request: web.Request) -> web.Response
         return _error_response(str(exc), status=400)
     except ConnectionError as exc:
         return _error_response(str(exc), status=503)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.error("Error writing device config section %s: %s", section, exc)
         return _error_response("Failed to apply configuration")
 
@@ -1172,7 +1172,7 @@ async def handle_reload_device_config(request: web.Request) -> web.Response:
         if reason.startswith("request_failed"):
             return _error_response(f"Config reload failed: {reason}", status=503)
         return _error_response(f"Config reload failed: {reason}", status=503)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.error("Error reloading device config: %s", exc)
         return _error_response("Failed to reload device configuration")
 
@@ -1211,7 +1211,7 @@ async def handle_get_security_scan(request: web.Request) -> web.Response:
         return _json_response(result)
     except ConnectionError as exc:
         return _error_response(str(exc), status=503)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.error("Error running security scan: %s", exc)
         return _error_response("Security scan failed")
 

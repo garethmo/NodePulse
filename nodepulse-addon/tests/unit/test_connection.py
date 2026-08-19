@@ -1,11 +1,12 @@
 """
 Unit tests for app/connection.py
 """
-import pytest
-from unittest.mock import Mock, MagicMock, patch, AsyncMock
 import os
 import tempfile
 import time
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
+
+import pytest
 
 from app import connection
 from app.connection import MeshtasticConnection
@@ -322,8 +323,8 @@ class TestConnectDisconnect:
     async def test_connect_failure(self):
         conn = create_conn()
         with patch.object(conn, "_connect_sync") as mock_connect_sync:
-            mock_connect_sync.side_effect = Exception("Connection failed")
-            with pytest.raises(Exception):
+            mock_connect_sync.side_effect = RuntimeError("Connection failed")
+            with pytest.raises(RuntimeError):
                 await conn.connect()
             # The real _connect_sync would set _connected=False on failure
             # but our mock doesn't, so we just verify the exception is raised
@@ -586,9 +587,9 @@ class TestFavorites:
     def test_favorites_persist_roundtrip(self):
         mock_config = Mock()
         mock_config.mqtt_enabled = False
-        with tempfile.TemporaryDirectory() as tmp:
-            with patch.object(connection, "_DATA_DIR", tmp), \
-                 patch.object(connection, "_FAVORITES_FILE", os.path.join(tmp, "favorites.json")):
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(connection, "_DATA_DIR", tmp), \
+                patch.object(connection, "_FAVORITES_FILE", os.path.join(tmp, "favorites.json")):
                 conn = MeshtasticConnection(
                     host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
                 )
@@ -884,7 +885,7 @@ class TestDirectSyncCoverage:
     @pytest.mark.asyncio
     async def test_connect_sync_success(self):
         """Test _connect_sync when interface connects successfully."""
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
         
         mock_config = Mock()
         conn = MeshtasticConnection(

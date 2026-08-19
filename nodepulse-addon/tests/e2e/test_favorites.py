@@ -7,8 +7,9 @@ Tests cover:
 - Favorite nodes are sorted to the top of the list
 - Favorites persist in localStorage across page reloads
 """
-import pytest
 import re
+
+import pytest
 from playwright.async_api import Page, expect
 
 pytestmark = pytest.mark.asyncio

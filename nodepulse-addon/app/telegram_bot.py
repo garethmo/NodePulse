@@ -6,10 +6,12 @@ Uses long-polling via aiohttp to receive commands securely from an authorized
 Telegram chat, and provides a callback to forward inbound mesh text messages.
 """
 import asyncio
+import contextlib
 import logging
 import threading
 import time
-from typing import Optional, Callable, Dict, Any
+from collections.abc import Callable
+from typing import Any
 
 import aiohttp
 
@@ -23,7 +25,7 @@ class TelegramBot:
         send_message_callback: Callable,
         get_status_callback: Callable,
         get_nodes_callback: Callable,
-        get_channels_callback: Optional[Callable] = None,
+        get_channels_callback: Callable | None = None,
     ):
         self._config = config
         self.enabled = config.telegram_enabled
@@ -51,19 +53,19 @@ class TelegramBot:
         self.get_nodes_callback = get_nodes_callback
         self.get_channels_callback = get_channels_callback
         
-        self._task: Optional[asyncio.Task] = None
-        self._session: Optional[aiohttp.ClientSession] = None
+        self._task: asyncio.Task | None = None
+        self._session: aiohttp.ClientSession | None = None
         self._offset = 0
-        self._current_chat_id: Optional[str] = None
+        self._current_chat_id: str | None = None
         # Stored at start() time so forward_mesh_message() (called from the
         # meshtastic receive thread) can schedule coroutines safely via
         # call_soon_threadsafe instead of the non-thread-safe create_task().
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._loop: asyncio.AbstractEventLoop | None = None
         # Map Telegram message_id -> forwarding metadata (channel / DM node)
         # for every mesh message we relay to Telegram. Replies are routed by
         # message_id so we never depend on parsing the displayed text (which
         # Telegram's Markdown rendering can alter). Guarded by _forward_lock.
-        self._forwarded: Dict[int, Dict[str, Any]] = {}
+        self._forwarded: dict[int, dict[str, Any]] = {}
         self._forward_lock = threading.Lock()
 
     async def start(self) -> None:
@@ -97,10 +99,8 @@ class TelegramBot:
     async def stop(self) -> None:
         if self._task:
             self._task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._task
-            except asyncio.CancelledError:
-                pass
         if self._session:
             await self._session.close()
 
@@ -137,7 +137,7 @@ class TelegramBot:
             except asyncio.CancelledError:
                 logger.info("Telegram polling cancelled")
                 break
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.error("Telegram API error: %s", exc)
                 await asyncio.sleep(reconnect_interval)
                 reconnect_interval = min(reconnect_interval * 2, 60)
@@ -372,7 +372,7 @@ class TelegramBot:
                 
             else:
                 await self._send_text("Unknown command. Type /help.")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.error("Error executing Telegram command %s: %s", command, exc)
             await self._send_text("❌ Error executing command.")
 
@@ -420,7 +420,7 @@ class TelegramBot:
             parts.append(f"{total}s")
         return " ".join(parts)
 
-    async def _send_text(self, text: str) -> Optional[int]:
+    async def _send_text(self, text: str) -> int | None:
         """
         Send a Telegram text message and return its message_id (or None).
 
@@ -439,11 +439,11 @@ class TelegramBot:
             if result.get("ok"):
                 return result.get("result", {}).get("message_id")
             return None
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.error("Failed to send Telegram response to chat %s: %s", target_chat_id, exc)
             return None
 
-    def forward_mesh_message(self, entry: Dict[str, Any]) -> None:
+    def forward_mesh_message(self, entry: dict[str, Any]) -> None:
         """
         Called synchronously by the mesh receive thread when a new message arrives.
         We schedule it onto the async event loop to send to Telegram.
@@ -500,7 +500,7 @@ class TelegramBot:
                 )
             )
 
-    async def _send_forward(self, msg: str, metadata: Dict[str, Any]) -> None:
+    async def _send_forward(self, msg: str, metadata: dict[str, Any]) -> None:
         """Send a forwarded mesh message and record its message_id so native
         Telegram replies can be routed back to the originating channel/node."""
         message_id = await self._send_text(msg)

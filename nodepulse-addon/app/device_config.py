@@ -1,8 +1,9 @@
 import logging
-from typing import Dict, Any, Tuple
-from google.protobuf.descriptor import FieldDescriptor
+from typing import Any
+
 import meshtastic.protobuf.config_pb2 as config_pb2
 import meshtastic.protobuf.module_config_pb2 as module_config_pb2
+from google.protobuf.descriptor import FieldDescriptor
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,7 @@ _FIELD_CONSTRAINTS = {
     ("mesh_beacon", "broadcast_message"): {"max_length": 100},
 }
 
-def build_config_registry() -> Dict[str, Any]:
+def build_config_registry() -> dict[str, Any]:
     """
     Builds a registry of all editable config fields by introspecting the
     protobuf definitions from the installed meshtastic library.
@@ -154,7 +155,7 @@ def build_config_registry() -> Dict[str, Any]:
             33: 'ITU3_2M', 34: 'ITU1_70CM', 35: 'ITU2_70CM',
             36: 'ITU3_70CM', 37: 'ITU2_125CM'
         }
-        for num, name in region_28.items():
+        for _num, name in region_28.items():
             if name not in region_options:
                 region_options.append(name)
 
@@ -172,7 +173,7 @@ def build_config_registry() -> Dict[str, Any]:
             13: 'NARROW_SLOW', 14: 'TINY_FAST', 15: 'TINY_SLOW',
             16: 'MEDIUM_TURBO'
         }
-        for num, name in preset_28.items():
+        for _num, name in preset_28.items():
             if name not in preset_options:
                 preset_options.append(name)
 
@@ -180,7 +181,7 @@ def build_config_registry() -> Dict[str, Any]:
             registry["mesh_beacon"]["fields"][field]["options"] = region_options
         for field in ["broadcast_offer_preset", "broadcast_on_preset"]:
             registry["mesh_beacon"]["fields"][field]["options"] = preset_options
-    except Exception:
+    except Exception:  # noqa: BLE001
         pass
 
     # StatusMessageConfig — firmware 2.8+ (simple status text for UI)
@@ -277,7 +278,7 @@ def _normalize_role(raw: Any) -> str:
     return str(raw).split(".")[-1]
 
 
-def _resolve_role(interface, user_info: Dict[str, Any]) -> str:
+def _resolve_role(interface, user_info: dict[str, Any]) -> str:
     """
     Resolve the connected node's role.
 
@@ -295,7 +296,7 @@ def _resolve_role(interface, user_info: Dict[str, Any]) -> str:
             cfg_role = getattr(local_config.device, "role", 0)
             if cfg_role != 0:
                 return config_pb2.Config.DeviceConfig.Role.Name(cfg_role)
-    except Exception:
+    except Exception:  # noqa: BLE001
         pass
 
     # 2) User dict role
@@ -310,12 +311,12 @@ def _resolve_role(interface, user_info: Dict[str, Any]) -> str:
         if meta_role != 0:
             try:
                 return config_pb2.Config.DeviceConfig.Role.Name(meta_role)
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass
     return "CLIENT"
 
 
-def _lookup_node(interface, node_num) -> Dict[str, Any]:
+def _lookup_node(interface, node_num) -> dict[str, Any]:
     """
     Look up a node's cached info dict by its integer node number.
 
@@ -367,11 +368,11 @@ def request_full_config(iface) -> None:
         for field in descriptor.fields:
             try:
                 request(field)
-            except Exception as exc:  # pragma: no cover - defensive
+            except Exception as exc:  # pragma: no cover - defensive  # noqa: BLE001
                 logger.debug("requestConfig(%s) failed (skipped): %s", field.name, exc)
 
 
-def read_device_config(interface) -> Dict[str, Any]:
+def read_device_config(interface) -> dict[str, Any]:
     """
     Reads the configuration from the interface and serializes it to JSON,
     using the registry to shape the output.
@@ -451,7 +452,7 @@ def read_device_config(interface) -> Dict[str, Any]:
             lora = interface.localNode.localConfig.lora
             if lora is not None and lora.region != 0:
                 region = config_pb2.Config.LoRaConfig.RegionCode.Name(lora.region)
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
 
         config_dict["owner"] = {
@@ -462,7 +463,7 @@ def read_device_config(interface) -> Dict[str, Any]:
             "region": region,
             "role": _resolve_role(interface, user_info),
         }
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to read owner info: %s", exc)
         config_dict["owner"] = {
             "long_name": "", "short_name": "", "hw_model": "",
@@ -472,7 +473,7 @@ def read_device_config(interface) -> Dict[str, Any]:
     return config_dict
 
 
-def _serialize_schema() -> Dict[str, Any]:
+def _serialize_schema() -> dict[str, Any]:
     """
     Serialise the section/field registry into a JSON-safe schema the Web UI
     can use to render inputs (types, enum options, min/max, max_length).
@@ -496,12 +497,12 @@ def _serialize_schema() -> Dict[str, Any]:
     return schema
 
 
-def read_device_config_schema() -> Dict[str, Any]:
+def read_device_config_schema() -> dict[str, Any]:
     """Public accessor for the field schema consumed by the Web UI."""
     return _serialize_schema()
 
 
-def validate_and_apply_patch(section_name: str, patch: Dict[str, Any], local_node, interface) -> Tuple[bool, bool]:
+def validate_and_apply_patch(section_name: str, patch: dict[str, Any], local_node, interface) -> tuple[bool, bool]:
     """
     Validates a patch against the registry and applies it to the protobuf object in memory,
     then writes to the radio.
@@ -529,7 +530,7 @@ def validate_and_apply_patch(section_name: str, patch: Dict[str, Any], local_nod
             local_node.setOwner(long_name=long_name, short_name=short_name)
         except SystemExit:
             # meshtastic library calls sys.exit() on some bad inputs, catch if it does
-            raise ValueError("Invalid owner names provided")
+            raise ValueError("Invalid owner names provided") from None
         return True, False
 
     source_proto = local_node.localConfig if section_info["category"] == "config" else local_node.moduleConfig
@@ -539,13 +540,11 @@ def validate_and_apply_patch(section_name: str, patch: Dict[str, Any], local_nod
     section_obj = getattr(source_proto, section_name)
     
     # Check confirm requirement for danger zones
-    if section_name == "device" and patch.get("role") == "ROUTER":
-        if not patch.pop("confirm", False):
-            raise ValueError("Setting role to ROUTER requires 'confirm': true")
-            
-    if section_name == "lora" and "tx_enabled" in patch and not patch["tx_enabled"]:
-        if not patch.pop("confirm", False):
-            raise ValueError("Disabling LoRa TX requires 'confirm': true")
+    if section_name == "device" and patch.get("role") == "ROUTER" and not patch.pop("confirm", False):
+        raise ValueError("Setting role to ROUTER requires 'confirm': true")
+
+    if section_name == "lora" and "tx_enabled" in patch and not patch["tx_enabled"] and not patch.pop("confirm", False):
+        raise ValueError("Disabling LoRa TX requires 'confirm': true")
 
     # Manual LoRa parameter gating: when use_preset is true (the default and
     # the value applied by any modem preset), the manual radio params are
@@ -569,8 +568,8 @@ def validate_and_apply_patch(section_name: str, patch: Dict[str, Any], local_nod
                 if flags_val < 0 or flags_val > 7:
                     raise ValueError
             except (TypeError, ValueError):
-                raise ValueError("'flags' must be an integer 0-7 (bitfield)")
-            setattr(section_obj, "flags", flags_val)
+                raise ValueError("'flags' must be an integer 0-7 (bitfield)") from None
+            section_obj.flags = flags_val
             # Remove from patch so it's not processed again
             patch.pop("flags")
 
@@ -607,7 +606,7 @@ def validate_and_apply_patch(section_name: str, patch: Dict[str, Any], local_nod
                 cast = float if field_info["type"] == "float" else int
                 value = cast(value)
             except (TypeError, ValueError):
-                raise ValueError(f"'{field_name}' must be a number")
+                raise ValueError(f"'{field_name}' must be a number") from None
             if fmin is not None and value < fmin:
                 raise ValueError(f"'{field_name}' must be >= {fmin}")
             if fmax is not None and value > fmax:

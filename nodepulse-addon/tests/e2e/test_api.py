@@ -1,5 +1,6 @@
-import pytest
 from unittest.mock import AsyncMock
+
+import pytest
 
 pytestmark = pytest.mark.asyncio
 
@@ -92,7 +93,7 @@ async def test_get_position_history(aiohttp_client, app):
     resp = await client.get("/api/position-history")
     assert resp.status == 200
     data = await resp.json()
-    assert isinstance(data, dict) or isinstance(data, list)
+    assert isinstance(data, (dict, list))
 
 async def test_get_position_history_for_node(aiohttp_client, app):
     client = await aiohttp_client(app)

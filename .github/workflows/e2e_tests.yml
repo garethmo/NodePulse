@@ -40,7 +40,7 @@ jobs:
       working-directory: ./nodepulse-addon
       run: |
         python -m pip install ruff
-        ruff check app tests/unit
+        ruff check app tests/unit tests/e2e tests/conftest.py
 
     - name: Run unit tests with coverage
       working-directory: ./nodepulse-addon

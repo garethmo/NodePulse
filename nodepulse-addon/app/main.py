@@ -15,46 +15,47 @@ Shutdown sequence (on SIGTERM from HA Supervisor):
   2. We cancel the monitor Task and cleanly close the Meshtastic interface.
 """
 import asyncio
-import time
 import logging
+import time
+from contextlib import suppress
 from pathlib import Path
 
-from aiohttp import web
 import aiohttp_cors
+from aiohttp import web
 
 from .config import load_config, resolve_target
 from .connection import MeshtasticConnection
 from .mqtt_bridge import MqttBridge
-from .telegram_bot import TelegramBot
 from .routes import (
+    handle_add_waypoint,
     handle_channels,
     handle_clear_stale_nodes,
     handle_delete_node,
+    handle_delete_waypoint,
     handle_export_messages,
+    handle_favorites,
+    handle_get_device_config,
+    handle_get_security_scan,
+    handle_get_waypoints,
     handle_messages,
     handle_nodes,
     handle_packets,
     handle_position_history,
+    handle_put_device_config_section,
+    handle_reload_device_config,
     handle_request_position,
     handle_send,
+    handle_set_favorite,
+    handle_set_tags,
     handle_sniffer_stats,
     handle_status,
-    handle_set_tags,
     handle_tags,
-    handle_set_favorite,
-    handle_favorites,
     handle_traceroute,
     handle_track_node,
     handle_tracked_nodes,
-    handle_get_waypoints,
-    handle_add_waypoint,
     handle_update_waypoint,
-    handle_delete_waypoint,
-    handle_get_device_config,
-    handle_put_device_config_section,
-    handle_reload_device_config,
-    handle_get_security_scan,
 )
+from .telegram_bot import TelegramBot
 
 # Configure structured logging early so all subsequent imports can log.
 logging.basicConfig(
@@ -101,7 +102,7 @@ async def _on_startup(app: web.Application) -> None:
             await asyncio.sleep(10)
             try:
                 await conn.expire_pending_acks()
-            except Exception as exc:  # defensive: never crash the task
+            except Exception as exc:  # defensive: never crash the task  # noqa: BLE001
                 logger.debug("ACK expiry sweep error (ignored): %s", exc)
 
     app["ack_expiry_task"] = asyncio.create_task(_run_ack_expiry_loop())
@@ -123,7 +124,7 @@ async def _on_startup(app: web.Application) -> None:
                         destination=dest,
                         channel=msg["channel"]
                     )
-            except Exception as exc:  # defensive: never crash the task
+            except Exception as exc:  # defensive: never crash the task  # noqa: BLE001
                 logger.debug("Scheduled messages processor error (ignored): %s", exc)
     app["scheduled_messages_task"] = asyncio.create_task(_run_scheduled_messages_loop())
     
@@ -146,26 +147,20 @@ async def _on_shutdown(app: web.Application) -> None:
     monitor_task: asyncio.Task = app.get("monitor_task")
     if monitor_task and not monitor_task.done():
         monitor_task.cancel()
-        try:
+        with suppress(asyncio.CancelledError):  # expected on cancel
             await monitor_task
-        except asyncio.CancelledError:
-            pass  # expected on cancel
 
     channel_refresh_task: asyncio.Task = app.get("channel_refresh_task")
     if channel_refresh_task and not channel_refresh_task.done():
         channel_refresh_task.cancel()
-        try:
+        with suppress(asyncio.CancelledError):  # expected on cancel
             await channel_refresh_task
-        except asyncio.CancelledError:
-            pass  # expected on cancel
 
     ack_expiry_task: asyncio.Task = app.get("ack_expiry_task")
     if ack_expiry_task and not ack_expiry_task.done():
         ack_expiry_task.cancel()
-        try:
+        with suppress(asyncio.CancelledError):  # expected on cancel
             await ack_expiry_task
-        except asyncio.CancelledError:
-            pass  # expected on cancel
 
     mqtt_bridge = app.get("mqtt_bridge")
     if mqtt_bridge:

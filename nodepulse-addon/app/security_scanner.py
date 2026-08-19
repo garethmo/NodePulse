@@ -22,7 +22,7 @@ directly from the live interface object without making any radio I/O calls.
 """
 import hashlib
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +118,7 @@ def _channel_is_disabled(channel) -> bool:
         # Protobuf enum: DISABLED = 0
         role_val = role.value if hasattr(role, "value") else int(role)
         return role_val == 0
-    except Exception:
+    except Exception:  # noqa: BLE001
         return False
 
 
@@ -126,7 +126,7 @@ def _channel_is_disabled(channel) -> bool:
 # Public API
 # ---------------------------------------------------------------------------
 
-def scan_channel_keys(interface) -> List[Dict[str, Any]]:
+def scan_channel_keys(interface) -> list[dict[str, Any]]:
     """
     Inspect every active channel's PSK and return a list of security findings.
 
@@ -151,9 +151,9 @@ def scan_channel_keys(interface) -> List[Dict[str, Any]]:
     if raw_channels is None:
         raise ValueError("Channel list not available — try refreshing after connecting")
 
-    findings: List[Dict[str, Any]] = []
+    findings: list[dict[str, Any]] = []
     # Map fingerprint → channel_index for duplicate detection.
-    seen_fingerprints: Dict[str, int] = {}
+    seen_fingerprints: dict[str, int] = {}
 
     for channel in raw_channels.values() if hasattr(raw_channels, "values") else raw_channels:
         try:
@@ -172,7 +172,7 @@ def scan_channel_keys(interface) -> List[Dict[str, Any]]:
             severity, reason = _classify_key(resolved)
 
             # Duplicate detection (only meaningful for keys that exist at all).
-            duplicate_of: Optional[int] = None
+            duplicate_of: int | None = None
             if resolved:
                 fp = _key_fingerprint(resolved)
                 if fp in seen_fingerprints:
@@ -188,7 +188,7 @@ def scan_channel_keys(interface) -> List[Dict[str, Any]]:
                 "duplicate_of":  duplicate_of,
             })
 
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception as exc:  # pragma: no cover — defensive  # noqa: BLE001
             logger.debug("Security scan skipped a channel due to error: %s", exc)
 
     findings.sort(key=lambda f: f["channel_index"])
