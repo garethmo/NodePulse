@@ -2,6 +2,34 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.21.0] - 2026-08-20
+### Added
+- **Security keys surfaced in the UI** — The **Security & Admin Keys** section now renders in the Configure tab (and in remote nodes), showing `public_key` / `private_key` / `admin_key` as read-only, copyable base64 chips. Keys are base64-encoded in the API (`serialize_config_sections`) and base64-decoded on write (`validate_and_apply_patch`); the private key is masked until revealed. This is the exact workflow for wiring up remote admin: copy this gateway's public key into each target's **Security → Admin Keys**.
+- **Gateway keys reference in Remote Admin** — The Remote Admin view now shows a "This gateway — keys for targets" strip with copy buttons for the gateway's public key and admin keys (from `GET /api/admin/available`), so you can grab the gateway's key without leaving the view. `remote_admin_capability()` returns `public_key` / `admin_keys` (base64).
+- **`security` is now a reboot section** — Writing the Security section reports a reboot requirement, since admin-key/keypair changes only take effect on reboot.
+- **Remote node administration** — New "Remote Admin" view (sidebar + header tab) that administers OTHER mesh nodes over the Meshtastic AdminModule: read/edit their full Config + ModuleConfig (schema-driven forms reusing the device-config cards), set the owner, reboot/shutdown with a delay, factory reset (config-only or full device), reset the remote NodeDB, set/clear a fixed position, sync the remote clock, and evict nodes from the remote NodeDB.
+- **Admin capability detection** — The backend reports whether the gateway can administer remote nodes (`GET /api/admin/available`): an `admin` channel, Security admin keys, or admin channel enabled. The UI shows a warning banner when none is configured. Admin round-trips are bounded by a timeout (15 s per action, 25 s for a full config read) so a dead or non-ADMIN node can never hang the app. A channel merely NAMED `admin` is not capability on its own — firmware only honours it when `admin_channel_enabled` (the legacy toggle, now hidden from the mobile apps) is set — so `remote_admin_capability()` also checks for a PKC keypair (`public_key` + `private_key`).
+- **Security admin-key support** — Remote admin no longer requires a channel literally named `admin`. Modern firmware administers via **Security → Admin Keys** (`Config.SecurityConfig.admin_key`): the gateway signs with its private key and the target accepts it over the primary channel. `remote_admin_capability()` treats non-empty admin keys, a PKC keypair, or `admin_channel_enabled` as valid capability; the fast-fail only fires when none are configured.
+- **Correct admin send channel** — Admin traffic is sent on the channel the firmware actually honours: the PRIMARY channel (index 0) with PKC authentication against the target's `admin_key` list (firmware 2.5+ default), or the reserved `admin` channel only when `admin_channel_enabled` (legacy admin) is set. The meshtastic library otherwise sends to any channel named 'admin' — which firmware ignores unless legacy admin is enabled — making every round-trip time out. `_bind_admin_channel` wraps the remote node's `_sendAdmin` so the channel lookup is overridden just for that node's sends and restored afterwards.
+- **Backend remote-admin API** — `GET /api/admin/{node_id}/config`, `PUT /api/admin/{node_id}/config/{section}`, and `POST /api/admin/{node_id}/action/{action}` in `routes.py`, with logic in the new `app/remote_admin.py`. Crucially, remote nodes are built WITHOUT `interface.getNode()`, which would call `our_exit()`/`sys.exit()` on a channel timeout and kill the addon.
+
+### Changed
+- **`device_config.py`** — Extracted `serialize_config_sections(local_config, module_config)` (the Config/ModuleConfig → dict + `_schema` serialization) so both the local and remote config readers share one code path.
+- **Frontend reuse** — `device_config.js` now exports `renderDeviceConfigSections(container, data, options)` (pluggable save/toast hooks, optional local reboot banner) and its `SECTION_META`/`SECTION_ORDER`; `remote_admin.js` reuses the same schema-driven cards for remote config editing. `showToast` and `getSelfNodeId` are exposed on `window` for sub-view modules.
+
+### Fixed
+- **Empty string fields no longer serialize as `[]`** — The base64 encoder previously treated any empty iterable as an empty repeated-bytes list, so singular string fields (e.g. `wifi_ssid`, `wifi_psk`, `ntp_server`) read back as `[]` instead of `""`. Encoding is now driven by the field's declared protobuf type/label rather than guessed from the value.
+- **Device-config read errors include the cause** — `GET /api/device-config` now appends the actual exception to the error response so transient radio/handshake failures are diagnosable instead of a bare "Failed to read device configuration".
+
+## [1.20.0] - 2026-08-19
+### Added
+- **Terrain link analysis (LOS / Fresnel link budget)** — New "⛰ Terrain" button in the Map view opens a panel that lets you pick two nodes and computes a point-to-point radio link analysis over real terrain. The backend fetches elevation profiles from the DEM (default: OpenTopoData SRTM30m, configurable via `terrain_dem_url`), then reports free-space path loss, Fresnel zone clearance (with 4/3-earth earth-bulge correction), effective received signal, and verdicts (LOS clear, Fresnel margin, blocked). A profile chart draws the terrain cross-section with the LOS beam and first Fresnel zone. API: `GET /api/terrain/elevation` and `POST /api/terrain/link`.
+- **3D terrain view** — New "🏔 3D" button in the Map view switches the map to a 3D terrain view (MapLibre GL, loaded on demand from CDN) using AWS Terrain Tiles (terrarium encoding) with hillshading and extruded node markers. The 3D view tears down cleanly when you toggle back or leave the Map view.
+- **Frontend terrain support** — `web_ui/js/terrain.js` module wired into `app.js` (panel init, node-select population, 3D toggle handling, teardown on view switch); terrain panel styling added to `main.css`.
+
+### Fixed
+- **`_interpolate_nones`** — Helper added in `routes.py` to fill gaps in elevation profiles returned by the DEM before geometry computations run.
+
 ## [1.19.2] - 2026-08-19
 ### Fixed
 - **Traceroute spam no longer wedges the app** — Running many traceroutes in quick succession could pile up an unbounded number of background tasks and threads (each serialized traceroute can block for up to 300 s), eventually freezing the addon. The pending queue is now capped (8); further requests are rejected with `dispatched: false` instead of being accepted and frozen.

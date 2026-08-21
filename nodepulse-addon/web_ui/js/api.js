@@ -285,3 +285,99 @@ export async function reloadDeviceConfig() {
 export async function fetchSecurityScan() {
   return _apiFetch('/security/scan');
 }
+
+/**
+ * Check whether the gateway can administer remote nodes (has an ADMIN channel).
+ * Returns { available, admin_channel_index, actions }.
+ */
+export async function fetchAdminAvailable() {
+  return _apiFetch('/admin/available');
+}
+
+/**
+ * Read a remote node's full configuration over the admin channel.
+ * @param {string} nodeId - The remote node's canonical "!hex" ID.
+ * @param {boolean} force - Force fetching from the radio, bypassing local cache.
+ */
+export async function fetchRemoteConfig(nodeId, force = false) {
+  const url = force ? `/admin/${encodeURIComponent(nodeId)}/config?force=true` : `/admin/${encodeURIComponent(nodeId)}/config`;
+  return _apiFetch(url);
+}
+
+/**
+ * Read a single config section from a remote node over the admin channel.
+ * @param {string} nodeId - The remote node's canonical "!hex" ID.
+ * @param {string} section - Section name (e.g. 'lora', 'device').
+ */
+export async function fetchRemoteConfigSection(nodeId, section) {
+  return _apiFetch(`/admin/${encodeURIComponent(nodeId)}/config/${encodeURIComponent(section)}`);
+}
+
+/**
+ * Patch a single config section on a remote node.
+ * @param {string} nodeId - The remote node's canonical "!hex" ID.
+ * @param {string} section - Section name (e.g. 'lora', 'device', 'owner').
+ * @param {Record<string, unknown>} data - Partial field → value map.
+ * @param {boolean} [confirm=false] - Required for danger-zone changes.
+ */
+export async function saveRemoteConfig(nodeId, section, data, confirm = false) {
+  const body = confirm ? { ...data, confirm: true } : data;
+  return _apiFetch(`/admin/${encodeURIComponent(nodeId)}/config/${encodeURIComponent(section)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+/**
+ * Run a named admin action against a remote node.
+ * @param {string} nodeId - The remote node's canonical "!hex" ID.
+ * @param {string} action - reboot | shutdown | factory_reset | factory_reset_device |
+ *   nodedb_reset | set_fixed_position | clear_fixed_position | set_time | remove_node.
+ * @param {Record<string, unknown>} [params] - Action-specific parameters.
+ */
+export async function remoteAdminAction(nodeId, action, params = {}) {
+  return _apiFetch(`/admin/${encodeURIComponent(nodeId)}/action/${encodeURIComponent(action)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Terrain Link Analysis API
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetch ground elevation for a single lat/lng point.
+ * Returns { lat, lng, elevation_m } (elevation_m may be null if DEM unavailable).
+ * @param {number} lat
+ * @param {number} lng
+ */
+export async function fetchTerrainElevation(lat, lng) {
+  return _apiFetch(`/terrain/elevation?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`);
+}
+
+/**
+ * Analyse a point-to-point radio link over terrain (LOS / Fresnel / budget).
+ * @param {object} body - See the POST /api/terrain/link schema.
+ */
+export async function analyzeTerrainLink(body) {
+  return _apiFetch('/terrain/link', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+/**
+ * Analyse radial radio coverage (Site Planner).
+ * @param {object} body - See the POST /api/terrain/coverage schema.
+ */
+export async function analyzeTerrainCoverage(body) {
+  return _apiFetch('/terrain/coverage', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}

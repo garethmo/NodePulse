@@ -1104,3 +1104,78 @@ class TestCapturePosition:
         conn._capture_position({"from": 0x1234, "decoded": {}})
         assert "!00001234" in conn._pending_position_dests
         assert conn._pos_history == {}
+
+class TestRemoteAdminConnection:
+    def _conn(self):
+        conn = MeshtasticConnection(
+            host="localhost", port=4403, mode="tcp", access_key="", config=Mock()
+        )
+        conn._interface = MagicMock()
+        conn._connected = True
+        return conn
+
+    @pytest.mark.asyncio
+    async def test_get_remote_config_no_admin_channel(self):
+        import tempfile
+        import app.remote_cache as remote_cache_mod
+
+        conn = self._conn()
+        # No admin capability (no 'admin' channel, no admin keys, admin channel
+        # disabled) -> fast-fail ConnectionError.
+        local_node = MagicMock()
+        ch = MagicMock()
+        ch.settings.name = "LongFast"
+        local_node.channels = [ch]
+        security = MagicMock()
+        security.admin_channel_enabled = False
+        security.admin_key = []
+        security.public_key = b""
+        security.private_key = b""
+        local_node.localConfig = MagicMock()
+        local_node.localConfig.security = security
+        conn._interface.localNode = local_node
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_file = os.path.join(tmp, "remote_configs.json")
+            with patch.object(remote_cache_mod, "_DATA_DIR", tmp), \
+                 patch.object(remote_cache_mod, "_CACHE_FILE", cache_file):
+                with pytest.raises(ConnectionError, match="no admin capability"):
+                    await conn.get_remote_config("!1234abcd")
+
+    @pytest.mark.asyncio
+    async def test_get_remote_config_timeout_maps_to_connection_error(self):
+        import tempfile
+        import app.remote_cache as remote_cache_mod
+
+        conn = self._conn()
+
+        def blocking_sync(node_id, force=False):
+            import time
+            time.sleep(2)
+
+        async def fast_run_remote_admin(func, *, timeout, what):
+            return await conn.__class__._run_remote_admin(conn, func, timeout=0.05, what=what)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_file = os.path.join(tmp, "remote_configs.json")
+            with patch.object(remote_cache_mod, "_DATA_DIR", tmp), \
+                 patch.object(remote_cache_mod, "_CACHE_FILE", cache_file), \
+                 patch.object(conn, "_get_remote_config_sync", side_effect=blocking_sync), \
+                 patch.object(conn, "_run_remote_admin", side_effect=fast_run_remote_admin):
+                with pytest.raises(ConnectionError, match="timed out"):
+                    await conn.get_remote_config("!1234abcd")
+
+    @pytest.mark.asyncio
+    async def test_remote_admin_available_returns_dict(self):
+        conn = self._conn()
+        local_node = MagicMock()
+        ch = MagicMock()
+        ch.settings.name = "admin"
+        ch.index = 1
+        local_node.channels = [ch]
+        conn._interface.localNode = local_node
+
+        result = await conn.remote_admin_available()
+        assert result["available"] is True
+        assert result["admin_channel_index"] == 1
+        assert "reboot" in result["actions"]

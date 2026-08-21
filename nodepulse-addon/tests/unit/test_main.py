@@ -238,6 +238,10 @@ class TestBuildApp:
         assert "/api/favorites" in add_get_calls
         assert "/api/favorites" in add_put_calls
         assert "/api/device-config" in add_get_calls
+        assert "/api/admin/available" in add_get_calls
+        assert "/api/admin/{node_id}/config" in add_get_calls
+        assert "/api/admin/{node_id}/config/{section}" in add_put_calls
+        assert "/api/admin/{node_id}/action/{action}" in add_post_calls
 
 
 class TestServeIndex:

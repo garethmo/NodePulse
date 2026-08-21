@@ -313,6 +313,11 @@ class MeshtasticConnection:
         # radio write calls. Never held during _lock to avoid deadlock.
         self._config_write_lock = threading.Lock()
 
+        # Serialises remote-admin operations (each performs a series of blocking
+        # admin round-trips). Remote admin is niche, and overlapping ops would
+        # interleave radio traffic, so a single lock is the simplest safe model.
+        self._remote_admin_lock = threading.Lock()
+
         # Destination node IDs of in-flight traceroute requests. The reply
         # packet only carries the origin (the responding node), not the original
         # request target, so we remember the destinations to attribute the
@@ -494,7 +499,21 @@ class MeshtasticConnection:
         Returns:
             True if the send was accepted by the library, False otherwise.
         """
-        return await asyncio.to_thread(self._send_message_sync, text, destination, channel)
+        logger.debug(
+            "Sending mesh message: text='%s' destination=%s channel=%s",
+            text[:30] if text else "",
+            destination or "broadcast",
+            channel,
+        )
+        result = await asyncio.to_thread(self._send_message_sync, text, destination, channel)
+        logger.debug(
+            "Mesh message sent: text='%s' destination=%s channel=%s result=%s",
+            text[:30] if text else "",
+            destination or "broadcast",
+            channel,
+            result,
+        )
+        return result
 
     async def send_mqtt_proxy_message(self, topic: str, data: bytes) -> bool:
         """Forward an MQTT payload to the local node's radio interface."""
@@ -778,6 +797,257 @@ class MeshtasticConnection:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Device config reload failed: %s", exc)
             return False, f"request_failed: {exc}"
+
+    # ------------------------------------------------------------------
+    # Remote Node Administration
+    # ------------------------------------------------------------------
+
+    async def remote_admin_available(self) -> dict[str, Any]:
+        """
+        Report whether the gateway can administer remote nodes (admin channel OR
+        Security admin keys) and which admin actions are supported.
+        """
+        return await asyncio.to_thread(self._remote_admin_available_sync)
+
+    def _remote_admin_available_sync(self) -> dict[str, Any]:
+        from .remote_admin import remote_actions, remote_admin_capability
+
+        with self._lock:
+            iface = self._interface
+
+        if iface is None:
+            capability = {
+                "available": False,
+                "admin_channel_index": None,
+                "has_admin_channel": False,
+                "admin_key_count": 0,
+                "admin_channel_enabled": False,
+                "has_keypair": False,
+                "public_key": None,
+                "admin_keys": [],
+            }
+        else:
+            capability = remote_admin_capability(iface)
+
+        return {**capability, "actions": remote_actions()}
+
+    async def _run_remote_admin(
+        self, func, *, timeout: float, what: str
+    ) -> dict[str, Any]:
+        """
+        Run one remote-admin sync operation in a thread, serialized by
+        ``_remote_admin_lock`` and bounded by ``timeout``.
+
+        Converts the outer ``asyncio.wait_for`` timeout into a helpful
+        ``ConnectionError`` (the library's per-round-trip wait can be up to
+        20 s each, so the bounded cap is what protects the UI from hanging).
+        """
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(func),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            raise ConnectionError(
+                f"{what} for a remote node timed out after {timeout:.0f}s — "
+                "the node may be offline, out of range, or not authorized: its "
+                "Security → Admin Keys must include this gateway's public key "
+                "(or, for pre-2.5 firmware, it must share the admin channel)"
+            ) from None
+
+    async def get_remote_config(self, node_id: str, force: bool = False) -> dict[str, Any]:
+        """
+        Read a remote node's full configuration over the admin channel.
+
+        Budget: 25 s session-key handshake + (26 sections * 4 s timeout) +
+        ~15 s overhead = ~145 s max. The inner loop moves quickly if packets
+        arrive, but we set a 150 s outer cap as a safety net.
+
+        Raises ``ConnectionError`` on timeout/unreachable or when the gateway
+        has no ADMIN channel, ``ValueError`` on bad input.
+        """
+        return await self._run_remote_admin(
+            lambda: self._get_remote_config_sync(node_id, force=force),
+            timeout=150.0,
+            what="Reading remote config",
+        )
+
+
+    def _get_remote_config_sync(self, node_id: str, force: bool = False) -> dict[str, Any]:
+        from .remote_admin import (
+            REMOTE_CONFIG_TIMEOUT_S,
+            _make_remote_node,
+            read_remote_config,
+            request_remote_config,
+            wait_for_remote_config,
+        )
+        from .remote_cache import get_cached_remote_config, update_cached_remote_config
+
+        if not force:
+            cached = get_cached_remote_config(node_id)
+            if cached:
+                logger.debug("Returning locally cached remote config for %s", node_id)
+                return cached
+
+        with self._remote_admin_lock:
+            with self._lock:
+                iface = self._interface
+
+            if not iface:
+                raise ConnectionError("Node is not connected")
+
+            remote_node = _make_remote_node(iface, node_id)
+            # Fire all section requests over the radio without waiting for
+            # individual acks (pipelined). Responses arrive asynchronously and
+            # are written into remote_node.localConfig / moduleConfig by the
+            # library's receive thread. sections_sent tells wait_for_remote_config
+            # how many responses to expect.
+            sections_sent = request_remote_config(remote_node)
+            # Wait for responses; raises ConnectionError if zero arrive.
+            received = wait_for_remote_config(
+                remote_node,
+                sections_sent=sections_sent,
+                timeout_s=REMOTE_CONFIG_TIMEOUT_S,
+            )
+            if not received:
+                raise ConnectionError(
+                    f"Reading remote config for a remote node timed out after {REMOTE_CONFIG_TIMEOUT_S:.0f}s"
+                    " — the node may be offline, out of range, or not authorized: its "
+                    "Security → Admin Keys must include this gateway's public key "
+                    "(or, for pre-2.5 firmware, it must share the admin channel)"
+                )
+            
+            config_dict = read_remote_config(remote_node, iface)
+            update_cached_remote_config(node_id, config_dict)
+            return config_dict
+
+    async def get_remote_config_section(self, node_id: str, section: str) -> dict[str, Any]:
+        """
+        Fetch a single configuration section from a remote node.
+        """
+        return await self._run_remote_admin(
+            lambda: self._get_remote_config_section_sync(node_id, section),
+            timeout=40.0,
+            what=f"Reading remote config section {section}",
+        )
+
+    def _get_remote_config_section_sync(self, node_id: str, section: str) -> dict[str, Any]:
+        from .remote_admin import (
+            _make_remote_node,
+            read_remote_config,
+            request_remote_config_section,
+        )
+        from .remote_cache import load_remote_cache, save_remote_cache
+
+        with self._remote_admin_lock:
+            with self._lock:
+                iface = self._interface
+
+            if not iface:
+                raise ConnectionError("Node is not connected")
+
+            remote_node = _make_remote_node(iface, node_id)
+            success = request_remote_config_section(remote_node, section)
+            if not success:
+                raise ConnectionError(
+                    f"Failed to read remote config section '{section}' — timed out or unreachable"
+                )
+
+            # Serialize the full remote config (only the one section we just
+            # fetched will have real data; others will be zeroed protobuf defaults).
+            # We therefore only patch *this* section into the persistent cache
+            # rather than overwriting the whole entry — preserving data for all
+            # other sections that were fetched in the original full-config load.
+            full_dict = read_remote_config(remote_node, iface)
+
+            if section not in full_dict:
+                raise ConnectionError(
+                    f"Remote node did not return section '{section}'"
+                )
+
+            section_data = full_dict[section]
+
+            # Patch just this section into the on-disk cache.
+            cache = load_remote_cache()
+            if node_id in cache:
+                cache[node_id][section] = section_data
+            else:
+                # No full cache entry yet — store what we have so future
+                # cache loads at least have this section.
+                cache[node_id] = full_dict
+            save_remote_cache(cache)
+
+            return section_data
+
+    async def set_remote_config(
+        self, node_id: str, section: str, patch: dict[str, Any]
+    ) -> dict[str, Any]:
+        """
+        Validate and apply a config patch to a remote node over the admin channel.
+        Returns ``{ applied, section, reboot_required }``.
+        """
+        from .remote_admin import REMOTE_ADMIN_TIMEOUT_S
+
+        return await self._run_remote_admin(
+            lambda: self._set_remote_config_sync(node_id, section, patch),
+            timeout=REMOTE_ADMIN_TIMEOUT_S,
+            what="Writing remote config",
+        )
+
+    def _set_remote_config_sync(
+        self, node_id: str, section: str, patch: dict[str, Any]
+    ) -> dict[str, Any]:
+        from .remote_admin import (
+            _make_remote_node,
+            apply_remote_config,
+            request_remote_config,
+        )
+
+        with self._remote_admin_lock:
+            with self._lock:
+                iface = self._interface
+
+            if not iface:
+                raise ConnectionError("Node is not connected")
+
+            # The config must be loaded in-memory before writeConfig() can send
+            # it, so fetch it first, then apply the patch on top.
+            remote_node = _make_remote_node(iface, node_id)
+            request_remote_config(remote_node)
+            return apply_remote_config(remote_node, iface, section, patch)
+
+    async def remote_admin_action(
+        self, node_id: str, action: str, params: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """
+        Run a named admin action (reboot, shutdown, factory reset, nodedb
+        reset, fixed position, set time, remove node) against a remote node.
+
+        Bounded by ``REMOTE_ADMIN_TIMEOUT_S``; raises ``ConnectionError`` on
+        timeout/unreachable, ``ValueError`` on unknown action.
+        """
+        from .remote_admin import REMOTE_ADMIN_TIMEOUT_S
+
+        return await self._run_remote_admin(
+            lambda: self._remote_admin_action_sync(node_id, action, params),
+            timeout=REMOTE_ADMIN_TIMEOUT_S,
+            what=f"Admin action '{action}'",
+        )
+
+    def _remote_admin_action_sync(
+        self, node_id: str, action: str, params: dict[str, Any] | None
+    ) -> dict[str, Any]:
+        from .remote_admin import _make_remote_node, execute_admin_action
+
+        with self._remote_admin_lock:
+            with self._lock:
+                iface = self._interface
+
+            if not iface:
+                raise ConnectionError("Node is not connected")
+
+            remote_node = _make_remote_node(iface, node_id)
+            return execute_admin_action(remote_node, action, params)
 
     async def get_packet_log(self, limit: int = 200) -> list[dict[str, Any]]:
         """Return the most recent captured packets (newest first, up to limit)."""
@@ -2387,6 +2657,9 @@ class MeshtasticConnection:
         # _lock is now released — proceed with the merge.
         nodes_raw = dict(self._interface.nodes or {})
 
+        from .remote_cache import load_remote_cache
+        remote_cache = load_remote_cache()
+
         result = []
 
         # Normalize a node identity (int or "!hex" string) to the canonical
@@ -2458,6 +2731,7 @@ class MeshtasticConnection:
                     "barometric_pressure": environment.get("barometricPressure"),
                     "gas_resistance": environment.get("gasResistance"),
                     "role": MeshtasticConnection._normalize_role(user.get("role")),
+                    "has_remote_config": node_id in remote_cache,
                 }
                 # traceroute is NOT present in the library's raw node dict —
                 # it is only populated by _capture_traceroute into our own

@@ -28,6 +28,8 @@ from .connection import MeshtasticConnection
 from .mqtt_bridge import MqttBridge
 from .routes import (
     handle_add_waypoint,
+    handle_admin_action,
+    handle_admin_available,
     handle_channels,
     handle_clear_stale_nodes,
     handle_delete_node,
@@ -35,6 +37,8 @@ from .routes import (
     handle_export_messages,
     handle_favorites,
     handle_get_device_config,
+    handle_get_remote_config,
+    handle_get_remote_config_section,
     handle_get_security_scan,
     handle_get_waypoints,
     handle_messages,
@@ -42,6 +46,7 @@ from .routes import (
     handle_packets,
     handle_position_history,
     handle_put_device_config_section,
+    handle_put_remote_config_section,
     handle_reload_device_config,
     handle_request_position,
     handle_send,
@@ -50,12 +55,16 @@ from .routes import (
     handle_sniffer_stats,
     handle_status,
     handle_tags,
+    handle_terrain_elevation,
+    handle_terrain_link,
+    handle_terrain_coverage,
     handle_traceroute,
     handle_track_node,
     handle_tracked_nodes,
     handle_update_waypoint,
 )
 from .telegram_bot import TelegramBot
+from .terrain import TerrainService
 
 # Configure structured logging early so all subsequent imports can log.
 logging.basicConfig(
@@ -119,11 +128,18 @@ async def _on_startup(app: web.Application) -> None:
                     dest = msg.get("to_id")
                     if dest == "":
                         dest = None
+                    logger.debug(
+                        "Sending scheduled message: text='%s' destination=%s channel=%s",
+                        msg["text"][:30] if msg.get("text") else "",
+                        dest or "broadcast",
+                        msg["channel"],
+                    )
                     await conn.send_message(
                         text=msg["text"],
                         destination=dest,
                         channel=msg["channel"]
                     )
+                    await asyncio.sleep(0.1)
             except Exception as exc:  # defensive: never crash the task  # noqa: BLE001
                 logger.debug("Scheduled messages processor error (ignored): %s", exc)
     app["scheduled_messages_task"] = asyncio.create_task(_run_scheduled_messages_loop())
@@ -218,6 +234,12 @@ def build_app(config) -> web.Application:
     app["ignored_nodes"] = set(config.ignored_nodes)
     app["config"] = config
 
+    # Terrain service — lazy aiohttp session + in-memory DEM cache. The DEM
+    # source URL is configurable so installs behind restrictive networks can
+    # point at a compatible endpoint or self-hosted proxy.
+    app["terrain"] = TerrainService(dem_url=config.terrain_dem_url)
+    app.on_shutdown.append(_close_terrain)
+
     # Initialize the MQTT Bridge.
     # Pass the Config object directly rather than a plain dict so that
     # (a) the bridge gets typed access and (b) the password field is not
@@ -275,8 +297,18 @@ def build_app(config) -> web.Application:
     app.router.add_get("/api/device-config", handle_get_device_config)
     app.router.add_post("/api/device-config/reload", handle_reload_device_config)
     app.router.add_put("/api/device-config/{section}", handle_put_device_config_section)
+    # Remote node administration (requires admin capability on the gateway)
+    app.router.add_get("/api/admin/available", handle_admin_available)
+    app.router.add_get("/api/admin/{node_id}/config", handle_get_remote_config)
+    app.router.add_get("/api/admin/{node_id}/config/{section}", handle_get_remote_config_section)
+    app.router.add_put("/api/admin/{node_id}/config/{section}", handle_put_remote_config_section)
+    app.router.add_post("/api/admin/{node_id}/action/{action}", handle_admin_action)
     # Security scanner
     app.router.add_get("/api/security/scan", handle_get_security_scan)
+    # Terrain link analysis
+    app.router.add_get("/api/terrain/elevation", handle_terrain_elevation)
+    app.router.add_post("/api/terrain/link", handle_terrain_link)
+    app.router.add_post("/api/terrain/coverage", handle_terrain_coverage)
 
     # --- Static Web UI ---
     # Serve the dashboard from the root path. Under HA Ingress the addon is
@@ -313,6 +345,13 @@ def build_app(config) -> web.Application:
 async def _serve_index(request: web.Request) -> web.Response:
     """Serve the Web UI index page at the root path."""
     return web.FileResponse(str(_STATIC_DIR / "index.html"))
+
+
+async def _close_terrain(app: web.Application) -> None:
+    """Close the terrain service's HTTP session on shutdown."""
+    terrain = app.get("terrain")
+    if terrain:
+        await terrain.close()
 
 
 def main() -> None:

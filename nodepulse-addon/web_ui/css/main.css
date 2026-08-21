@@ -495,6 +495,13 @@ body::before {
   box-shadow: var(--glow-teal);
 }
 
+/* Overlay toggle stack stays floating but sits just below the map filter bar
+   (which holds the Ruler / Terrain / 3D buttons). The offset clears the
+   filter bar's height + margin so the buttons never overlap it. */
+.leaflet-control-togglebar {
+  margin-top: 10px;
+}
+
 /* Override Leaflet popup styles to match dark theme */
 .leaflet-popup-content-wrapper {
   background: var(--bg-card) !important;
@@ -1404,6 +1411,185 @@ body::before {
   transition: opacity var(--transition-fast);
 }
 .waypoint-submit-btn:hover { opacity: 0.88; }
+
+/* -------------------------------------------------------------------------- */
+/* Terrain Link Panel (floating analysis tool above the map)                   */
+/* -------------------------------------------------------------------------- */
+
+.terrain-panel {
+  position: absolute;
+  top: 70px;
+  right: 16px;
+  z-index: 800;
+  width: 300px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(8px);
+  overflow: hidden;
+  max-height: calc(100vh - 120px);
+  overflow-y: auto;
+}
+.terrain-panel.hidden { display: none; }
+.terrain-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.terrain-panel-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.terrain-panel-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0;
+  line-height: 1;
+  transition: color var(--transition-fast);
+}
+.terrain-panel-close:hover { color: var(--text-primary); }
+.terrain-panel-body {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.terrain-form-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+.terrain-node-select {
+  width: 100%;
+  padding: 7px 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 12px;
+  box-sizing: border-box;
+}
+.terrain-node-select:focus { outline: none; border-color: var(--border-accent); }
+.terrain-params {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 8px;
+}
+.terrain-param {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+.terrain-param-input {
+  width: 100%;
+  padding: 6px 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 12px;
+  box-sizing: border-box;
+}
+.terrain-param-input:focus { outline: none; border-color: var(--border-accent); }
+.terrain-analyze-btn {
+  padding: 8px;
+  background: linear-gradient(135deg, #4fc3f7 0%, #0288d1 100%);
+  border: none;
+  border-radius: var(--radius-sm);
+  color: #0a0e1a;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: opacity var(--transition-fast);
+}
+.terrain-analyze-btn:hover { opacity: 0.88; }
+.terrain-verdicts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.terrain-verdict {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+}
+.terrain-verdict.verdict-ok { background: rgba(0, 212, 170, 0.15); color: #00d4aa; }
+.terrain-verdict.verdict-warn { background: rgba(255, 213, 79, 0.15); color: #ffd54f; }
+.terrain-verdict.verdict-bad { background: rgba(229, 57, 53, 0.15); color: #ef5350; }
+.terrain-profile-wrap {
+  position: relative;
+  width: 100%;
+  height: 120px;
+  background: var(--bg-subtle);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.terrain-profile-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.terrain-profile-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: var(--text-muted);
+  pointer-events: none;
+  text-align: center;
+  padding: 0 8px;
+}
+.terrain-budget-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+.terrain-budget-table td {
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+}
+.terrain-budget-table td:first-child { color: var(--text-muted); }
+.terrain-budget-table tr:last-child td { border-bottom: none; }
+
+/* Active terrain button */
+#map-terrain-btn.active {
+  background: rgba(79, 195, 247, 0.2) !important;
+  border-color: #4fc3f7 !important;
+  color: #4fc3f7 !important;
+}
+#map-3d-btn.active {
+  background: rgba(79, 195, 247, 0.2) !important;
+  border-color: #4fc3f7 !important;
+  color: #4fc3f7 !important;
+}
+
+/* 3D terrain container — fills the same space as the Leaflet full map */
+#map-3d-container {
+  flex: 1;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+}
+#map-3d-container.hidden { display: none; }
+#full-map.hidden { display: none; }
 
 /* --- Topology View -------------------------------------------------------- */
 #view-topology {
@@ -3328,6 +3514,62 @@ body.nav-open #sidebar-backdrop { display: block; }
 .cfg-input-select { width: 170px; }
 .cfg-input-disabled { opacity: 0.4; }
 
+/* Security key chips — read-only, copyable base64 key display */
+.cfg-key-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+.cfg-key-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.cfg-key-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: all;
+}
+.cfg-key-toggle,
+.cfg-key-copy {
+  flex-shrink: 0;
+  font-size: 11px;
+  padding: 3px 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), color var(--transition-fast);
+}
+.cfg-key-toggle:hover,
+.cfg-key-copy:hover {
+  border-color: var(--border-accent);
+  color: var(--text-primary);
+}
+.cfg-key-copy:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.cfg-key-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
 /* Checkbox — align right like other inputs */
 .cfg-checkbox {
   width: 16px;
@@ -3420,6 +3662,178 @@ body.nav-open #sidebar-backdrop { display: block; }
   .cfg-grid { grid-template-columns: 1fr; }
   .cfg-input { width: 120px; }
   .cfg-input-number { width: 80px; }
+}
+
+/* =========================================================================
+   Remote Node Administration view
+   ========================================================================= */
+
+#view-admin { padding: var(--space-lg); }
+
+.admin-capability-warn {
+  color: #ffb74d;
+  border-color: rgba(255, 183, 77, 0.4);
+  background: rgba(255, 183, 77, 0.1);
+}
+.admin-capability-ok {
+  color: #66bb6a;
+  border-color: rgba(102, 187, 106, 0.4);
+  background: rgba(102, 187, 106, 0.1);
+}
+
+.admin-picker {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-lg);
+  padding: var(--space-md);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+}
+.admin-picker-label {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.admin-node-select {
+  background: var(--bg-card);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 13px;
+  min-width: 260px;
+}
+.admin-picker-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* Gateway keys strip (Remote Admin view) */
+.admin-gwkeys {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-lg);
+  padding: var(--space-md);
+  background: rgba(16, 185, 129, 0.04);
+  border: 1px solid rgba(16, 185, 129, 0.25);
+  border-radius: 8px;
+}
+.admin-gwkeys-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.admin-gwkeys-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.admin-gwkeys-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.admin-gwkeys-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  width: 170px;
+  flex-shrink: 0;
+}
+.admin-gwkeys-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: all;
+}
+
+.admin-body { display: flex; flex-direction: column; gap: var(--space-lg); }
+
+.admin-identity {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-md) var(--space-lg);
+  background: linear-gradient(135deg, rgba(0, 212, 170, 0.08), rgba(0, 90, 140, 0.08));
+  border: 1px solid rgba(0, 212, 170, 0.2);
+  border-radius: 8px;
+}
+.admin-identity-icon { font-size: 28px; flex-shrink: 0; }
+.admin-identity-info { flex: 1; min-width: 0; }
+.admin-identity-name {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.admin-identity-short {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin-left: 6px;
+}
+.admin-identity-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+.admin-identity-id {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  color: var(--text-muted);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 4px 8px;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.admin-actions {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: var(--space-md) var(--space-lg);
+}
+.admin-section-title {
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+  margin: 0 0 var(--space-sm);
+}
+.admin-actions-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+.admin-action-btn { font-size: 12px; }
+
+.admin-config .cfg-grid { margin-top: var(--space-sm); }
+
+/* ---- Mobile adjustments for admin view ------------------------------------ */
+@media (max-width: 768px) {
+  #view-admin { padding: var(--space-md); }
+  .admin-node-select { min-width: 100%; }
+  .admin-identity { flex-wrap: wrap; }
+  .admin-identity-id { width: 100%; }
 }
 
 /* =========================================================================

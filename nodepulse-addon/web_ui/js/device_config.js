@@ -25,6 +25,7 @@ const SECTION_META = {
   display:           { title: 'Display',              icon: '🖥️', danger: false },
   network:           { title: 'Network / WiFi',       icon: '🌐', danger: true  },
   bluetooth:         { title: 'Bluetooth',            icon: '🔵', danger: false },
+  security:          { title: 'Security & Admin Keys', icon: '🔐', danger: true },
   telemetry:         { title: 'Telemetry',            icon: '📊', danger: false },
   neighbor_info:     { title: 'Neighbor Info',        icon: '🗺️', danger: false },
   mesh_beacon:       { title: 'Mesh Beacon',          icon: '📢', danger: false },
@@ -40,7 +41,7 @@ const SECTION_META = {
 // Ordered list of sections to render (controls card order).
 const SECTION_ORDER = [
   'owner', 'device', 'lora', 'position', 'power', 'display',
-  'network', 'bluetooth', 'telemetry', 'neighbor_info',
+  'network', 'bluetooth', 'security', 'telemetry', 'neighbor_info',
   'mesh_beacon',
   'status_message',
   'tak',
@@ -48,6 +49,12 @@ const SECTION_ORDER = [
   'ambient_lighting',
   'mqtt', 'canned_message', 'store_forward',
 ];
+
+// Security key fields render as read-only, copyable chips (never edited
+// in-place). The private key is additionally masked until revealed.
+const SECURITY_KEY_FIELDS = new Set(['public_key', 'private_key', 'admin_key']);
+
+export { SECTION_META, SECTION_ORDER };
 
 // Fields that are passwords / sensitive — render as password inputs.
 const SENSITIVE_FIELDS = new Set([
@@ -93,6 +100,12 @@ async function renderDeviceConfig() {
 
 // Export to window so app.js can call it without a circular import.
 window.renderDeviceConfig = renderDeviceConfig;
+
+// Reusable schema-driven section renderer used by the Remote Admin view to
+// edit a REMOTE node's config (same cards, different save/toast hooks).
+export function renderDeviceConfigSections(container, data, options = {}) {
+  _renderSections(container, data, options);
+}
 
 // ---------------------------------------------------------------------------
 // Refresh button
@@ -158,7 +171,7 @@ function _restoreRebootBanner() {
   }
 }
 
-function _renderSections(container, data) {
+function _renderSections(container, data, options = {}) {
   // Work on a shallow clone so we don't mutate _configData's _schema —
   // renderDeviceConfig() may be called again without a fresh fetch.
   const dataClone = { ...data };
@@ -192,14 +205,17 @@ function _renderSections(container, data) {
       meta.disabledReason = `Requires firmware 2.8.0+ (current: ${firmwareVersion || 'unknown'})`;
     }
 
-    const card = _buildSectionCard(sectionKey, sectionData, meta, schema[sectionKey]);
+    const card = _buildSectionCard(sectionKey, sectionData, meta, schema[sectionKey], options);
     grid.appendChild(card);
   }
 
   container.appendChild(grid);
 }
 
-function _buildSectionCard(sectionKey, sectionData, meta, sectionSchema = null) {
+function _buildSectionCard(sectionKey, sectionData, meta, sectionSchema = null, options = {}) {
+  const saveFn = options.saveFn || saveDeviceConfig;
+  const toastFn = options.toastFn || _toast;
+  const localBanner = options.localBanner !== false; // Remote views disable local reboot banner
   const card = document.createElement('div');
   card.className = `cfg-card${meta.danger ? ' cfg-card-danger' : ''}${meta.disabled ? ' cfg-card-disabled' : ''}`;
   card.id = `cfg-card-${sectionKey}`;
@@ -239,7 +255,7 @@ function _buildSectionCard(sectionKey, sectionData, meta, sectionSchema = null) 
   // Save + Revert buttons
   const actions = document.createElement('div');
   actions.className = 'cfg-form-actions';
-
+  
   const saveBtn = document.createElement('button');
   saveBtn.type = 'button';
   saveBtn.className = 'action-btn cfg-save-btn';
@@ -259,6 +275,31 @@ function _buildSectionCard(sectionKey, sectionData, meta, sectionSchema = null) 
     saveBtn.disabled = true;
     saveBtn.title = 'Unavailable — requires firmware 2.8.0+';
     revertBtn.disabled = true;
+  }
+
+  // Reload Section button (primarily for remote config to fetch single section)
+  if (options.reloadSectionFn && !meta.disabled) {
+    const reloadBtn = document.createElement('button');
+    reloadBtn.type = 'button';
+    reloadBtn.className = 'action-btn cfg-revert-btn';
+    reloadBtn.textContent = '⟳ Reload';
+    reloadBtn.title = 'Reload just this section from the radio';
+    reloadBtn.style.marginRight = 'auto'; // Push to left side
+    
+    reloadBtn.addEventListener('click', async () => {
+      reloadBtn.disabled = true;
+      const originalText = reloadBtn.textContent;
+      reloadBtn.textContent = '⟳ ...';
+      try {
+        await options.reloadSectionFn(sectionKey);
+      } catch (err) {
+        toastFn(`Reload failed: ${err.message}`, 'error');
+      } finally {
+        reloadBtn.disabled = false;
+        reloadBtn.textContent = originalText;
+      }
+    });
+    actions.appendChild(reloadBtn);
   }
 
   actions.appendChild(revertBtn);
@@ -310,7 +351,7 @@ function _buildSectionCard(sectionKey, sectionData, meta, sectionSchema = null) 
     saveBtn.textContent = 'Saving…';
 
     try {
-      const result = await saveDeviceConfig(
+      const result = await saveFn(
         sectionKey,
         patch,
         needsConfirm, // pass confirm=true for dangerous ops
@@ -322,14 +363,16 @@ function _buildSectionCard(sectionKey, sectionData, meta, sectionSchema = null) 
       revertBtn.disabled = true;
 
       if (result.reboot_required) {
-        _rebootPending = true;
-        _restoreRebootBanner();
-        _toast(`${meta.title} saved — reboot the node to apply.`, 'success', 6000);
+        if (localBanner) {
+          _rebootPending = true;
+          _restoreRebootBanner();
+        }
+        toastFn(`${meta.title} saved — reboot the node to apply.`, 'success', 6000);
       } else {
-        _toast(`${meta.title} saved.`, 'success');
+        toastFn(`${meta.title} saved.`, 'success');
       }
     } catch (err) {
-      _toast(`Save failed: ${err.message}`, 'error');
+      toastFn(`Save failed: ${err.message}`, 'error');
     } finally {
       saveBtn.textContent = 'Save';
       // Re-evaluate dirty state (save may have partially updated values)
@@ -596,6 +639,65 @@ function _buildFieldRow(sectionKey, fieldKey, fieldValue, fieldSchema = null) {
 
   const isEnum   = fieldSchema?.type === 'enum' && Array.isArray(fieldSchema.options);
   const isSensitive = SENSITIVE_FIELDS.has(fieldKey);
+  const isSecurityKey = fieldSchema?.type === 'bytes' || SECURITY_KEY_FIELDS.has(fieldKey);
+
+  if (isSecurityKey) {
+    // Read-only, copyable key display (public_key / private_key / admin_key).
+    const isPrivate = fieldKey === 'private_key';
+    row.appendChild(label);
+    const wrap = document.createElement('div');
+    wrap.className = 'cfg-key-wrap';
+    const values = Array.isArray(fieldValue) ? fieldValue : [fieldValue];
+    if (values.length === 0) {
+      const empty = document.createElement('span');
+      empty.className = 'cfg-key-empty';
+      empty.textContent = 'none configured';
+      wrap.appendChild(empty);
+    } else {
+      values.forEach((b64, i) => {
+        const chip = document.createElement('div');
+        chip.className = 'cfg-key-chip';
+        const code = document.createElement('code');
+        code.className = 'cfg-key-code';
+        const masked = isPrivate ? '••••••••••••••••••••••••••••••••••••••••••' : (b64 || '(empty)');
+        code.textContent = masked;
+        code.dataset.revealed = 'false';
+        code.dataset.secret = b64 || '';
+        chip.appendChild(code);
+        if (isPrivate) {
+          const toggle = document.createElement('button');
+          toggle.type = 'button';
+          toggle.className = 'cfg-key-toggle';
+          toggle.textContent = 'Show';
+          toggle.addEventListener('click', () => {
+            if (code.dataset.revealed === 'true') {
+              code.textContent = masked;
+              code.dataset.revealed = 'false';
+              toggle.textContent = 'Show';
+            } else {
+              code.textContent = code.dataset.secret;
+              code.dataset.revealed = 'true';
+              toggle.textContent = 'Hide';
+            }
+          });
+          chip.appendChild(toggle);
+        }
+        const copy = _makeCopyButton(b64, i === 0 ? fieldKey : `${fieldKey}-${i + 1}`);
+        chip.appendChild(copy);
+        wrap.appendChild(chip);
+      });
+    }
+    row.appendChild(wrap);
+    // Hidden (disabled) input so dirty tracking skips it.
+    const hidden = document.createElement('input');
+    hidden.type = 'hidden';
+    hidden.id = inputId;
+    hidden.dataset.fieldKey = fieldKey;
+    hidden.dataset.fieldType = 'bytes';
+    hidden.disabled = true;
+    row.appendChild(hidden);
+    return row;
+  }
 
   if (typeof fieldValue === 'boolean') {
     // Checkbox
@@ -659,6 +761,9 @@ function _buildFieldRow(sectionKey, fieldKey, fieldValue, fieldSchema = null) {
     input.className = 'cfg-input';
     input.dataset.fieldKey  = fieldKey;
     input.dataset.fieldType = 'string';
+    // Suppress browser autocomplete suggestions — these are device config
+    // fields, not login forms, so browser fill is never appropriate.
+    input.autocomplete = 'off';
     if (fieldSchema?.max_length) {
       input.maxLength = fieldSchema.max_length;
       input.title = `Max ${fieldSchema.max_length} characters`;
@@ -750,6 +855,46 @@ function _revertForm(form, original, sectionKey) {
       el.value = orig ?? '';
     }
   });
+}
+
+// ---------------------------------------------------------------------------
+// Copy-to-clipboard helper (for security keys)
+// ---------------------------------------------------------------------------
+
+function _makeCopyButton(value, key) {
+  const copy = document.createElement('button');
+  copy.type = 'button';
+  copy.className = 'cfg-key-copy';
+  copy.textContent = 'Copy';
+  copy.title = 'Copy to clipboard';
+  copy.dataset.key = key;
+  copy.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      _copied(copy);
+    } catch {
+      const ta = document.createElement('textarea');
+      ta.value = value;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); } catch { /* ignore */ }
+      ta.remove();
+      _copied(copy);
+    }
+  });
+  return copy;
+}
+
+function _copied(btn) {
+  const original = btn.textContent;
+  btn.textContent = 'Copied ✓';
+  btn.disabled = true;
+  setTimeout(() => {
+    btn.textContent = original;
+    btn.disabled = false;
+  }, 1500);
 }
 
 // ---------------------------------------------------------------------------

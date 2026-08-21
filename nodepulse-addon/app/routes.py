@@ -9,7 +9,9 @@ here — that belongs in connection.py.
 All responses use JSON. Error responses always include a human-readable
 "error" key so clients can display a meaningful message.
 """
+import asyncio
 import datetime
+import itertools
 import json
 import logging
 import os
@@ -20,6 +22,7 @@ import aiohttp
 from aiohttp import web
 
 from .connection import MeshtasticConnection
+from .terrain import TerrainService, analyze_link
 
 logger = logging.getLogger(__name__)
 
@@ -359,6 +362,8 @@ async def handle_status(request: web.Request) -> web.Response:
             "auto_responder_enabled": config.auto_responder_enabled,
             "auto_responder_message": config.auto_responder_message,
             "auto_traceroute_enabled": config.auto_traceroute_enabled,
+            # Terrain Link Analysis
+            "terrain_dem_url": getattr(config, "terrain_dem_url", ""),
         }
         # Embed the addon version from config.json so the UI can display it
         # without hardcoding it in the HTML template.
@@ -762,6 +767,12 @@ async def handle_send(request: web.Request) -> web.Response:
         destination = body.get("destination")  # None → broadcast
 
         try:
+            logger.debug(
+                "API send request: text='%s' destination=%s channel=%s",
+                text[:30] if text else "",
+                destination or "broadcast",
+                channel,
+            )
             success = await conn.send_message(text, destination=destination, channel=channel)
             if success:
                 return _json_response({"sent": True})
@@ -1110,7 +1121,7 @@ async def handle_get_device_config(request: web.Request) -> web.Response:
         return _error_response(str(exc), status=503)
     except Exception as exc:  # noqa: BLE001
         logger.error("Error reading device config: %s", exc)
-        return _error_response("Failed to read device configuration")
+        return _error_response(f"Failed to read device configuration: {exc}")
 
 
 async def handle_put_device_config_section(request: web.Request) -> web.Response:
@@ -1214,4 +1225,371 @@ async def handle_get_security_scan(request: web.Request) -> web.Response:
     except Exception as exc:  # noqa: BLE001
         logger.error("Error running security scan: %s", exc)
         return _error_response("Security scan failed")
+
+
+# ---------------------------------------------------------------------------
+# Route: GET /api/terrain/elevation
+# ---------------------------------------------------------------------------
+
+async def handle_terrain_elevation(request: web.Request) -> web.Response:
+    """Return ground elevation (m) for a single lat/lng point.
+
+    Query params: lat, lng. Returns { lat, lng, elevation_m } — elevation_m is
+    null when the DEM source could not be reached.
+    """
+    terrain: TerrainService = request.app.get("terrain")
+    if terrain is None:
+        return _error_response("Terrain service is not available", status=503)
+    try:
+        lat = float(request.query.get("lat", ""))
+        lng = float(request.query.get("lng", ""))
+    except ValueError:
+        return _error_response("'lat' and 'lng' query params must be numbers", status=400)
+
+    if not (-90.0 <= lat <= 90.0) or not (-180.0 <= lng <= 180.0):
+        return _error_response("'lat' and 'lng' must be valid coordinates", status=400)
+
+    try:
+        elevation = await terrain.get_elevation(lat, lng)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Terrain elevation lookup failed: %s", exc)
+        return _error_response("Terrain elevation lookup failed", status=502)
+    return _json_response({"lat": lat, "lng": lng, "elevation_m": elevation})
+
+
+# ---------------------------------------------------------------------------
+# Route: POST /api/terrain/coverage
+# ---------------------------------------------------------------------------
+
+async def handle_terrain_coverage(request: web.Request) -> web.Response:
+    """Analyse radio coverage radially from a point."""
+    from .terrain import TerrainService, analyze_coverage
+    terrain: TerrainService = request.app.get("terrain")
+    if terrain is None:
+        return _error_response("Terrain analysis is not enabled")
+    try:
+        body = await request.json()
+        lat = float(body["lat"])
+        lng = float(body["lng"])
+        radius_m = float(body.get("radius_m", 5000))
+        freq_mhz = float(body.get("freq_mhz", 915.0))
+        tx_power_dbm = float(body.get("tx_power_dbm", 10.0))
+        tx_gain_dbi = float(body.get("tx_gain_dbi", 2.1))
+        rx_gain_dbi = float(body.get("rx_gain_dbi", 2.1))
+        rx_sensitivity_dbm = float(body.get("rx_sensitivity_dbm", -137.0))
+        tx_antenna_height_m = float(body.get("tx_antenna_height_m", 2.0))
+        rx_antenna_height_m = float(body.get("rx_antenna_height_m", 2.0))
+        env_loss_db = float(body.get("env_loss_db", 0.0))
+        radial_count = int(body.get("radial_count", 72))
+        samples_per_radial = int(body.get("samples_per_radial", 30))
+        
+        res = await analyze_coverage(
+            terrain, lat, lng, radius_m, freq_mhz, tx_power_dbm, tx_gain_dbi, rx_gain_dbi,
+            rx_sensitivity_dbm, tx_antenna_height_m, rx_antenna_height_m, env_loss_db,
+            radial_count=radial_count, samples_per_radial=samples_per_radial
+        )
+        return _json_response(res)
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).error("Terrain coverage error: %s", exc, exc_info=True)
+        return _error_response(f"Coverage analysis failed: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# Route: POST /api/terrain/link
+# ---------------------------------------------------------------------------
+
+async def handle_terrain_link(request: web.Request) -> web.Response:
+    """Analyse a point-to-point radio link over terrain.
+
+    Expected JSON body:
+        {
+          "from":     { "lat": -29.85, "lng": 31.02 },  // required
+          "to":       { "lat": -29.86, "lng": 31.05 },  // required
+          "frequency_mhz": 915,                          // required
+          "tx_power_dbm": 10,                            // default 0
+          "tx_gain_dbi": 2.1,                            // default 0
+          "rx_gain_dbi": 2.1,                            // default 0
+          "rx_sensitivity_dbm": -137,                    // default -137
+          "cable_loss_db": 0.5,                          // default 0
+          "tx_antenna_height_m": 2.0,                    // default 2
+          "rx_antenna_height_m": 2.0,                    // default 2
+          "samples": 48,                                 // default 48, max 128
+          "k_factor": 1.333                              // default 4/3
+        }
+
+    Returns the full link analysis from app/terrain.py (profile, LOS/Fresnel
+    verdicts, link budget). Individual points without elevation still appear
+    in the profile with elevation_m: null so the UI can render a partial path.
+    """
+    terrain: TerrainService = request.app.get("terrain")
+    if terrain is None:
+        return _error_response("Terrain service is not available", status=503)
+
+    try:
+        body: dict[str, Any] = await request.json()
+    except Exception:  # noqa: BLE001
+        return _error_response("Request body must be valid JSON", status=400)
+    if not isinstance(body, dict):
+        return _error_response("Request body must be a JSON object", status=400)
+
+    from_pt = body.get("from")
+    to_pt = body.get("to")
+    if not isinstance(from_pt, dict) or not isinstance(to_pt, dict):
+        return _error_response("'from' and 'to' must be objects with 'lat'/'lng'", status=400)
+    try:
+        lat1 = float(from_pt.get("lat"))
+        lng1 = float(from_pt.get("lng"))
+        lat2 = float(to_pt.get("lat"))
+        lng2 = float(to_pt.get("lng"))
+    except (TypeError, ValueError):
+        return _error_response("'from'/'to' lat/lng must be numbers", status=400)
+
+    if not (-90.0 <= lat1 <= 90.0) or not (-90.0 <= lat2 <= 90.0):
+        return _error_response("Latitude must be within [-90, 90]", status=400)
+    if not (-180.0 <= lng1 <= 180.0) or not (-180.0 <= lng2 <= 180.0):
+        return _error_response("Longitude must be within [-180, 180]", status=400)
+    if (lat1, lng1) == (lat2, lng2):
+        return _error_response("'from' and 'to' must be different points", status=400)
+
+    try:
+        freq_mhz = float(body.get("frequency_mhz"))
+    except (TypeError, ValueError):
+        return _error_response("'frequency_mhz' must be a number", status=400)
+    if not (1 <= freq_mhz <= 60000):
+        return _error_response("'frequency_mhz' must be within [1, 60000]", status=400)
+
+    def _opt_float(key: str, default: float) -> float:
+        try:
+            value = body.get(key, default)
+            return float(value) if value is not None else default
+        except (TypeError, ValueError):
+            raise ValueError(key) from None
+
+    try:
+        tx_power_dbm = _opt_float("tx_power_dbm", 0.0)
+        tx_gain_dbi = _opt_float("tx_gain_dbi", 0.0)
+        rx_gain_dbi = _opt_float("rx_gain_dbi", 0.0)
+        rx_sensitivity_dbm = _opt_float("rx_sensitivity_dbm", -137.0)
+        cable_loss_db = _opt_float("cable_loss_db", 0.0)
+        tx_antenna_height_m = _opt_float("tx_antenna_height_m", 2.0)
+        rx_antenna_height_m = _opt_float("rx_antenna_height_m", 2.0)
+        k_factor = _opt_float("k_factor", 4 / 3)
+    except ValueError as exc:
+        return _error_response(f"'{exc.args[0]}' must be a number", status=400)
+
+    try:
+        clutter_height_m = _opt_float("clutter_height_m", 0)
+    except ValueError as exc:
+        return _error_response(f"'{exc.args[0]}' must be a number", status=400)
+
+    samples = int(body.get("samples", 48))
+    samples = max(2, min(samples, 128))
+
+    try:
+        elevations = await terrain.sample_path(lat1, lng1, lat2, lng2, samples)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Terrain path sampling failed: %s", exc)
+        return _error_response("Terrain elevation lookup failed", status=502)
+
+    # Fill gaps in the profile: terrain APIs occasionally drop a sample.
+    # Linear interpolation keeps the LOS/Fresnel geometry sane for the UI.
+    filled = _interpolate_nones(elevations)
+    if any(v is None for v in filled):
+        return _error_response(
+            "Terrain elevation unavailable along this path — check network/DEM source",
+            status=502,
+        )
+
+    result = analyze_link(
+        from_point={"lat": lat1, "lng": lng1},
+        to_point={"lat": lat2, "lng": lng2},
+        freq_mhz=freq_mhz,
+        elevations=filled,
+        tx_power_dbm=tx_power_dbm,
+        tx_gain_dbi=tx_gain_dbi,
+        rx_gain_dbi=rx_gain_dbi,
+        rx_sensitivity_dbm=rx_sensitivity_dbm,
+        cable_loss_db=cable_loss_db,
+        tx_antenna_height_m=tx_antenna_height_m,
+        rx_antenna_height_m=rx_antenna_height_m,
+        k_factor=k_factor,
+        clutter_height_m=clutter_height_m,
+    )
+    return _json_response(result)
+
+
+# ---------------------------------------------------------------------------
+# Routes: /api/admin — remote node administration
+# ---------------------------------------------------------------------------
+
+async def handle_admin_available(request: web.Request) -> web.Response:
+    """
+    Report whether the gateway can administer remote nodes (has an ADMIN
+    channel) and which admin actions are supported.
+    """
+    conn: MeshtasticConnection = request.app["connection"]
+    try:
+        return _json_response(await conn.remote_admin_available())
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Error checking remote admin availability: %s", exc)
+        return _error_response("Failed to check remote admin availability")
+
+
+async def handle_get_remote_config(request: web.Request) -> web.Response:
+    """
+    Read a remote node's full configuration over the admin channel.
+
+    Path parameter:
+        node_id — the remote node's canonical "!hex" ID.
+    """
+    conn: MeshtasticConnection = request.app["connection"]
+    node_id = request.match_info.get("node_id", "").strip()
+    if not _NODE_ID_RE.match(node_id):
+        return _error_response("node_id must be a valid !hex Meshtastic node ID", status=400)
+    try:
+        force = request.query.get("force", "false").lower() == "true"
+        return _json_response(await conn.get_remote_config(node_id, force=force))
+    except ConnectionError as exc:
+        return _error_response(str(exc), status=504)
+    except asyncio.TimeoutError:
+        return _error_response("Remote config read timed out — the node may be offline, out of range, or not authorized (its Security → Admin Keys must include this gateway's public key)", status=504)
+    except ValueError as exc:
+        return _error_response(str(exc), status=400)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Error reading remote config for %s: %s", node_id, exc)
+        return _error_response("Failed to read remote configuration")
+        
+async def handle_get_remote_config_section(request: web.Request) -> web.Response:
+    """
+    Read a single configuration section from a remote node.
+    """
+    conn: MeshtasticConnection = request.app["connection"]
+    node_id = request.match_info.get("node_id", "").strip()
+    section = request.match_info.get("section", "").strip()
+    if not _NODE_ID_RE.match(node_id):
+        return _error_response("node_id must be a valid !hex Meshtastic node ID", status=400)
+    if not section:
+        return _error_response("section is required in the URL path", status=400)
+    
+    try:
+        return _json_response(await conn.get_remote_config_section(node_id, section))
+    except ConnectionError as exc:
+        return _error_response(str(exc), status=504)
+    except asyncio.TimeoutError:
+        return _error_response("Remote config section read timed out", status=504)
+    except ValueError as exc:
+        return _error_response(str(exc), status=400)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Error reading remote config section %s for %s: %s", section, node_id, exc)
+        return _error_response("Failed to read remote configuration section")
+
+async def handle_put_remote_config_section(request: web.Request) -> web.Response:
+    """
+    Patch one config section on a remote node over the admin channel.
+
+    Path parameters:
+        node_id — the remote node's canonical "!hex" ID.
+        section — one of the registry section names or 'owner'.
+
+    Body: a partial dict of field → value pairs. Dangerous changes (role →
+    ROUTER, lora tx_enabled → false) require ``"confirm": true``.
+    """
+    conn: MeshtasticConnection = request.app["connection"]
+    node_id = request.match_info.get("node_id", "").strip()
+    section = request.match_info.get("section", "").strip()
+    if not _NODE_ID_RE.match(node_id):
+        return _error_response("node_id must be a valid !hex Meshtastic node ID", status=400)
+    if not section:
+        return _error_response("section is required in the URL path", status=400)
+
+    try:
+        body: dict[str, Any] = await request.json()
+    except Exception:  # noqa: BLE001
+        return _error_response("Request body must be valid JSON", status=400)
+
+    if not isinstance(body, dict) or not body:
+        return _error_response("Request body must be a non-empty JSON object", status=400)
+
+    try:
+        result = await conn.set_remote_config(node_id, section, body)
+        return _json_response(result)
+    except ValueError as exc:
+        return _error_response(str(exc), status=400)
+    except ConnectionError as exc:
+        return _error_response(str(exc), status=504)
+    except asyncio.TimeoutError:
+        return _error_response("Remote config write timed out — the node may be offline, out of range, or not authorized (its Security → Admin Keys must include this gateway's public key)", status=504)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Error writing remote config %s/%s: %s", node_id, section, exc)
+        return _error_response("Failed to apply remote configuration")
+
+
+async def handle_admin_action(request: web.Request) -> web.Response:
+    """
+    Run a named admin action against a remote node.
+
+    Path parameters:
+        node_id — the remote node's canonical "!hex" ID.
+        action — reboot | shutdown | factory_reset | factory_reset_device |
+                 nodedb_reset | set_fixed_position | clear_fixed_position |
+                 set_time | remove_node
+
+    Body: optional params (e.g. ``{"seconds": 5}`` for reboot/shutdown,
+    ``{"lat":..., "lng":..., "alt":...}`` for set_fixed_position,
+    ``{"target_node_id": "!hex"}`` for remove_node).
+    """
+    conn: MeshtasticConnection = request.app["connection"]
+    node_id = request.match_info.get("node_id", "").strip()
+    action = request.match_info.get("action", "").strip()
+    if not _NODE_ID_RE.match(node_id):
+        return _error_response("node_id must be a valid !hex Meshtastic node ID", status=400)
+    if not action:
+        return _error_response("action is required in the URL path", status=400)
+
+    body: dict[str, Any] = {}
+    if request.body_exists:
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            return _error_response("Request body must be valid JSON", status=400)
+        if not isinstance(body, dict):
+            return _error_response("Request body must be a JSON object", status=400)
+
+    try:
+        result = await conn.remote_admin_action(node_id, action, body)
+        return _json_response(result)
+    except ValueError as exc:
+        return _error_response(str(exc), status=400)
+    except ConnectionError as exc:
+        return _error_response(str(exc), status=504)
+    except asyncio.TimeoutError:
+        return _error_response(f"Admin action '{action}' timed out — the node may be offline, out of range, or not authorized (its Security → Admin Keys must include this gateway's public key)", status=504)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Error running admin action %s on %s: %s", action, node_id, exc)
+        return _error_response(f"Failed to run admin action '{action}'")
+
+
+def _interpolate_nones(values: list[float | None]) -> list[float | None]:
+    """Linearly fill None gaps in a list of numbers.
+
+    Leading Nones are filled with the first known value (so the profile starts
+    at the Tx endpoint); trailing Nones are left as None (Rx endpoint unknown).
+    """
+    result = list(values)
+    known = [(i, v) for i, v in enumerate(result) if v is not None]
+    if not known:
+        return result
+
+    first_i, first_v = known[0]
+    for i in range(first_i):
+        result[i] = first_v
+
+    for (i0, v0), (i1, v1) in itertools.pairwise(known):
+        span = i1 - i0
+        if span <= 1:
+            continue
+        for i in range(i0 + 1, i1):
+            result[i] = v0 + (v1 - v0) * (i - i0) / span
+    return result
 

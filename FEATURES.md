@@ -44,6 +44,12 @@ The addon runs as a Home Assistant addon (Docker container) serving a REST API a
 | `/api/waypoints/{id}` | DELETE | Remove a waypoint |
 | `/api/tracked-nodes` | GET | Proxy to integration — list HA-tracked nodes |
 | `/api/track-node` | POST | Proxy to integration — toggle HA tracking |
+| `/api/terrain/elevation` | GET | DEM elevation for a single point (`?lat=&lng=`) — used by the terrain link analyser |
+| `/api/terrain/link` | POST | Point-to-point link analysis over real terrain (see **Terrain tools** below) |
+| `/api/admin/available` | GET | Whether the gateway can administer remote nodes (ADMIN channel, Security admin keys, or admin channel enabled) + which admin actions are supported |
+| `/api/admin/{node_id}/config` | GET | Read a remote node's full configuration (over the admin channel / admin keys) |
+| `/api/admin/{node_id}/config/{section}` | PUT | Patch one config section on a remote node |
+| `/api/admin/{node_id}/action/{action}` | POST | Run an admin action (reboot/shutdown/factory reset/NodeDB reset/fixed position/clock/evict) on a remote node |
 
 ### Persistence
 
@@ -115,6 +121,10 @@ Selection persists in `localStorage` across sessions.
 
 **Export**: KML and GPX download of visible GPS-fixed nodes.
 
+**Terrain tools** (in the map filter bar):
+- **⛰ Terrain** — Opens a link-analysis panel. Pick two nodes, set frequency (required) and optional TX/RX parameters (power, gains, sensitivity, antenna height), and click **Analyze**. The backend fetches a real elevation profile (DEM, default OpenTopoData SRTM30m, configurable via `terrain_dem_url`), then reports path distance, earth-bulge-corrected LOS clearance vs the first Fresnel zone, free-space path loss, effective received signal, and verdicts (LOS clear / Fresnel margin / blocked). A canvas profile chart draws the terrain cross-section, LOS beam, and Fresnel band.
+- **🏔 3D** — Switches the map to a 3D terrain view (MapLibre GL, loaded on demand from CDN) over AWS Terrain Tiles (terrarium encoding) with hillshading and extruded node markers. Toggle again or leave the Map view to return to the 2D Leaflet map.
+
 ### Web UI — Topology
 
 A force-directed (vis-network) graph of the whole mesh — nodes, roles, and links.
@@ -149,7 +159,7 @@ Read-only display of runtime configuration: connection type, host/port, node cou
 
 ### Web UI — Configuration View (Device Configuration)
 
-A **Configure** tab for viewing and editing the connected mesh radio's configuration (shipped 1.10.0+, refined in 1.11.0/1.12.0/1.17.0). Backed by `GET/PUT /api/device-config` + `POST /api/device-config/reload`.
+A **Configure** tab for viewing and editing the connected mesh radio's configuration (shipped 1.10.0+, refined in 1.11.0/1.12.0/1.17.0). Backed by `GET/PUT /api/device-config` + `POST /api/device-config/reload`. Includes a **Security & Admin Keys** card (1.21.0+) showing the radio's `public_key` / `private_key` / `admin_key` as read-only, copyable base64 chips (private key masked until revealed) — copy the gateway's public key into a target's Admin Keys to enable remote administration.
 
 - **Schema-driven forms** — The field schema (types, enum options, min/max, max length) is introspected live from the radio's installed protobuf descriptors, so forms render correctly across firmware versions. Sectioned cards: Node Identity (owner), Device, LoRa Radio, Position, Power, Display, Network/WiFi, Bluetooth, Telemetry, Neighbor Info, **Mesh Beacon (2.8+)**, **Status Message (2.8+)**, **TAK / ATAK (2.8+)**, **Traffic Management (2.8+)**, **Ambient Lighting (2.8+)**, MQTT, Canned Messages, Store & Forward.
 - **Firmware gating** — 2.8+ sections (Mesh Beacon, Status Message, TAK, Traffic Management, Ambient Lighting) are greyed out with "Requires firmware 2.8.0+" banner on older firmware.
@@ -159,6 +169,25 @@ A **Configure** tab for viewing and editing the connected mesh radio's configura
 - **LoRa preset gating** — Manual radio params (bandwidth/spread factor/coding rate/frequency offset) are greyed out and rejected while `use_preset` is enabled.
 - **Reboot feedback** — Writes requiring a reboot show a dismissible "reboot the node to apply" banner; a Refresh button force re-reads config from the radio.
 - **Thread-safe writes** — Writes run in a thread-pool worker under a config-write lock, never holding the connection lock during radio I/O.
+
+### Web UI — Remote Node Administration
+
+A **Remote Admin** tab (sidebar + header) for administering OTHER mesh nodes over the Meshtastic AdminModule (shipped 1.21.0). Requires the connected gateway to have admin capability — Security → Admin Keys on the radio, a channel named `admin` (target sharing the PSK), or admin channel enabled; otherwise an explanatory notice/banner is shown. Backed by `GET /api/admin/available`, `GET /api/admin/{node_id}/config`, `PUT /api/admin/{node_id}/config/{section}`, and `POST /api/admin/{node_id}/action/{action}`.
+
+- **Node picker** — Dropdown of all currently-visible mesh nodes (self excluded). Picking a node fetches its full config and renders it with the same schema-driven cards as the local Configure tab.
+- **Gateway keys reference** — A "This gateway — keys for targets" strip shows this gateway's public key and admin keys (base64) with copy buttons, so you can configure a target's **Security → Admin Keys** without leaving the view (`GET /api/admin/available` now includes `public_key` / `admin_keys`).
+- **Identity card** — Remote node's long/short name, hardware model, firmware version, and role (best-effort from the gateway's node DB / metadata).
+- **Config editing** — All Config + ModuleConfig sections editable, with the same backend validation, enum dropdowns, danger-zone confirmations, and reboot-required feedback as local config. Reboot-required notes are shown as toasts (no local-node reboot banner). Admin traffic is sent on the channel the firmware actually honours: the primary channel with PKC admin-key auth (firmware 2.5+ default), or the reserved `admin` channel when legacy admin is enabled — so a channel merely named "admin" that the target doesn't share no longer causes timeouts.
+- **Actions panel** — One-click admin operations, all with bounded timeouts (15 s per action, 25 s for a full config read) so a dead or non-ADMIN node can never hang the app:
+  - **Reboot / Shut down** — with a seconds delay (prompted).
+  - **Factory reset (config)** — restores radio defaults.
+  - **Factory reset (full device)** — also wipes the file system; strongly confirmed.
+  - **Reset NodeDB** — clears the remote node's node database.
+  - **Set / Clear fixed position** — lat/lng/alt (prompted).
+  - **Sync clock** — sets the remote node's time (0 = the gateway's current time).
+  - **Remove node from NodeDB** — evicts a `!hex` node ID from the remote node's DB.
+- **Safety** — Dangerous actions (shutdown, factory resets, NodeDB reset, evict) require a `confirm()` dialog; the backend additionally rejects unconfirmed danger-zone config writes.
+- **Implementation note** — Remote nodes are built without `interface.getNode()` (which calls `our_exit()`/`sys.exit()` on a channel timeout and would kill the addon). Admin config read/write reuse the same serialization (`serialize_config_sections`) and patch-validation (`validate_and_apply_patch`) helpers as the local device-config flow.
 
 #### Mesh Beacon (firmware 2.8+)
 - **Flags** — Bitfield rendered as three checkboxes: Listen (receive beacons), Broadcast (transmit beacons), Legacy Split (split beacon text + offer into separate MESH_BEACON_APP + TEXT_MESSAGE_APP packets)

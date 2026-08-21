@@ -1,4 +1,6 @@
+import base64
 import logging
+from collections.abc import Sequence
 from typing import Any
 
 import meshtastic.protobuf.config_pb2 as config_pb2
@@ -17,6 +19,7 @@ _PROTO_TYPE_MAP = {
     FieldDescriptor.TYPE_FLOAT: "float",
     FieldDescriptor.TYPE_DOUBLE: "float",
     FieldDescriptor.TYPE_STRING: "string",
+    FieldDescriptor.TYPE_BYTES: "bytes",
     FieldDescriptor.TYPE_ENUM: "enum",
 }
 
@@ -69,7 +72,8 @@ def build_config_registry() -> dict[str, Any]:
                 for field in section_field.message_type.fields:
                     field_def = {
                         "type": _PROTO_TYPE_MAP.get(field.type, "unknown"),
-                        "label": field.name
+                        "label": field.name,
+                        "repeated": getattr(field, "label", 0) == FieldDescriptor.LABEL_REPEATED,
                     }
                     if field.type == FieldDescriptor.TYPE_ENUM:
                         field_def["enum_type"] = field.enum_type.name
@@ -383,54 +387,8 @@ def read_device_config(interface) -> dict[str, Any]:
     local_config = interface.localNode.localConfig
     module_config = interface.localNode.moduleConfig
 
-    config_dict = {}
-
-    # Field schema the UI needs to render inputs (types, enum options, ranges).
-    # Keyed by section name — includes sections that may be absent values-wise.
+    config_dict = serialize_config_sections(local_config, module_config)
     config_dict["_schema"] = _serialize_schema()
-
-    # Serialize sections
-    for section_name, section_info in CONFIG_REGISTRY.items():
-        if section_info["category"] == "special":
-            continue
-            
-        source_proto = local_config if section_info["category"] == "config" else module_config
-        
-        if hasattr(source_proto, section_name):
-            section_obj = getattr(source_proto, section_name)
-            
-            filtered_dict = {}
-            for field_name, field_info in section_info["fields"].items():
-                if hasattr(section_obj, field_name):
-                    val = getattr(section_obj, field_name)
-                    if field_info["type"] == "enum":
-                        # Convert enum integer to string name
-                        try:
-                            enum_descriptor = section_obj.DESCRIPTOR.fields_by_name[field_name].enum_type
-                            enum_name = enum_descriptor.values_by_number[val].name
-                            filtered_dict[field_name] = enum_name
-                        except KeyError:
-                            filtered_dict[field_name] = str(val)
-                    else:
-                        filtered_dict[field_name] = val
-            
-            config_dict[section_name] = filtered_dict
-        else:
-            # Section not available in firmware (e.g., mesh_beacon on < 2.8)
-            # Provide default values so UI can show it greyed out
-            if section_name == "mesh_beacon":
-                config_dict[section_name] = {
-                    "flags": 0,
-                    "broadcast_send_as_node": 0,
-                    "broadcast_message": "",
-                    "broadcast_offer_channel": "",
-                    "broadcast_offer_region": None,
-                    "broadcast_offer_preset": None,
-                    "broadcast_on_channel": "",
-                    "broadcast_on_region": None,
-                    "broadcast_on_preset": None,
-                    "broadcast_interval_secs": 3600,
-                }
 
     # Add owner (Node Identity — includes read-only identity info alongside the
     # editable names)
@@ -470,6 +428,124 @@ def read_device_config(interface) -> dict[str, Any]:
             "firmware_version": "", "region": "", "role": "",
         }
     
+    return config_dict
+
+
+def _encode_bytes(value: Any, *, is_bytes: bool, is_repeated: bool) -> Any:
+    """
+    JSON-safe encoding for a single protobuf field value. Byte fields are
+    base64-encoded (ASCII strings); repeated bytes become a list of base64
+    strings. All other types pass through unchanged. The decision is driven by
+    the field's declared type/label (not the value) so an empty string is never
+    mistaken for an empty repeated-bytes list.
+
+    Fallback: if the registry missed a repeated field, detect a repeated
+    container at runtime (Sequence but not bytes/str).
+    """
+    if not is_bytes:
+        return value
+
+    # Runtime fallback: if value is a Sequence (list-like) but not bytes/str,
+    # treat as repeated regardless of registry flag. This catches protobuf
+    # RepeatedScalarContainer which is a Sequence but lacks __iter__ attr.
+    is_repeated_runtime = is_repeated or (
+        isinstance(value, Sequence) and not isinstance(value, (bytes, str))
+    )
+
+    if is_repeated_runtime:
+        return [base64.b64encode(v).decode("ascii") for v in value]
+    return base64.b64encode(value).decode("ascii") if value else ""
+
+
+def _make_json_serializable(val: Any) -> Any:
+    """Recursively convert protobuf objects into JSON-serializable Python types.
+
+    Covers:
+    - Nested protobuf Message objects (e.g. IpV4Config)
+    - RepeatedScalarFieldContainer / RepeatedCompositeFieldContainer (list-like)
+    - Raw bytes (base64-encoded to an ASCII string)
+    - Plain lists / tuples and dicts (recursive)
+    - Scalars (pass-through)
+    """
+    from google.protobuf.message import Message
+    from google.protobuf.json_format import MessageToDict
+
+    if isinstance(val, Message):
+        return MessageToDict(val, preserving_proto_field_name=True)
+
+    # Raw bytes: base64-encode so they are always JSON-safe.
+    if isinstance(val, (bytes, bytearray)):
+        return base64.b64encode(val).decode("ascii")
+
+    # Protobuf repeated containers (and lists/tuples) are Sequences.
+    # Guard against str/bytes which are also Sequences.
+    if isinstance(val, Sequence) and not isinstance(val, (str, bytes, bytearray)):
+        return [_make_json_serializable(v) for v in val]
+
+    if isinstance(val, dict):
+        return {k: _make_json_serializable(v) for k, v in val.items()}
+
+    return val
+
+def serialize_config_sections(local_config, module_config) -> dict[str, Any]:
+    """
+    Serialize Config + ModuleConfig protobufs into a JSON-safe dict keyed by
+    section name, using the registry to shape the output.
+
+    Works for both the local node (``interface.localNode.localConfig`` /
+    ``moduleConfig``) and a remote node's admin-fetched config, so remote
+    administration reuses the exact same serialization.
+    """
+    config_dict: dict[str, Any] = {}
+
+    # Serialize sections
+    for section_name, section_info in CONFIG_REGISTRY.items():
+        if section_info["category"] == "special":
+            continue
+            
+        source_proto = local_config if section_info["category"] == "config" else module_config
+        
+        if hasattr(source_proto, section_name):
+            section_obj = getattr(source_proto, section_name)
+            
+            filtered_dict = {}
+            for field_name, field_info in section_info["fields"].items():
+                if hasattr(section_obj, field_name):
+                    val = getattr(section_obj, field_name)
+                    if field_info["type"] == "enum":
+                        # Convert enum integer to string name
+                        try:
+                            enum_descriptor = section_obj.DESCRIPTOR.fields_by_name[field_name].enum_type
+                            enum_name = enum_descriptor.values_by_number[val].name
+                            filtered_dict[field_name] = enum_name
+                        except KeyError:
+                            filtered_dict[field_name] = str(val)
+                    else:
+                        raw_val = _encode_bytes(
+                            val,
+                            is_bytes=field_info["type"] == "bytes",
+                            is_repeated=bool(field_info.get("repeated")),
+                        )
+                        filtered_dict[field_name] = _make_json_serializable(raw_val)
+            
+            config_dict[section_name] = filtered_dict
+        else:
+            # Section not available in firmware (e.g., mesh_beacon on < 2.8)
+            # Provide default values so UI can show it greyed out
+            if section_name == "mesh_beacon":
+                config_dict[section_name] = {
+                    "flags": 0,
+                    "broadcast_send_as_node": 0,
+                    "broadcast_message": "",
+                    "broadcast_offer_channel": "",
+                    "broadcast_offer_region": None,
+                    "broadcast_offer_preset": None,
+                    "broadcast_on_channel": "",
+                    "broadcast_on_region": None,
+                    "broadcast_on_preset": None,
+                    "broadcast_interval_secs": 3600,
+                }
+
     return config_dict
 
 
@@ -613,6 +689,20 @@ def validate_and_apply_patch(section_name: str, patch: dict[str, Any], local_nod
                 raise ValueError(f"'{field_name}' must be <= {fmax}")
             setattr(section_obj, field_name, value)
             
+        elif field_info["type"] == "bytes":
+            def decode_b64(s, _field_name=field_name):
+                try:
+                    return base64.b64decode(s, validate=False)
+                except (TypeError, ValueError):
+                    raise ValueError(f"'{_field_name}' must be valid base64") from None
+
+            if field_info.get("repeated"):
+                section_obj.ClearField(field_name)
+                field = getattr(section_obj, field_name)
+                field.extend(decode_b64(v) for v in (value or []))
+            else:
+                setattr(section_obj, field_name, decode_b64(value))
+
         elif field_info["type"] == "bool":
             setattr(section_obj, field_name, bool(value))
             
@@ -626,7 +716,7 @@ def validate_and_apply_patch(section_name: str, patch: dict[str, Any], local_nod
     local_node.writeConfig(section_name)
             
     # Conservative reboot defaults
-    reboot_sections = ["device", "lora", "position", "network", "mesh_beacon"]
+    reboot_sections = ["device", "lora", "position", "network", "mesh_beacon", "security"]
     reboot_required = section_name in reboot_sections
     
     return True, reboot_required

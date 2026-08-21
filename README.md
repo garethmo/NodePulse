@@ -84,6 +84,8 @@ NodePulse is a Home Assistant addon and custom integration that gives you deep v
 | 📥 **Map Export (KML/GPX)** | Export visible GPS-fixed nodes as KML or GPX from the Map view |
 | 📍 **Waypoints** | Capture and display mesh-broadcast WAYPOINT_APP packets as amber teardrop markers on the map, plus locally create/delete waypoints with name, description, and emoji icon via a floating panel (GPS optional — defaults to map centre). Markers are draggable to reposition. Persisted in `waypoints.json` and surviving restarts |
 | 📏 **Ruler** | Click-to-measure point-to-point distances on the map with dashed polylines and live distance labels. Samples elevation from node position history and displays total distance, elevation gain/loss, and a canvas-drawn elevation profile chart. Map toolbar auto-minimises when active |
+| ⛰️ **Terrain Link Analysis** | Point-to-point LOS / Fresnel-zone / link-budget analysis between two nodes over real terrain (DEM elevation, default OpenTopoData SRTM30m). Reports earth-bulge-corrected Fresnel clearance, free-space path loss, effective received signal, and verdicts, with a canvas profile chart of the terrain cross-section, LOS beam, and Fresnel band |
+| 🏔️ **3D Terrain View** | Switch the Map view to a 3D terrain map (MapLibre GL, loaded on demand) with AWS Terrain Tiles elevation, hillshading, and extruded node markers |
 | 📡 **Neighbor Info** | Per-node SNRs from NEIGHBORINFO_APP packets displayed on node cards |
 | 🗺️ **Position History Trails** | GPS fix history (up to 200 fixes/node) persisted server-side, rendered as polylines on the map with toggle |
 | 📊 **Airtime Trends** | Channel utilization & airtime utilization charts with a 30-minute rolling window |
@@ -109,6 +111,7 @@ NodePulse is a Home Assistant addon and custom integration that gives you deep v
 | 🔍 **Auto Traceroute** | Automatically dispatches traceroute when a new node is discovered. Background thread, non-blocking, 300s timeout, respects serialization. Toggle in Settings → Auto Responder (`auto_traceroute_enabled`, default `false`). |
 | ⏱ **Traceroute Timeout Feedback** | When a traceroute times out (300s), the node card shows "⏱ Timed out — no route discovered" with a relative timestamp; the map and topology pages skip timeout records instead of drawing bogus edges |
 | 🗄️ **Persisted Traceroutes** | Discovered routes are stored in `traceroutes.json` and survive addon restarts. Traceroute targets evicted from the radio's bounded node DB are re-injected (as stale) so the topology page keeps drawing their links — even while the radio is offline |
+| 🛰️ **Remote Node Administration** | New Remote Admin view administers OTHER mesh nodes over the Meshtastic AdminModule (requires admin capability on the gateway — an ADMIN channel or Security admin keys): read/edit their full config (schema-driven forms), set the owner, reboot/shutdown with a delay, factory reset (config or full device), reset the remote NodeDB, set/clear a fixed position, sync the clock, and evict nodes from the remote NodeDB. Every admin round-trip is bounded by a timeout so a dead node can't hang the app. |
 
 ---
 
@@ -132,7 +135,7 @@ block-beta
     telegram["telegram_bot.py\nTelegram bridge"]
     store["nodes.json, messages.json,\ntraceroutes.json, tags.json,\nfavorites.json,\nposition_history.json, channels.json,\nwaypoints.json persistent stores"]
     routes["routes.py\nREST API"]
-    ui["web_ui/\nDashboard, Nodes, Map,\nTopology, Messages, Packets, Settings"]
+    ui["web_ui/\nDashboard, Nodes, Map,\nTopology, Messages, Packets, Settings,\nConfigure, Remote Admin"]
   end
 
   space:3

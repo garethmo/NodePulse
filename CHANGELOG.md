@@ -23,19 +23,23 @@ All notable changes to NodePulse are documented here.
 - **Defensive payload coercion (Q16/Q17)** — `as_int`/`as_float` helpers and try/except guards applied to addon payload parsing in `__init__.py`, `binary_sensor.py` and `sensor.py`; `normalize_node_id` returns `None` for whitespace-only input; tags join coerces to strings.
 - **Addon cleanup (Q4/Q14/Q15)** — `Tuple` import added in `connection.py`; dead `except ValueError` removed in `api.py`; unused imports/vars, inline imports and multi-import lines cleaned in the addon and `geo_location.py`.
 
-## [1.19.1] - 2026-08-18
-### Security
-- **Addon port no longer published to the host network** — Removed `"ports": {"8099/tcp": 8099}` from `config.json`. The addon was reachable unauthenticated from any LAN client (no auth middleware/API key on any route). It is now only reachable via HA Ingress (HA auth) and the supervisor network, which the integration already uses.
-- **Fixed HA integration setup crash** — `async_setup_entry` referenced `CONF_SCAN_INTERVAL`, `CONF_IGNORED_NODES`, and `CONF_TRACKED_NODES` without importing them from `.const`, raising a `NameError` and preventing the integration from loading since 1.8.0.
-- **Stored XSS via malicious mesh waypoints closed** — Waypoint `icon` was inserted unescaped into the map marker HTML and waypoint `id` into an inline `onclick`, so any mesh node could run JavaScript in the dashboard. The icon is now escaped, the delete button uses a `data-` attribute + delegated listener (no inline handlers), `escapeHtml` also escapes single quotes, and `name`/`description`/`icon` are sanitized server-side (`_sanitize_mesh_text`) at the ingest boundary.
-- **Removed the `X-NodePulse-Skip-Token` relay bypass** — The HA relay views (`/api/nodepulse/track`, `/api/nodepulse/tracked-nodes`) previously accepted a `X-NodePulse-Skip-Token` header, requests with no Authorization header, and any request when `SUPERVISOR_TOKEN` was unset (all three defaulted to on). Validation now always requires a Bearer token matching HA core's `SUPERVISOR_TOKEN`; when the token is unset, requests are rejected unless they carry valid Home Assistant authentication. `disable_token_validation` is deprecated and ignored.
-- **Relay auth fallback** — The addon→HA relay previously only sent a Bearer token when `SUPERVISOR_TOKEN` was injected (HAOS), so the Track-in-HA toggle returned 401 on custom Docker/venv installs where the token isn't present. A new `ha_access_token` addon option (a long-lived HA access token) now authenticates the relay, and the integration accepts valid HA auth even when a Supervisor token is set on HA core. The relay tries `SUPERVISOR_TOKEN` first, then falls back to `ha_access_token` when the token is missing or rejected — so Track-in-HA also survives a mismatched token on HAOS.
+## [1.21.1] - 2026-08-21
+### Fixed
+- **Syntax error in terrain analysis** — Removed extraneous `},` at `app/terrain.py:270` that caused `ImportError` on module load.
+- **TX Queue debug spam** — Added `await asyncio.sleep(0.1)` after each message send in the scheduled messages loop (`app/main.py:136`) to prevent meshtastic radio TX buffer overflow, eliminating the continuous "Waiting for free space in TX Queue" debug logs.
 
 ### Added
-- **Server-Side Favorite Persistence** — Favorites are now stored in `favorites.json` (`/data`) and exposed via new `GET /api/favorites` / `PUT /api/favorites` endpoints, replacing the fragile `localStorage`-only approach. The HA addon iframe can clear/deny `localStorage`, which made ★ markers vanish after a reload. The UI now syncs favorites from the server on the first poll and after every toggle, so they survive reloads reliably. `localStorage` remains only as a fallback.
-- **Traceroute Timeout Surfacing** — When a traceroute request times out (300s), the backend records a `{ timeout: true }` marker on the node and in `traceroutes.json`. The node card now renders "⏱ Timed out — no route discovered" with a relative timestamp, and the map/topology pages skip timeout records instead of drawing stale edges.
-- **Persisted Traceroute Re-injection** — Traceroute targets that were evicted from the radio's bounded node DB (or that only exist in `traceroutes.json`) are now re-injected into the node list as minimal `stale` entries with their route attached, so the topology page can keep drawing discovered links even when the radio no longer reports the node — including while the addon is disconnected/offline.
-- **Telegram `/status` Enhancement** — The `/status` command now reports the node's friendly name, **online/offline** state, **last heard** (relative time), **uptime** (human-readable `Xd Yh Zm`), battery level, node count, and MAC address. Battery and MAC are now actually populated by the backend (previously always "Unknown").
+- **Clutter height modeling** — `clutter_height_m` parameter in both `analyze_link()` and `analyze_coverage()` (`app/terrain.py`) adds a fixed elevation offset (meters) to model trees/buildings, realistically reducing coverage range in suburban/urban areas.
+- **Atmospheric refraction control** — `k_factor` parameter (`app/routes.py`) allows adjusting the earth curvature k-factor beyond the default 4/3, with per-request validation.
+- **GeoJSON/KML export** — New `export_coverage_geojson()` and `export_coverage_kml()` functions (`app/terrain.py`) convert coverage analysis results into exportable vector formats for GIS tools and Google Earth.
+- **Debug logging across all message paths** — Added logging in `connection.send_message()` (`app/connection.py:488`), the scheduled messages loop (`app/main.py:120`), and the `/api/send` endpoint (`app/routes.py:770`) to track text excerpt, destination, channel, and send results for troubleshooting.
+
+### Changed
+- **Terrain link API** — `/api/terrain/link` now accepts `k_factor` and `clutter_height_m` query parameters, passed through to the analysis.
+- **Coverage analysis** — `clutter_height_m` propagates through `analyze_coverage()` to affect beam height calculations and LOS verdicts across all radials.
+- **Relay auth fallback** — The tracked-nodes relay (`_relay_to_integration`) now properly retries with `ha_access_token` fallback when `SUPERVISOR_TOKEN` is rejected, ensuring Track-in-HA works on both HAOS and custom Docker/venv installs.
+
+---
 
 ### Fixed
 - **Options flow no longer wipes tracked nodes** — `async_step_init` rebuilt the options dict from scratch (only `scan_interval` + `ignored_nodes`), silently discarding `tracked_nodes` persisted by the Web UI's track toggle. It now preserves existing options and only updates the edited keys.

@@ -17,6 +17,7 @@ import { fetchStatus, fetchNodes, fetchChannels, fetchMessages, sendMessage, req
 import { MapManager } from './map.js';
 import { ChartManager } from './charts.js';
 import { TopologyManager } from './topology.js';
+import { setTerrainNodes, initTerrainPanel, initCoveragePanel, toggle3DView, destroy3DView } from './terrain.js';
 import { escapeHtml, haversineKm, formatDistance, buildKml, buildGpx, downloadFile } from './util.js';
 
 // How often (ms) to poll the backend for fresh node/status/message data.
@@ -105,6 +106,10 @@ function showToast(message, type = 'info', durationMs = 3000) {
   if (durationMs > 0) setTimeout(() => toast.remove(), durationMs);
   return toast;
 }
+
+// Expose for sub-view modules (e.g. remote_admin.js) that load as ES modules.
+window.showToast = showToast;
+window.getSelfNodeId = () => state.selfId;
 
 // ============================================================================
 // Utility: Time formatting
@@ -1322,6 +1327,17 @@ function renderNodePicker(query) {
 function switchView(viewName) {
   state.currentView = viewName;
 
+  // If we're leaving the Map view while 3D terrain is active, tear it down so
+  // the Leaflet map is restored and the 3D WebGL context isn't kept alive
+  // behind an invisible view.
+  if (viewName !== 'map') {
+    const map3dBtn = document.getElementById('map-3d-btn');
+    if (map3dBtn?.classList.contains('active')) {
+      map3dBtn.classList.remove('active');
+      destroy3DView();
+    }
+  }
+
   // Toggle view panels
   document.querySelectorAll('.view').forEach(el => el.classList.remove('active'));
   const target = document.getElementById(`view-${viewName}`);
@@ -1393,6 +1409,12 @@ function switchView(viewName) {
       // from here without a circular import.
       if (typeof window.renderDeviceConfig === 'function') {
         window.renderDeviceConfig();
+      }
+    } else if (viewName === 'admin') {
+      // remote_admin.js registers itself on the window so we can call it
+      // from here without a circular import.
+      if (typeof window.renderRemoteAdmin === 'function') {
+        window.renderRemoteAdmin();
       }
     }
   });
@@ -1639,6 +1661,7 @@ async function pollData() {
     dashMap.setSelfNode(selfId);
     fullMap.setSelfNode(selfId);
     state.selfId = selfId;
+    setTerrainNodes(state.nodes, selfId);
 
     renderNodeList(state.nodes);
     renderNodesGrid(state.nodes);
@@ -1877,6 +1900,21 @@ async function init() {
   // Initialise maps — they need the DOM to be ready.
   dashMap.init();
   charts.init();
+  initTerrainPanel();
+  initCoveragePanel(fullMap);
+
+  // Wire up the 3D terrain toggle (Map view filter bar).
+  const map3dBtn = document.getElementById('map-3d-btn');
+  if (map3dBtn) {
+    map3dBtn.addEventListener('click', () => {
+      const wasActive = map3dBtn.classList.toggle('active');
+      if (wasActive) {
+        toggle3DView(() => map3dBtn.classList.contains('active'));
+      } else {
+        destroy3DView();
+      }
+    });
+  }
 
   // Wire up navigation clicks — both sidebar nav items and top tab buttons.
   document.querySelectorAll('.nav-item[data-view], .tab-btn[data-view]').forEach(el => {

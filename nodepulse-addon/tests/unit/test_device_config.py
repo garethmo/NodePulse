@@ -1,7 +1,13 @@
+import base64
+
 import pytest
 from meshtastic.protobuf import config_pb2, module_config_pb2
 
-from app.device_config import build_config_registry, validate_and_apply_patch
+from app.device_config import (
+    build_config_registry,
+    serialize_config_sections,
+    validate_and_apply_patch,
+)
 
 
 class FakeNode:
@@ -198,3 +204,77 @@ class TestMeshBeacon:
         node = FakeNode()
         with pytest.raises(ValueError, match="not available in firmware"):
             validate_and_apply_patch("mesh_beacon", {"flags": 3}, node, _fake_interface())
+
+
+# ----------------------------------------------------------------------
+# Security bytes serialization (base64 keys)
+# ----------------------------------------------------------------------
+class TestSecurityBytes:
+    def test_security_section_in_registry(self):
+        registry = build_config_registry()
+        assert "security" in registry
+        fields = registry["security"]["fields"]
+        assert fields["public_key"]["type"] == "bytes"
+        assert fields["private_key"]["type"] == "bytes"
+        assert fields["admin_key"]["type"] == "bytes"
+        assert fields["admin_key"]["repeated"] is True
+
+    def test_serialize_bytes_base64_encodes(self):
+        node = FakeNode()
+        node.localConfig.security.public_key = b"\xaa" * 32
+        node.localConfig.security.private_key = b"\xbb" * 32
+        node.localConfig.security.admin_key.append(b"\x01\x02\x03")
+        sections = serialize_config_sections(node.localConfig, node.moduleConfig)
+        security = sections["security"]
+        assert security["public_key"] == base64.b64encode(b"\xaa" * 32).decode("ascii")
+        assert security["private_key"] == base64.b64encode(b"\xbb" * 32).decode("ascii")
+        assert security["admin_key"] == ["AQID"]
+
+    def test_serialize_empty_bytes(self):
+        node = FakeNode()
+        sections = serialize_config_sections(node.localConfig, node.moduleConfig)
+        assert sections["security"]["public_key"] == ""
+        assert sections["security"]["admin_key"] == []
+
+    def test_apply_bytes_decodes_base64(self):
+        node = FakeNode()
+        b64 = base64.b64encode(b"\xcc" * 16).decode("ascii")
+        ok, reboot = validate_and_apply_patch(
+            "security", {"public_key": b64}, node, _fake_interface()
+        )
+        assert ok is True
+        assert reboot is True  # security changes require a reboot
+        assert node.localConfig.security.public_key == b"\xcc" * 16
+
+    def test_apply_bytes_repeated(self):
+        node = FakeNode()
+        ok, _ = validate_and_apply_patch(
+            "security",
+            {"admin_key": ["AQID", "BAUG"]},
+            node,
+            _fake_interface(),
+        )
+        assert ok is True
+        assert list(node.localConfig.security.admin_key) == [b"\x01\x02\x03", b"\x04\x05\x06"]
+
+    def test_apply_invalid_base64_rejected(self):
+        node = FakeNode()
+        with pytest.raises(ValueError, match="must be valid base64"):
+            validate_and_apply_patch("security", {"public_key": "!!!not-b64!!!"}, node, _fake_interface())
+
+    def test_empty_strings_stay_strings(self):
+        # Empty string fields must never be mistaken for an empty repeated-bytes
+        # list (regression: they used to serialize as [] instead of "").
+        node = FakeNode()
+        sections = serialize_config_sections(node.localConfig, node.moduleConfig)
+        assert sections["network"]["wifi_ssid"] == ""
+        assert sections["network"]["wifi_psk"] == ""
+        assert sections["network"]["ntp_server"] == ""
+
+    def test_non_empty_bytes_are_base64(self):
+        node = FakeNode()
+        sec = node.localConfig.security
+        sec.public_key = b"\xaa" * 32
+        sections = serialize_config_sections(node.localConfig, node.moduleConfig)
+        assert sections["security"]["public_key"] == base64.b64encode(b"\xaa" * 32).decode("ascii")
+        assert sections["security"]["private_key"] == ""

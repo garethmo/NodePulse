@@ -149,6 +149,9 @@ class Config:
     # Scheduled Messages
     scheduled_messages_enabled: bool = True
 
+    # Terrain Link Analysis
+    terrain_dem_url: str = "https://api.opentopodata.org/v1/srtm30m"
+
 
 def load_config() -> Config:
     """
@@ -219,6 +222,7 @@ def load_config() -> Config:
         auto_responder_message=str(raw.get("auto_responder_message", "Welcome to the mesh! You have been discovered by NodePulse.")),
         auto_traceroute_enabled=bool(raw.get("auto_traceroute_enabled", False)),
         scheduled_messages_enabled=bool(raw.get("scheduled_messages_enabled", True)),
+        terrain_dem_url=str(raw.get("terrain_dem_url") or "https://api.opentopodata.org/v1/srtm30m"),
     )
 
     # Validate geo-filter bounds at load time so misconfigurations surface

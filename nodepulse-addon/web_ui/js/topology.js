@@ -310,17 +310,23 @@ export class TopologyManager {
           edgeSeen.add(eid);
 
           // Per-hop SNR: snr_towards[i] aligns with the hop between path[i]
-          // and path[i+1].
+          // and path[i+1]. A raw value of 127 (which the backend divides by 4 to 31.75)
+          // is a special firmware flag indicating the hop travelled over MQTT.
           const hopSnr = snrList?.[i] ?? null;
+          const isMqtt = hopSnr === 31.75;
+          const edgeLabel = isMqtt ? 'MQTT' : (hopSnr != null ? `${hopSnr.toFixed(1)} dB` : '');
+          const edgeTitle = isMqtt ? 'Traceroute hop — via MQTT (Internet)' : `Traceroute hop — SNR: ${hopSnr != null ? hopSnr.toFixed(1) + ' dB' : 'n/a'}`;
+          const edgeColor = isMqtt ? '#2196f3' : snrColor(hopSnr); // Blue for MQTT
+
           newEdges.push({
             id:    eid,
             from:  fromId,
             to:    toId,
-            label: hopSnr != null ? `${hopSnr.toFixed(1)} dB` : '',
-            title: `Traceroute hop — SNR: ${hopSnr != null ? hopSnr.toFixed(1) + ' dB' : 'n/a'}`,
-            color: { color: snrColor(hopSnr), highlight: '#ffffff', hover: '#ffffff' },
+            label: edgeLabel,
+            title: edgeTitle,
+            color: { color: edgeColor, highlight: '#ffffff', hover: '#ffffff' },
             width: 2,
-            dashes: false,
+            dashes: isMqtt ? [2, 2] : false, // Dotted line for MQTT
             _type: 'traceroute',
           });
         }

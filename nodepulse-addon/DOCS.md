@@ -24,6 +24,7 @@ NodePulse is a Home Assistant addon and custom integration that gives you deep v
 | 🤖 **Telegram Bot** | Bidirectional Telegram bridge with `/status`, `/nodes`, `/channels`, `/send`, `/dm`, and `/help` commands. `/status` reports online state, last heard, uptime, battery, node count, and MAC |
 | 🎛️ **Comprehensive Settings Page** | Web UI Settings tab reflecting every addon configuration option — connection, mesh, HA integration, MQTT, Telegram, auto responder, and logging — with secrets masked |
 | ⚙️ **Remote Device Configuration** | Configure tab to view and edit the connected mesh radio's config (roles, LoRa, WiFi, MQTT, telemetry, owner names) with danger confirmations and reboot-required feedback |
+| 🛰️ **Remote Node Administration** | Remote Admin tab administers OTHER mesh nodes over the Meshtastic AdminModule (requires an `admin` channel on the gateway): read/edit their full config, set the owner, reboot/shutdown, factory reset (config or full device), reset the remote NodeDB, set/clear a fixed position, sync the clock, and evict nodes from the remote NodeDB. Every admin round-trip is bounded by a timeout so a dead node can't hang the app |
 | 🖥️ **Web UI Dashboard** | Full-featured dashboard served via HA Ingress (no port forwarding) |
 
 ---
@@ -253,6 +254,7 @@ node's single connection and relays framed packets to multiple clients. To use i
 | `scan_interval` | int | `30` | How often (seconds) the integration polls the addon (10–300) |
 | `ignored_nodes` | list | `[]` | List of node hex IDs to exclude from all API responses |
 | `ha_access_token` | string | _(empty)_ | Long-lived HA access token that authenticates the Track-in-HA relay when `SUPERVISOR_TOKEN` is missing or rejected. On HAOS the Supervisor injects `SUPERVISOR_TOKEN` into both containers and it is tried first; if HA core rejects it (e.g. a mismatched token), the relay retries with this token. Create it in HA under **Profile → Security → Long-lived access tokens**. |
+| `terrain_dem_url` | string | `https://api.opentopodata.org/v1/srtm30m` | Base URL of the digital-elevation-model API used by the **Terrain Link** analysis (⛰ button in the Map view). The endpoint must answer `GET <url>?locations=lat,lng&output=json`. Point it at a local/alternative DEM service on restrictive networks (the default OpenTopoData SRTM30m is public and key-free). |
 
 > 💡 After changing `connection_type` (or any add-on option), **uninstall and
 > re-install** the add-on so Home Assistant re-reads `config.json` and

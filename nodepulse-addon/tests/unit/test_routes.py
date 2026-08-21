@@ -709,3 +709,128 @@ class TestRelayTokenSelection:
                 pytest.raises(RuntimeError, match="No relay credential configured"):
             await routes._relay_to_integration(request, "GET", "/api/nodepulse/tracked-nodes")
         assert "headers" not in recorded
+
+# ----------------------------------------------------------------------
+# Remote node administration routes
+# ----------------------------------------------------------------------
+class TestRemoteAdminRoutes:
+    async def _conn(self):
+        conn = AsyncMock()
+        conn.remote_admin_available.return_value = {
+            "available": True,
+            "admin_channel_index": 1,
+            "actions": {"reboot": {"label": "Reboot", "danger": False, "confirm": False}},
+        }
+        conn.get_remote_config.return_value = {"device": {}, "_schema": {}}
+        conn.set_remote_config.return_value = {"applied": True, "section": "device", "reboot_required": False}
+        conn.remote_admin_action.return_value = {"action": "reboot", "ok": True, "elapsed_s": 1.0}
+        return conn
+
+    @pytest.mark.asyncio
+    async def test_admin_available(self):
+        conn = await self._conn()
+        request = make_request(app_dict={"connection": conn})
+        resp = await routes.handle_admin_available(request)
+        assert resp.status == 200
+        data = json.loads(resp.body)
+        assert data["available"] is True
+
+    @pytest.mark.asyncio
+    async def test_get_remote_config_ok(self):
+        conn = await self._conn()
+        request = make_request(app_dict={"connection": conn}, match_info={"node_id": "!1234abcd"})
+        resp = await routes.handle_get_remote_config(request)
+        assert resp.status == 200
+        data = json.loads(resp.body)
+        assert "device" in data
+        conn.get_remote_config.assert_awaited_once_with("!1234abcd", force=False)
+
+    @pytest.mark.asyncio
+    async def test_get_remote_config_invalid_node_id(self):
+        conn = await self._conn()
+        request = make_request(app_dict={"connection": conn}, match_info={"node_id": "garbage"})
+        resp = await routes.handle_get_remote_config(request)
+        assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_get_remote_config_timeout(self):
+        conn = await self._conn()
+        conn.get_remote_config.side_effect = ConnectionError("timed out")
+        request = make_request(app_dict={"connection": conn}, match_info={"node_id": "!1234abcd"})
+        resp = await routes.handle_get_remote_config(request)
+        assert resp.status == 504
+
+    @pytest.mark.asyncio
+    async def test_put_remote_config_ok(self):
+        conn = await self._conn()
+        request = make_request(
+            app_dict={"connection": conn},
+            match_info={"node_id": "!1234abcd", "section": "device"},
+            body={"node_info_broadcast_secs": 123},
+        )
+        resp = await routes.handle_put_remote_config_section(request)
+        assert resp.status == 200
+        data = json.loads(resp.body)
+        assert data["applied"] is True
+        conn.set_remote_config.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_put_remote_config_missing_section(self):
+        conn = await self._conn()
+        request = make_request(app_dict={"connection": conn}, match_info={"node_id": "!1234abcd", "section": ""})
+        resp = await routes.handle_put_remote_config_section(request)
+        assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_put_remote_config_invalid_json(self):
+        conn = await self._conn()
+        request = make_request(app_dict={"connection": conn}, match_info={"node_id": "!1234abcd", "section": "device"})
+        request.json = AsyncMock(side_effect=ValueError("bad json"))
+        resp = await routes.handle_put_remote_config_section(request)
+        assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_put_remote_config_validation_error(self):
+        conn = await self._conn()
+        conn.set_remote_config.side_effect = ValueError("Unknown section: nope")
+        request = make_request(
+            app_dict={"connection": conn},
+            match_info={"node_id": "!1234abcd", "section": "nope"},
+            body={"x": 1},
+        )
+        resp = await routes.handle_put_remote_config_section(request)
+        assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_admin_action_ok(self):
+        conn = await self._conn()
+        request = make_request(
+            app_dict={"connection": conn},
+            match_info={"node_id": "!1234abcd", "action": "reboot"},
+            body={"seconds": 5},
+        )
+        resp = await routes.handle_admin_action(request)
+        assert resp.status == 200
+        conn.remote_admin_action.assert_awaited_once_with("!1234abcd", "reboot", {"seconds": 5})
+
+    @pytest.mark.asyncio
+    async def test_admin_action_unknown_action(self):
+        conn = await self._conn()
+        conn.remote_admin_action.side_effect = ValueError("Unknown admin action")
+        request = make_request(
+            app_dict={"connection": conn},
+            match_info={"node_id": "!1234abcd", "action": "frobnicate"},
+        )
+        resp = await routes.handle_admin_action(request)
+        assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_admin_action_timeout(self):
+        conn = await self._conn()
+        conn.remote_admin_action.side_effect = ConnectionError("timed out")
+        request = make_request(
+            app_dict={"connection": conn},
+            match_info={"node_id": "!1234abcd", "action": "reboot"},
+        )
+        resp = await routes.handle_admin_action(request)
+        assert resp.status == 504

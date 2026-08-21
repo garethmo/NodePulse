@@ -116,6 +116,14 @@
         Configure
       </div>
 
+      <div class="nav-item" data-view="admin" role="button" tabindex="0">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+          <path d="M12 15l-2.5-2.5a1.77 1.77 0 1 1 2.5-2.5l0 0 0 0a1.77 1.77 0 1 1 2.5 2.5L12 15z"/>
+        </svg>
+        Remote Admin
+      </div>
+
       <!-- Node count badge -->
       <div id="sidebar-footer">
         <div id="node-count-badge">
@@ -144,6 +152,7 @@
           <button class="tab-btn" data-view="packets">Packets</button>
           <button class="tab-btn" data-view="settings">Settings</button>
           <button class="tab-btn" data-view="config">Configure</button>
+          <button class="tab-btn" data-view="admin">Remote Admin</button>
         </div>
       </div>
       <div id="header-status">
@@ -291,6 +300,9 @@
           <button type="button" class="map-export-btn" data-export="gpx" title="Export visible nodes as GPX">📥 GPX</button>
           <button type="button" id="map-add-waypoint-btn" class="map-export-btn" title="Drop a waypoint on the map">📍 Waypoint</button>
           <button type="button" id="map-ruler-btn" class="map-export-btn map-ruler-btn" title="Measure distance and elevation">📏 Ruler</button>
+          <button type="button" id="map-terrain-btn" class="map-export-btn" title="Analyse a radio link over terrain (LOS / Fresnel / link budget)">⛰ Terrain</button>
+          <button type="button" id="map-coverage-btn" class="map-export-btn" title="Compute a radial RF coverage map (Site Planner)">📡 Coverage</button>
+          <button type="button" id="map-3d-btn" class="map-export-btn" title="Toggle 3D terrain view">🏔 3D</button>
         </div>
 
         <!-- Ruler panel — shown when "📏 Ruler" is clicked -->
@@ -326,6 +338,110 @@
           </div>
         </div>
 
+        <!-- Terrain Link panel — shown when "⛰ Terrain" is clicked -->
+        <div id="terrain-panel" class="terrain-panel hidden" role="dialog" aria-label="Terrain Link Analysis">
+          <div class="terrain-panel-header">
+            <span class="terrain-panel-title">⛰ Terrain Link</span>
+            <button type="button" id="terrain-panel-close" class="terrain-panel-close" aria-label="Close">✕</button>
+          </div>
+          <div class="terrain-panel-body">
+            <label class="terrain-form-label" for="terrain-from">From node</label>
+            <select id="terrain-from" class="terrain-node-select" aria-label="From node"></select>
+            <label class="terrain-form-label" for="terrain-to">To node</label>
+            <select id="terrain-to" class="terrain-node-select" aria-label="To node"></select>
+            <div class="terrain-params">
+              <label class="terrain-param">
+                <span>Freq (MHz)</span>
+                <input type="number" id="terrain-freq" class="terrain-param-input" value="915" step="any" min="1" max="60000" />
+              </label>
+              <label class="terrain-param">
+                <span>TX Pwr (dBm)</span>
+                <input type="number" id="terrain-tx-pwr" class="terrain-param-input" value="10" step="any" />
+              </label>
+              <label class="terrain-param">
+                <span>TX Gain (dBi)</span>
+                <input type="number" id="terrain-tx-gain" class="terrain-param-input" value="2.1" step="any" />
+              </label>
+              <label class="terrain-param">
+                <span>RX Gain (dBi)</span>
+                <input type="number" id="terrain-rx-gain" class="terrain-param-input" value="2.1" step="any" />
+              </label>
+              <label class="terrain-param">
+                <span>RX Sens (dBm)</span>
+                <input type="number" id="terrain-rx-sens" class="terrain-param-input" value="-137" step="any" />
+              </label>
+              <label class="terrain-param">
+                <span>Ant H (m)</span>
+                <input type="number" id="terrain-ant-h" class="terrain-param-input" value="2" step="any" />
+              </label>
+            </div>
+            <button type="button" id="terrain-analyze-btn" class="terrain-analyze-btn">Analyze</button>
+            <div class="terrain-verdicts" id="terrain-verdicts"></div>
+            <div class="terrain-profile-wrap">
+              <canvas id="terrain-profile-canvas" class="terrain-profile-canvas"></canvas>
+              <div class="terrain-profile-empty" id="terrain-profile-empty">Select two nodes and press Analyze</div>
+            </div>
+            <div class="terrain-budget" id="terrain-budget"></div>
+          </div>
+        </div>
+
+        <!-- Coverage Planner panel -->
+        <div id="coverage-panel" class="terrain-panel hidden" role="dialog" aria-label="RF Coverage Planner">
+          <div class="terrain-panel-header">
+            <span class="terrain-panel-title">📡 Coverage Planner</span>
+            <button type="button" id="coverage-panel-close" class="terrain-panel-close" aria-label="Close">✕</button>
+          </div>
+          <div class="terrain-panel-body">
+            <label class="terrain-form-label" for="coverage-center">Center node</label>
+            <select id="coverage-center" class="terrain-node-select" aria-label="Center node">
+                <option value="custom">📍 Custom Location (Click map)</option>
+            </select>
+            <div id="coverage-custom-loc" class="hidden" style="margin-bottom: 8px; font-size: 0.85em; color: var(--text-secondary);">
+                Click on the map to set location: <span id="coverage-custom-coords">Not set</span>
+            </div>
+            <div class="terrain-params">
+              <label class="terrain-param">
+                <span>Radius (m)</span>
+                <input type="number" id="coverage-radius" class="terrain-param-input" value="10000" step="any" min="10" max="100000" />
+              </label>
+              <label class="terrain-param" style="grid-column: span 2;">
+                <span>Environment</span>
+                <select id="coverage-env" class="terrain-param-input">
+                  <option value="0">Open / Rural (0 dB)</option>
+                  <option value="10">Suburban / Forest (-10 dB)</option>
+                  <option value="20">Urban / City (-20 dB)</option>
+                </select>
+              </label>
+              <label class="terrain-param">
+                <span>Freq (MHz)</span>
+                <input type="number" id="coverage-freq" class="terrain-param-input" value="915" step="any" min="1" max="60000" />
+              </label>
+              <label class="terrain-param">
+                <span>TX Pwr (dBm)</span>
+                <input type="number" id="coverage-tx-pwr" class="terrain-param-input" value="10" step="any" />
+              </label>
+              <label class="terrain-param">
+                <span>TX Gain (dBi)</span>
+                <input type="number" id="coverage-tx-gain" class="terrain-param-input" value="2.1" step="any" />
+              </label>
+              <label class="terrain-param">
+                <span>RX Gain (dBi)</span>
+                <input type="number" id="coverage-rx-gain" class="terrain-param-input" value="2.1" step="any" />
+              </label>
+              <label class="terrain-param">
+                <span>RX Sens (dBm)</span>
+                <input type="number" id="coverage-rx-sens" class="terrain-param-input" value="-137" step="any" />
+              </label>
+              <label class="terrain-param">
+                <span>Ant H (m)</span>
+                <input type="number" id="coverage-ant-h" class="terrain-param-input" value="2" step="any" />
+              </label>
+            </div>
+            <button type="button" id="coverage-analyze-btn" class="terrain-analyze-btn">Generate Coverage Map</button>
+            <div class="terrain-verdicts" id="coverage-verdicts"></div>
+          </div>
+        </div>
+
         <!-- Add Waypoint panel — shown when "📍 Waypoint" is clicked -->
         <div id="waypoint-panel" class="waypoint-panel hidden" role="dialog" aria-label="Add Waypoint">
           <div class="waypoint-panel-header">
@@ -351,6 +467,7 @@
         </div>
 
         <div id="full-map"></div>
+        <div id="map-3d-container" class="hidden"></div>
       </div>
 
       <!-- ---- TOPOLOGY VIEW ------------------------------------------ -->
@@ -827,6 +944,24 @@
         </div>
       </div>
 
+      <!-- ---- REMOTE ADMIN VIEW --------------------------------------- -->
+      <div id="view-admin" class="view">
+        <div class="cfg-header">
+          <h1 class="cfg-title">Remote Node Administration</h1>
+          <div class="cfg-header-actions">
+            <span id="admin-capability" class="cfg-reboot-banner hidden"></span>
+            <button id="admin-refresh-btn" class="action-btn" type="button">⟳ Refresh</button>
+          </div>
+        </div>
+        <!-- Content rendered by remote_admin.js -->
+        <div id="admin-content">
+          <div class="cfg-loading">
+            <div class="spinner"></div>
+            Loading remote administration…
+          </div>
+        </div>
+      </div>
+
     </main><!-- /main -->
 
     <!-- Mobile sidebar backdrop (toggled by JS on small screens) -->
@@ -840,5 +975,7 @@
   <script type="module" src="js/app.js" defer></script>
   <!-- Device Configuration view controller -->
   <script type="module" src="js/device_config.js" defer></script>
+  <!-- Remote Admin view controller -->
+  <script type="module" src="js/remote_admin.js" defer></script>
 </body>
 </html>
