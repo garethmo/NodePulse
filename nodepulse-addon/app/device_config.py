@@ -467,8 +467,8 @@ def _make_json_serializable(val: Any) -> Any:
     - Plain lists / tuples and dicts (recursive)
     - Scalars (pass-through)
     """
-    from google.protobuf.message import Message
     from google.protobuf.json_format import MessageToDict
+    from google.protobuf.message import Message
 
     if isinstance(val, Message):
         return MessageToDict(val, preserving_proto_field_name=True)

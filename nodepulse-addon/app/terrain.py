@@ -536,7 +536,6 @@ def geojson_from_polygon(polygon: list[dict[str, Any]]) -> dict[str, Any]:
 
 def export_coverage_geojson(result: dict[str, Any]) -> dict[str, Any]:
     """Export a coverage analysis result as GeoJSON with three polygons (strong/medium/weak)."""
-    center = result.get("center", {})
     radius = result.get("radius_m", 0)
     polygons = result.get("polygons", {})
     features = []
@@ -557,8 +556,6 @@ def export_coverage_geojson(result: dict[str, Any]) -> dict[str, Any]:
 async def export_coverage_kml(result: dict[str, Any]) -> str:
     """Export a coverage analysis result as KML (Polygon + Placemark for each ring)."""
     from xml.sax.saxutils import escape
-    center = result.get("center", {})
-    radius = result.get("radius_m", 0)
     polygons = result.get("polygons", {})
     lines = []
     for label, ring in polygons.items():

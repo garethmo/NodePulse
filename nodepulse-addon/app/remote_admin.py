@@ -37,8 +37,8 @@ REMOTE_ADMIN_TIMEOUT_S = 15.0
 
 # Full config read: we now pipeline all section requests (send all without
 # waiting for individual acks) then poll once for all responses. The firmware
-# replies asynchronously so the effective wait is 1 × round-trip time, not
-# 23 × round-trip.  60 s gives plenty of headroom on slow/distant nodes.
+# replies asynchronously so the effective wait is 1 x round-trip time, not
+# 23 x round-trip.  60 s gives plenty of headroom on slow/distant nodes.
 REMOTE_CONFIG_TIMEOUT_S = 60.0
 
 # Which config sections count as "needs a reboot after applying".
@@ -414,16 +414,14 @@ def request_remote_config_section(remote_node, section_name: str) -> bool:
         # no over-the-air request needed.
         return True
 
-    from meshtastic.protobuf import admin_pb2, config_pb2, module_config_pb2
+    from meshtastic.protobuf import admin_pb2, config_pb2
 
     send_admin = getattr(remote_node, "_sendAdmin", None)
     
     # Map section string to descriptor
     field = config_pb2.Config.DESCRIPTOR.fields_by_name.get(section_name)
-    is_local = True
     if not field:
-        field = module_config_pb2.ModuleConfig.DESCRIPTOR.fields_by_name.get(section_name)
-        is_local = False
+        pass
     
     if not field:
         logger.error("Unknown section name %r", section_name)
