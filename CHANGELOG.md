@@ -2,6 +2,22 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.21.1] - 2026-08-21
+### Fixed
+- **Syntax error in terrain analysis** — Removed extraneous `},` at `app/terrain.py:270` that caused `ImportError` on module load.
+- **TX Queue debug spam** — Added `await asyncio.sleep(0.1)` after each message send in the scheduled messages loop (`app/main.py:136`) to prevent meshtastic radio TX buffer overflow, eliminating the continuous "Waiting for free space in TX Queue" debug logs.
+
+### Added
+- **Clutter height modeling** — `clutter_height_m` parameter in both `analyze_link()` and `analyze_coverage()` (`app/terrain.py`) adds a fixed elevation offset (meters) to model trees/buildings, realistically reducing coverage range in suburban/urban areas.
+- **Atmospheric refraction control** — `k_factor` parameter (`app/routes.py`) allows adjusting the earth curvature k-factor beyond the default 4/3, with per-request validation.
+- **GeoJSON/KML export** — New `export_coverage_geojson()` and `export_coverage_kml()` functions (`app/terrain.py`) convert coverage analysis results into exportable vector formats for GIS tools and Google Earth.
+- **Debug logging across all message paths** — Added logging in `connection.send_message()` (`app/connection.py:488`), the scheduled messages loop (`app/main.py:120`), and the `/api/send` endpoint (`app/routes.py:770`) to track text excerpt, destination, channel, and send results for troubleshooting.
+
+### Changed
+- **Terrain link API** — `/api/terrain/link` now accepts `k_factor` and `clutter_height_m` query parameters, passed through to the analysis.
+- **Coverage analysis** — `clutter_height_m` propagates through `analyze_coverage()` to affect beam height calculations and LOS verdicts across all radials.
+- **Relay auth fallback** — The tracked-nodes relay (`_relay_to_integration`) now properly retries with `ha_access_token` fallback when `SUPERVISOR_TOKEN` is rejected, ensuring Track-in-HA works on both HAOS and custom Docker/venv installs.
+
 ## [1.16.8] - 2026-08-19
 ### Breaking
 - **Entity IDs changed** — Per-node sensors are now device-prefixed (`sensor.<node_name>_snr`, e.g. `sensor.r1_mini_snr`) instead of the old colliding `sensor.snr` ids, and the notify entities moved from `notify.mesh_<entry>` to `notify.nodepulse` / `notify.nodepulse_<name>`. Automations referencing the old IDs must be updated. After installing, do a **full Home Assistant restart** (not Reload) and re-track your nodes if needed.
@@ -22,22 +38,6 @@ All notable changes to NodePulse are documented here.
 - **SNR sensor (Q8)** — Removed the mismatched `SIGNAL_STRENGTH` device class (unit stays `dB`).
 - **Defensive payload coercion (Q16/Q17)** — `as_int`/`as_float` helpers and try/except guards applied to addon payload parsing in `__init__.py`, `binary_sensor.py` and `sensor.py`; `normalize_node_id` returns `None` for whitespace-only input; tags join coerces to strings.
 - **Addon cleanup (Q4/Q14/Q15)** — `Tuple` import added in `connection.py`; dead `except ValueError` removed in `api.py`; unused imports/vars, inline imports and multi-import lines cleaned in the addon and `geo_location.py`.
-
-## [1.21.1] - 2026-08-21
-### Fixed
-- **Syntax error in terrain analysis** — Removed extraneous `},` at `app/terrain.py:270` that caused `ImportError` on module load.
-- **TX Queue debug spam** — Added `await asyncio.sleep(0.1)` after each message send in the scheduled messages loop (`app/main.py:136`) to prevent meshtastic radio TX buffer overflow, eliminating the continuous "Waiting for free space in TX Queue" debug logs.
-
-### Added
-- **Clutter height modeling** — `clutter_height_m` parameter in both `analyze_link()` and `analyze_coverage()` (`app/terrain.py`) adds a fixed elevation offset (meters) to model trees/buildings, realistically reducing coverage range in suburban/urban areas.
-- **Atmospheric refraction control** — `k_factor` parameter (`app/routes.py`) allows adjusting the earth curvature k-factor beyond the default 4/3, with per-request validation.
-- **GeoJSON/KML export** — New `export_coverage_geojson()` and `export_coverage_kml()` functions (`app/terrain.py`) convert coverage analysis results into exportable vector formats for GIS tools and Google Earth.
-- **Debug logging across all message paths** — Added logging in `connection.send_message()` (`app/connection.py:488`), the scheduled messages loop (`app/main.py:120`), and the `/api/send` endpoint (`app/routes.py:770`) to track text excerpt, destination, channel, and send results for troubleshooting.
-
-### Changed
-- **Terrain link API** — `/api/terrain/link` now accepts `k_factor` and `clutter_height_m` query parameters, passed through to the analysis.
-- **Coverage analysis** — `clutter_height_m` propagates through `analyze_coverage()` to affect beam height calculations and LOS verdicts across all radials.
-- **Relay auth fallback** — The tracked-nodes relay (`_relay_to_integration`) now properly retries with `ha_access_token` fallback when `SUPERVISOR_TOKEN` is rejected, ensuring Track-in-HA works on both HAOS and custom Docker/venv installs.
 
 ---
 

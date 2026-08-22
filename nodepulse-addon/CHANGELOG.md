@@ -2,6 +2,22 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.21.1] - 2026-08-21
+### Fixed
+- **Syntax error in terrain analysis** — Removed extraneous `},` at `app/terrain.py:270` that caused `ImportError` on module load.
+- **TX Queue debug spam** — Added `await asyncio.sleep(0.1)` after each message send in the scheduled messages loop (`app/main.py:136`) to prevent meshtastic radio TX buffer overflow, eliminating the continuous "Waiting for free space in TX Queue" debug logs.
+
+### Added
+- **Clutter height modeling** — `clutter_height_m` parameter in both `analyze_link()` and `analyze_coverage()` (`app/terrain.py`) adds a fixed elevation offset (meters) to model trees/buildings, realistically reducing coverage range in suburban/urban areas.
+- **Atmospheric refraction control** — `k_factor` parameter (`app/routes.py`) allows adjusting the earth curvature k-factor beyond the default 4/3, with per-request validation.
+- **GeoJSON/KML export** — New `export_coverage_geojson()` and `export_coverage_kml()` functions (`app/terrain.py`) convert coverage analysis results into exportable vector formats for GIS tools and Google Earth.
+- **Debug logging across all message paths** — Added logging in `connection.send_message()` (`app/connection.py:488`), the scheduled messages loop (`app/main.py:120`), and the `/api/send` endpoint (`app/routes.py:770`) to track text excerpt, destination, channel, and send results for troubleshooting.
+
+### Changed
+- **Terrain link API** — `/api/terrain/link` now accepts `k_factor` and `clutter_height_m` query parameters, passed through to the analysis.
+- **Coverage analysis** — `clutter_height_m` propagates through `analyze_coverage()` to affect beam height calculations and LOS verdicts across all radials.
+- **Relay auth fallback** — The tracked-nodes relay (`_relay_to_integration`) now properly retries with `ha_access_token` fallback when `SUPERVISOR_TOKEN` is rejected, ensuring Track-in-HA works on both HAOS and custom Docker/venv installs.
+
 ## [1.21.0] - 2026-08-20
 ### Added
 - **Security keys surfaced in the UI** — The **Security & Admin Keys** section now renders in the Configure tab (and in remote nodes), showing `public_key` / `private_key` / `admin_key` as read-only, copyable base64 chips. Keys are base64-encoded in the API (`serialize_config_sections`) and base64-decoded on write (`validate_and_apply_patch`); the private key is masked until revealed. This is the exact workflow for wiring up remote admin: copy this gateway's public key into each target's **Security → Admin Keys**.
