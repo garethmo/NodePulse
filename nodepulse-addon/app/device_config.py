@@ -73,7 +73,10 @@ def build_config_registry() -> dict[str, Any]:
                     field_def = {
                         "type": _PROTO_TYPE_MAP.get(field.type, "unknown"),
                         "label": field.name,
-                        "repeated": getattr(field, "label", 0) == FieldDescriptor.LABEL_REPEATED,
+                        # Numeric comparison (label 3 == LABEL_REPEATED) is robust
+                        # across protobuf versions where the descriptor enum does
+                        # not compare equal to FieldDescriptor.LABEL_REPEATED.
+                        "repeated": int(getattr(field, "label", 0)) == 3,
                     }
                     if field.type == FieldDescriptor.TYPE_ENUM:
                         field_def["enum_type"] = field.enum_type.name
@@ -86,6 +89,15 @@ def build_config_registry() -> dict[str, Any]:
                         field_def.update(constraint)
 
                     registry[section_name]["fields"][field.name] = field_def
+
+    # admin_key is always a repeated bytes field in Meshtastic SecurityConfig
+    # (a node may hold multiple admin keys). Some meshtastic/protobuf versions
+    # report it as optional via descriptor introspection even though the field
+    # is repeatable, which breaks the repeated bytes write-path and schema.
+    # Force it so the registry matches the actual protobuf behaviour.
+    _security = registry.get("security")
+    if _security is not None and "admin_key" in _security["fields"]:
+        _security["fields"]["admin_key"]["repeated"] = True
 
     # Add pseudo-section for owner
     registry["owner"] = {
