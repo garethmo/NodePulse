@@ -15,6 +15,8 @@ from typing import Any
 
 import aiohttp
 
+from .terrain import analyze_coverage, analyze_link
+
 logger = logging.getLogger(__name__)
 
 
@@ -26,6 +28,8 @@ class TelegramBot:
         get_status_callback: Callable,
         get_nodes_callback: Callable,
         get_channels_callback: Callable | None = None,
+        conn=None,
+        terrain=None,
     ):
         self._config = config
         self.enabled = config.telegram_enabled
@@ -52,6 +56,13 @@ class TelegramBot:
         self.get_status_callback = get_status_callback
         self.get_nodes_callback = get_nodes_callback
         self.get_channels_callback = get_channels_callback
+
+        # Optional direct handles to the meshtastic connection and terrain
+        # service, used by the richer command set (traceroute, terrain analysis,
+        # remote administration). Kept optional so the bot stays testable with
+        # only the lightweight callbacks wired up.
+        self._conn = conn
+        self._terrain = terrain
         
         self._task: asyncio.Task | None = None
         self._session: aiohttp.ClientSession | None = None
@@ -252,7 +263,6 @@ class TelegramBot:
                 connected = bool(status.get("connected"))
                 info = status.get("my_info", {}) or {}
                 batt = info.get("battery_level", "Unknown")
-                mac = info.get("macaddr", "Unknown")
                 nodes_cnt = len(await self.get_nodes_callback())
 
                 if connected:
@@ -273,13 +283,12 @@ class TelegramBot:
 
                 await self._send_text(
                     f"📡 *NodePulse Status*\n"
-                    f"Node: {self_name}\n"
+                    f"Node: {self._escape_md(self_name)}\n"
                     f"Status: {online}\n"
                     f"Last heard: {last_heard_str}\n"
                     f"Uptime: {uptime_str}\n"
                     f"Battery: {batt}%\n"
-                    f"Nodes: {nodes_cnt}\n"
-                    f"MAC: {mac}"
+                    f"Nodes: {nodes_cnt}"
                 )
                 
             elif command == "/nodes":
@@ -292,7 +301,7 @@ class TelegramBot:
                 for n in sorted_nodes:
                     name = n.get("short_name") or n.get("long_name") or n.get("id", "?")
                     snr = n.get("snr", "N/A")
-                    lines.append(f"• {name} (SNR: {snr})")
+                    lines.append(f"• {self._escape_md(name)} (SNR: {snr})")
                 if len(nodes) > 20:
                     lines.append(f"...and {len(nodes) - 20} more.")
                 await self._send_text("\n".join(lines)[:4000])
@@ -311,7 +320,7 @@ class TelegramBot:
                     name = ch.get("name", "") or "Unnamed"
                     role = ch.get("role", "").lower().capitalize()
                     active = "✓" if idx in self.forward_channels else "—"
-                    lines.append(f"{active} Ch {idx} - {name} ({role})")
+                    lines.append(f"{active} Ch {idx} - {self._escape_md(name)} ({self._escape_md(role)})")
                 await self._send_text("\n".join(lines)[:4000])
 
             elif command == "/send":
@@ -358,12 +367,388 @@ class TelegramBot:
                     await self._send_text(f"✅ DM sent to {dest}.")
                 else:
                     await self._send_text("❌ Failed to send DM.")
-                    
+
+            elif command == "/device":
+                status = await self.get_status_callback()
+                info = (status or {}).get("my_info", {}) or {}
+                name = self._escape_md(info.get("long_name") or info.get("short_name") or "Self")
+                hw = self._escape_md(info.get("hw_model") or "Unknown")
+                fw = self._escape_md(info.get("firmware_version") or "Unknown")
+                await self._send_text(
+                    f"🔧 *Device*\n"
+                    f"Node: {name}\n"
+                    f"HW model: {hw}\n"
+                    f"Firmware: {fw}"
+                )
+
+            elif command == "/where":
+                if not args:
+                    await self._send_text("Usage: `/where !node`")
+                    return
+                nodes = await self.get_nodes_callback()
+                node = self._resolve_node(nodes, args)
+                if not node:
+                    await self._send_text(f"❌ Node not found: {self._escape_md(args)}")
+                    return
+                lat = node.get("latitude")
+                lng = node.get("longitude")
+                name = self._node_label(node)
+                if lat is None or lng is None:
+                    await self._send_text(f"📍 *{name}*\nNo position known.")
+                    return
+                lh = (
+                    self._format_relative_time(node.get("last_heard"))
+                    if node.get("last_heard")
+                    else "Unknown"
+                )
+                map_url = f"https://www.openstreetmap.org/?mlat={lat}&mlon={lng}#map=15/{lat}/{lng}"
+                await self._send_text(
+                    f"📍 *{name}*\n"
+                    f"Lat: {lat:.5f}\n"
+                    f"Lon: {lng:.5f}\n"
+                    f"Last heard: {lh}\n"
+                    f"{map_url}"
+                )
+
+            elif command == "/neighbors":
+                if not args:
+                    await self._send_text("Usage: `/neighbors !node`")
+                    return
+                nodes = await self.get_nodes_callback()
+                node = self._resolve_node(nodes, args)
+                if not node:
+                    await self._send_text(f"❌ Node not found: {self._escape_md(args)}")
+                    return
+                neighbors = node.get("neighbors") or []
+                name = self._node_label(node)
+                if not neighbors:
+                    await self._send_text(f"🔗 *{name}* has no known neighbors.")
+                    return
+                lines = [f"🔗 *{name} — {len(neighbors)} neighbors:*"]
+                for nb in neighbors[:20]:
+                    nb_id = nb.get("id", "?")
+                    nb_node = self._resolve_node(nodes, nb_id)
+                    nb_name = self._node_label(nb_node) if nb_node else nb_id
+                    snr = nb.get("snr")
+                    snr_str = f" (SNR {snr:.1f}dB)" if snr is not None else ""
+                    lines.append(f"• {nb_name}{snr_str}")
+                await self._send_text("\n".join(lines)[:4000])
+
+            elif command == "/last":
+                nodes = await self.get_nodes_callback()
+                recent = sorted(
+                    nodes, key=lambda n: n.get("last_heard") or 0, reverse=True
+                )[:15]
+                if not recent:
+                    await self._send_text("No nodes heard yet.")
+                    return
+                lines = ["*Recently heard:*"]
+                for n in recent:
+                    name = self._node_label(n)
+                    lh = (
+                        self._format_relative_time(n.get("last_heard"))
+                        if n.get("last_heard")
+                        else "Unknown"
+                    )
+                    lines.append(f"• {name} ({lh})")
+                await self._send_text("\n".join(lines)[:4000])
+
+            elif command == "/link":
+                if not self._terrain:
+                    await self._send_text("❌ Terrain service unavailable.")
+                    return
+                parts = args.split()
+                if len(parts) < 2:
+                    await self._send_text("Usage: `/link !nodeA !nodeB [freq_mhz]`")
+                    return
+                freq = 915.0
+                if len(parts) >= 3:
+                    try:
+                        freq = float(parts[2])
+                    except ValueError:
+                        await self._send_text("❌ Frequency must be a number.")
+                        return
+                nodes = await self.get_nodes_callback()
+                na = self._resolve_node(nodes, parts[0])
+                nb = self._resolve_node(nodes, parts[1])
+                if not na or not nb:
+                    await self._send_text("❌ One or both nodes not found.")
+                    return
+                lat1, lng1 = na.get("latitude"), na.get("longitude")
+                lat2, lng2 = nb.get("latitude"), nb.get("longitude")
+                if None in (lat1, lng1, lat2, lng2):
+                    await self._send_text(
+                        "❌ Both nodes need a known position for link analysis."
+                    )
+                    return
+                try:
+                    elevations = await self._terrain.sample_path(
+                        lat1, lng1, lat2, lng2, 48
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Telegram /link elevation failed: %s", exc)
+                    await self._send_text("❌ Terrain elevation lookup failed.")
+                    return
+                if any(e is None for e in elevations):
+                    await self._send_text(
+                        "❌ Terrain elevation unavailable along this path."
+                    )
+                    return
+                result = analyze_link(
+                    from_point={"lat": lat1, "lng": lng1},
+                    to_point={"lat": lat2, "lng": lng2},
+                    freq_mhz=freq,
+                    elevations=elevations,
+                )
+                name_a = self._node_label(na)
+                name_b = self._node_label(nb)
+                los = "✅ LOS clear" if result["los_clear"] else "⛔ LOS blocked"
+                fres = (
+                    "✅ Fresnel clear"
+                    if result["fresnel_clear"]
+                    else "⚠️ Fresnel marginal"
+                )
+                await self._send_text(
+                    f"📡 *Link {name_a} → {name_b}*\n"
+                    f"Distance: {result['distance_km']} km\n"
+                    f"{los}\n{fres}\n"
+                    f"Min clearance: {result['min_clearance_ratio']}\n"
+                    f"Fade margin: {result['link_budget']['fade_margin_db']} dB"
+                )
+
+            elif command == "/coverage":
+                if not self._terrain:
+                    await self._send_text("❌ Terrain service unavailable.")
+                    return
+                parts = args.split()
+                if not parts:
+                    await self._send_text(
+                        "Usage: `/coverage !node [radius_m] [freq_mhz]`"
+                    )
+                    return
+                radius = 8000.0
+                freq = 915.0
+                if len(parts) >= 2:
+                    try:
+                        radius = float(parts[1])
+                    except ValueError:
+                        await self._send_text("❌ Radius must be a number.")
+                        return
+                if len(parts) >= 3:
+                    try:
+                        freq = float(parts[2])
+                    except ValueError:
+                        await self._send_text("❌ Frequency must be a number.")
+                        return
+                nodes = await self.get_nodes_callback()
+                node = self._resolve_node(nodes, parts[0])
+                if not node:
+                    await self._send_text(f"❌ Node not found: {self._escape_md(parts[0])}")
+                    return
+                lat, lng = node.get("latitude"), node.get("longitude")
+                if lat is None or lng is None:
+                    await self._send_text(
+                        "❌ Node has no known position for coverage analysis."
+                    )
+                    return
+                try:
+                    result = await analyze_coverage(
+                        self._terrain,
+                        lat,
+                        lng,
+                        radius,
+                        freq,
+                        tx_power_dbm=0.0,
+                        tx_gain_dbi=0.0,
+                        rx_gain_dbi=0.0,
+                        rx_sensitivity_dbm=-137.0,
+                        tx_antenna_height_m=2.0,
+                        rx_antenna_height_m=2.0,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Telegram /coverage failed: %s", exc)
+                    await self._send_text("❌ Coverage analysis failed.")
+                    return
+                name = self._node_label(node)
+                polys = result.get("polygons", {})
+                strong = len(polys.get("strong", []))
+                await self._send_text(
+                    f"📡 *Coverage {name}*\n"
+                    f"Radius: {radius:.0f} m\n"
+                    f"Frequency: {freq:.0f} MHz\n"
+                    f"Strong-coverage vertices: {strong}"
+                )
+
+            elif command == "/traceroute":
+                if not self._conn:
+                    await self._send_text("❌ Mesh connection unavailable.")
+                    return
+                if not args:
+                    await self._send_text("Usage: `/traceroute !node`")
+                    return
+                nodes = await self.get_nodes_callback()
+                node = self._resolve_node(nodes, args)
+                if not node:
+                    await self._send_text(f"❌ Node not found: {self._escape_md(args)}")
+                    return
+                dest = node.get("id")
+                name = self._node_label(node)
+                if not await self._conn.request_traceroute(dest):
+                    await self._send_text(
+                        "❌ Could not queue traceroute (too many pending)."
+                    )
+                    return
+                await self._send_text(f"🔍 Requesting traceroute to {name}…")
+                num_to_name = {
+                    int(n["id"].lstrip("!"), 16) & 0xFFFFFFFF: self._node_label(n)
+                    for n in nodes
+                    if n.get("id")
+                }
+                record = None
+                for _ in range(15):
+                    await asyncio.sleep(2)
+                    refreshed = await self.get_nodes_callback()
+                    current = self._resolve_node(refreshed, dest)
+                    rec = current.get("traceroute") if current else None
+                    if rec and (rec.get("route") or rec.get("route_back")):
+                        record = rec
+                        break
+                if record:
+                    await self._send_text(self._format_traceroute(record, num_to_name))
+                else:
+                    await self._send_text(
+                        f"⏱️ No traceroute result for {name} yet (timed out)."
+                    )
+
+            elif command == "/ping":
+                if not args:
+                    await self._send_text("Usage: `/ping !node`")
+                    return
+                nodes = await self.get_nodes_callback()
+                node = self._resolve_node(nodes, args)
+                if not node:
+                    await self._send_text(f"❌ Node not found: {self._escape_md(args)}")
+                    return
+                dest = node.get("id")
+                name = self._node_label(node)
+                ok = await self.send_message_callback("ping", destination=dest)
+                snr = node.get("snr")
+                rssi = node.get("rssi")
+                signal = ""
+                if snr is not None or rssi is not None:
+                    signal = (
+                        f"\nLast signal — SNR: {snr}, RSSI: {rssi}"
+                        if snr is not None and rssi is not None
+                        else f"\nLast signal — {snr if snr is not None else rssi}"
+                    )
+                await self._send_text(
+                    f"{'✅ Ping sent to' if ok else '❌ Failed to ping'} {name}.{signal}"
+                )
+
+            elif command == "/reboot":
+                if not self._conn:
+                    await self._send_text("❌ Mesh connection unavailable.")
+                    return
+                if not args:
+                    status = await self.get_status_callback()
+                    info = (status or {}).get("my_info", {}) or {}
+                    dest = info.get("node_id")
+                    target = "this gateway"
+                else:
+                    nodes = await self.get_nodes_callback()
+                    node = self._resolve_node(nodes, args)
+                    if not node:
+                        await self._send_text(f"❌ Node not found: {self._escape_md(args)}")
+                        return
+                    dest = node.get("id")
+                    target = self._node_label(node)
+                if not dest:
+                    await self._send_text("❌ Could not determine target node.")
+                    return
+                try:
+                    await self._conn.remote_admin_action(
+                        dest, "reboot", {"seconds": 10}
+                    )
+                    await self._send_text(f"🔄 Reboot sent to {target}.")
+                except Exception as exc:  # noqa: BLE001
+                    await self._send_text(f"❌ Reboot failed: {exc}")
+
+            elif command == "/setpos":
+                if not self._conn:
+                    await self._send_text("❌ Mesh connection unavailable.")
+                    return
+                parts = args.split()
+                if len(parts) < 3:
+                    await self._send_text("Usage: `/setpos !node <lat> <lon> [alt_m]`")
+                    return
+                try:
+                    lat = float(parts[1])
+                    lng = float(parts[2])
+                except ValueError:
+                    await self._send_text("❌ Latitude/longitude must be numbers.")
+                    return
+                alt = int(float(parts[3])) if len(parts) >= 4 else 0
+                nodes = await self.get_nodes_callback()
+                node = self._resolve_node(nodes, parts[0])
+                if not node:
+                    await self._send_text(f"❌ Node not found: {self._escape_md(parts[0])}")
+                    return
+                dest = node.get("id")
+                name = self._node_label(node)
+                try:
+                    await self._conn.remote_admin_action(
+                        dest,
+                        "set_fixed_position",
+                        {"lat": lat, "lng": lng, "alt": alt},
+                    )
+                    await self._send_text(
+                        f"📌 Fixed position set for {name}: {lat:.5f}, {lng:.5f} (alt {alt}m)."
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    await self._send_text(f"❌ Set position failed: {exc}")
+
+            elif command == "/find":
+                if not self._conn:
+                    await self._send_text("❌ Mesh connection unavailable.")
+                    return
+                if not args:
+                    await self._send_text("Usage: `/find !node`")
+                    return
+                nodes = await self.get_nodes_callback()
+                node = self._resolve_node(nodes, args)
+                if not node:
+                    await self._send_text(f"❌ Node not found: {self._escape_md(args)}")
+                    return
+                dest = node.get("id")
+                name = self._node_label(node)
+                lat = node.get("latitude")
+                lng = node.get("longitude")
+                pos = (
+                    f"Last known: {lat:.5f}, {lng:.5f}"
+                    if lat is not None and lng is not None
+                    else "No position known"
+                )
+                await self._conn.request_position(dest)
+                await self._send_text(
+                    f"📡 Requested position from {name}.\n{pos}"
+                )
+
             elif command == "/help":
                 await self._send_text(
                     "Commands:\n"
                     "`/status` - Radio status\n"
+                    "`/device` - Hardware model & firmware\n"
                     "`/nodes` - List top nodes\n"
+                    "`/last` - Recently heard nodes\n"
+                    "`/where !node` - Node position & map link\n"
+                    "`/neighbors !node` - Node's direct neighbors\n"
+                    "`/link !a !b [freq]` - Terrain link analysis\n"
+                    "`/coverage !node [radius] [freq]` - Coverage analysis\n"
+                    "`/traceroute !node` - Trace route to a node\n"
+                    "`/ping !node` - Send a ping & show last signal\n"
+                    "`/find !node` - Request a node's position\n"
+                    "`/reboot [!node]` - Reboot gateway or a remote node\n"
+                    "`/setpos !node <lat> <lon> [alt]` - Set a node's fixed position\n"
                     "`/channels` - List configured channels\n"
                     "`/send <msg>` - Broadcast to primary channel\n"
                     "`/send <ch> <msg>` or `/send #<ch> <msg>` - Broadcast to a specific channel\n"
@@ -420,6 +805,80 @@ class TelegramBot:
             parts.append(f"{total}s")
         return " ".join(parts)
 
+    @staticmethod
+    def _resolve_node(nodes: list[dict[str, Any]], query: str) -> dict | None:
+        """Find a node by !hex id, node number, or (partial) name."""
+        q = (query or "").strip().lstrip("!")
+        if not q:
+            return None
+        ql = q.lower()
+        fallback = None
+        for n in nodes:
+            nid = (n.get("id") or "").lstrip("!")
+            if nid.lower() == ql:
+                return n
+            num = n.get("num")
+            if num is not None and str(int(num) & 0xFFFFFFFF) == ql:
+                return n
+            sn = (n.get("short_name") or "").lower()
+            ln = (n.get("long_name") or "").lower()
+            if sn == ql or ln == ql:
+                return n
+            if fallback is None and (sn.startswith(ql) or ln.startswith(ql)):
+                fallback = n
+        return fallback
+
+    @staticmethod
+    def _escape_md(text: Any) -> str:
+        """Escape Telegram legacy-Markdown special characters in dynamic text.
+
+        Node/user names (e.g. ``R1_mini``) and IDs frequently contain
+        underscores or asterisks. A single unmatched Markdown delimiter makes
+        Telegram reject the whole message as unparseable, which silently
+        produces no output. Escaping prevents that.
+        """
+        s = "" if text is None else str(text)
+        for ch in ("\\", "*", "_", "`", "[", "]", "(", ")"):
+            s = s.replace(ch, "\\" + ch)
+        return s
+
+    @staticmethod
+    def _node_label(node: dict[str, Any]) -> str:
+        return TelegramBot._escape_md(
+            node.get("long_name") or node.get("short_name") or node.get("id") or "?"
+        )
+
+    @staticmethod
+    def _format_traceroute(record: dict[str, Any], num_to_name: dict[int, str]) -> str:
+        """Render a captured traceroute record as a readable path string."""
+
+        def _name(num) -> str:
+            try:
+                key = int(num) & 0xFFFFFFFF
+            except (TypeError, ValueError):
+                return str(num)
+            return num_to_name.get(key, str(num))
+
+        def _path(route, snrs) -> str:
+            if not route:
+                return "—"
+            parts = []
+            for i, hop in enumerate(route):
+                label = _name(hop)
+                if i < len(snrs) and snrs[i] is not None:
+                    label += f" ({snrs[i]:.1f}dB)"
+                parts.append(label)
+            return " → ".join(parts)
+
+        lines = ["🔍 *Traceroute*"]
+        if record.get("route"):
+            lines.append(f"To:   {_path(record['route'], record.get('snr_towards', []))}")
+        if record.get("route_back"):
+            lines.append(f"Back: {_path(record['route_back'], record.get('snr_back', []))}")
+        if len(lines) == 1:
+            lines.append("No route discovered yet.")
+        return "\n".join(lines)
+
     async def _send_text(self, text: str) -> int | None:
         """
         Send a Telegram text message and return its message_id (or None).
@@ -438,10 +897,27 @@ class TelegramBot:
             })
             if result.get("ok"):
                 return result.get("result", {}).get("message_id")
-            return None
+            # Telegram rejected the Markdown (most likely unparseable entities).
+            # Retry as plain text so the user still receives a response instead
+            # of a silent failure.
+            logger.warning(
+                "Telegram Markdown send rejected (%s); retrying as plain text",
+                result,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.error("Failed to send Telegram response to chat %s: %s", target_chat_id, exc)
             return None
+        try:
+            result = await self._api_call("sendMessage", {
+                "chat_id": target_chat_id,
+                "text": text
+            })
+            if result.get("ok"):
+                return result.get("result", {}).get("message_id")
+            logger.error("Telegram sendMessage rejected message: %s", result)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Failed to send Telegram response to chat %s: %s", target_chat_id, exc)
+        return None
 
     def forward_mesh_message(self, entry: dict[str, Any]) -> None:
         """
