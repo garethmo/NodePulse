@@ -1117,6 +1117,7 @@ class TestRemoteAdminConnection:
     @pytest.mark.asyncio
     async def test_get_remote_config_no_admin_channel(self):
         import tempfile
+
         import app.remote_cache as remote_cache_mod
 
         conn = self._conn()
@@ -1137,14 +1138,17 @@ class TestRemoteAdminConnection:
 
         with tempfile.TemporaryDirectory() as tmp:
             cache_file = os.path.join(tmp, "remote_configs.json")
-            with patch.object(remote_cache_mod, "_DATA_DIR", tmp), \
-                 patch.object(remote_cache_mod, "_CACHE_FILE", cache_file):
-                with pytest.raises(ConnectionError, match="no admin capability"):
-                    await conn.get_remote_config("!1234abcd")
+            with (
+                patch.object(remote_cache_mod, "_DATA_DIR", tmp),
+                patch.object(remote_cache_mod, "_CACHE_FILE", cache_file),
+                pytest.raises(ConnectionError, match="no admin capability"),
+            ):
+                await conn.get_remote_config("!1234abcd")
 
     @pytest.mark.asyncio
     async def test_get_remote_config_timeout_maps_to_connection_error(self):
         import tempfile
+
         import app.remote_cache as remote_cache_mod
 
         conn = self._conn()
@@ -1158,12 +1162,14 @@ class TestRemoteAdminConnection:
 
         with tempfile.TemporaryDirectory() as tmp:
             cache_file = os.path.join(tmp, "remote_configs.json")
-            with patch.object(remote_cache_mod, "_DATA_DIR", tmp), \
-                 patch.object(remote_cache_mod, "_CACHE_FILE", cache_file), \
-                 patch.object(conn, "_get_remote_config_sync", side_effect=blocking_sync), \
-                 patch.object(conn, "_run_remote_admin", side_effect=fast_run_remote_admin):
-                with pytest.raises(ConnectionError, match="timed out"):
-                    await conn.get_remote_config("!1234abcd")
+            with (
+                patch.object(remote_cache_mod, "_DATA_DIR", tmp),
+                patch.object(remote_cache_mod, "_CACHE_FILE", cache_file),
+                patch.object(conn, "_get_remote_config_sync", side_effect=blocking_sync),
+                patch.object(conn, "_run_remote_admin", side_effect=fast_run_remote_admin),
+                pytest.raises(ConnectionError, match="timed out"),
+            ):
+                await conn.get_remote_config("!1234abcd")
 
     @pytest.mark.asyncio
     async def test_remote_admin_available_returns_dict(self):

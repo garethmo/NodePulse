@@ -12,10 +12,7 @@ import os
 import tempfile
 from unittest.mock import patch
 
-import pytest
-
 import app.remote_cache as rc
-
 
 # ---------------------------------------------------------------------------
 # Helpers
