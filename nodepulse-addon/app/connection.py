@@ -648,6 +648,129 @@ class MeshtasticConnection:
         return await asyncio.to_thread(self._update_waypoint_sync, waypoint_id, updates)
 
     # ------------------------------------------------------------------
+    # Diagnostics (2.8 Signal Quality)
+    # ------------------------------------------------------------------
+
+    async def get_node_signal(self, node_id: str) -> dict[str, Any]:
+        """Return a diagnostics bundle for a single node.
+
+        Combines the rolling SNR history (collected by the receive thread) with
+        the node's device metrics (battery, uptime, channel/air utilisation,
+        hops-away) and any 2.8 noise floor captured from telemetry. Returns an
+        empty dict when the node is unknown.
+        """
+        return await asyncio.to_thread(self._get_node_signal_sync, node_id)
+
+    def _get_node_signal_sync(self, node_id: str) -> dict[str, Any]:
+        with self._nodes_lock:
+            node = next((n for n in self._nodes if n.get("id") == node_id), None)
+        if node is None:
+            return {}
+        return {
+            "id": node_id,
+            "snr_avg": self._snr_avg(node_id),
+            "signal_quality": self._signal_quality(node_id),
+            "battery_level": node.get("battery_level"),
+            "voltage": node.get("voltage"),
+            "uptime": node.get("uptime"),
+            "channel_utilization": node.get("channel_utilization"),
+            "air_util_tx": node.get("air_util_tx"),
+            "hops_away": node.get("hops_away"),
+            "last_heard": node.get("last_heard"),
+            "position_fix_count": node.get("position_fix_count"),
+            "noise_floor": node.get("noise_floor"),
+        }
+
+    # ------------------------------------------------------------------
+    # Mesh Beacon (2.8)
+    # ------------------------------------------------------------------
+
+    async def get_beacon_config(self) -> dict[str, Any]:
+        """Read the local node's Mesh Beacon module configuration.
+
+        Returns ``{"available": False, "reason": ...}`` when the installed
+        python library does not expose the Beacon module (pre-2.8), so callers
+        can surface a clear "requires firmware 2.8+" message instead of crashing.
+        """
+        return await asyncio.to_thread(self._get_beacon_config_sync)
+
+    def _get_beacon_config_sync(self) -> dict[str, Any]:
+        with self._lock:
+            iface = self._interface
+        if iface is None:
+            raise ConnectionError("Node is not connected")
+        try:
+            local_node = getattr(iface, "localNode", None)
+            mod = getattr(local_node, "moduleConfig", None) if local_node else None
+            beacon = getattr(mod, "beacon", None) if mod is not None else None
+        except Exception:  # noqa: BLE001
+            beacon = None
+        if beacon is None:
+            return {
+                "available": False,
+                "reason": (
+                    "the Mesh Beacon module is not exposed by the installed "
+                    "meshtastic library (requires firmware/protobuf 2.8+)"
+                ),
+            }
+        return {
+            "available": True,
+            "enabled": getattr(beacon, "enabled", None),
+            "listen": getattr(beacon, "listen", None),
+            "share_beacon_location": getattr(beacon, "share_beacon_location", None),
+            "interval_seconds": getattr(beacon, "interval_seconds", None),
+            "channel_name": getattr(beacon, "channel_name", None),
+            "region": getattr(beacon, "region", None),
+        }
+
+    # ------------------------------------------------------------------
+    # Waypoint broadcasting (2.8)
+    # ------------------------------------------------------------------
+
+    async def send_waypoint(self, waypoint: dict[str, Any]) -> dict[str, Any]:
+        """Create a waypoint and (best-effort) broadcast it over the mesh.
+
+        The waypoint is always stored in the local addon store. If the installed
+        meshtastic library supports ``sendWaypoint``, it is also broadcast on the
+        mesh; otherwise the call degrades gracefully to a local-only creation.
+        """
+        return await asyncio.to_thread(self._send_waypoint_sync, waypoint)
+
+    def _send_waypoint_sync(self, waypoint: dict[str, Any]) -> dict[str, Any]:
+        stored = self._add_waypoint_sync(waypoint)
+        broadcast = False
+        detail = "stored locally"
+        with self._lock:
+            iface = self._interface
+        if iface is not None:
+            try:
+                from meshtastic.protobuf.waypoint_pb2 import Waypoint
+                wp = Waypoint()
+                wp.latitudeI = round(float(waypoint.get("lat", 0)) * 1e7)
+                wp.longitudeI = round(float(waypoint.get("lng", 0)) * 1e7)
+                wp.name = str(waypoint.get("name", "") or "")[:30]
+                desc = waypoint.get("description")
+                if desc:
+                    wp.description = str(desc)[:100]
+                icon = waypoint.get("icon")
+                if icon:
+                    wp.icon = str(icon)[:20]
+                expire = waypoint.get("expire")
+                if expire:
+                    wp.expire = int(expire)
+                sender = getattr(iface, "sendWaypoint", None)
+                if callable(sender):
+                    sender(wp)
+                    broadcast = True
+                    detail = "broadcast to mesh"
+                else:
+                    detail = "stored locally (library lacks sendWaypoint)"
+            except Exception as exc:  # noqa: BLE001
+                detail = f"stored locally (broadcast skipped: {exc})"
+                logger.debug("send_waypoint broadcast skipped: %s", exc)
+        return {"stored": stored, "broadcast": broadcast, "detail": detail}
+
+    # ------------------------------------------------------------------
     # Security Scanner
     # ------------------------------------------------------------------
 
@@ -1411,6 +1534,11 @@ class MeshtasticConnection:
                 self._capture_waypoint(packet)
                 return
 
+            # --- Device telemetry (2.8 Signal Quality: noise floor) -------
+            if portnum == "DEVICE_METRICS_APP":
+                self._capture_telemetry(packet)
+                return
+
             # --- Text messages ------------------------------------------
             text = decoded.get("text")
             if not text:
@@ -1432,13 +1560,30 @@ class MeshtasticConnection:
             self_id = ("!" + format(self_num, "08x")) if self_num is not None else None
 
             name = None
+            from_short = ""
+            from_long = ""
             if from_num is not None and self._interface is not None:
                 node = self._interface.nodes.get(from_num)
                 if node:
                     user = node.get("user") or {}
                     # Prefer the short name in the chat window (compact), falling
                     # back to the long name when no short name is set.
-                    name = user.get("shortName") or user.get("longName")
+                    from_short = user.get("shortName") or ""
+                    from_long = user.get("longName") or ""
+                    name = from_short or from_long
+            # Fallback to the persistent node store for senders we don't have a
+            # live user dict for (e.g. nodes heard via MQTT or traceroute). This
+            # keeps the Telegram/UI sender label human-readable instead of an
+            # opaque node ID when the live interface snapshot lacks the sender.
+            if not name:
+                with self._nodes_lock:
+                    persisted = next(
+                        (n for n in self._nodes if n.get("id") == from_id), None
+                    )
+                if persisted:
+                    from_short = persisted.get("short_name") or ""
+                    from_long = persisted.get("long_name") or ""
+                    name = from_short or from_long
 
             channel = packet.get("channel", 0)
             # A packet is a DM if it is addressed to a specific node (not the
@@ -1459,6 +1604,8 @@ class MeshtasticConnection:
                 "from_id": from_id,
                 "to_id": to_id,
                 "from_name": name or from_id or "Unknown",
+                "from_short": from_short,
+                "from_long": from_long,
                 "text": text,
                 "channel": channel,
                 "conversation": conversation,
@@ -2384,6 +2531,40 @@ class MeshtasticConnection:
         except Exception as exc:  # pragma: no cover - defensive  # noqa: BLE001
             logger.debug("Error capturing position (ignored): %s", exc)
 
+    def _capture_telemetry(self, packet: dict[str, Any]) -> None:
+        """Capture DEVICE_METRICS_APP telemetry, notably the 2.8 noise floor.
+
+        Meshtastic 2.8's Signal Quality panel surfaces a noise floor (and other
+        per-node radio stats). The legacy python library may not decode these
+        fields, so we parse the protobuf directly and stash whatever is present
+        on the node. Old libraries simply yield nothing here — no error.
+        """
+        try:
+            from meshtastic.protobuf.telemetry_pb2 import Telemetry
+            decoded = packet.get("decoded", {}) or {}
+            payload = decoded.get("payload")
+            if not payload:
+                return
+            tel = Telemetry()
+            tel.ParseFromString(payload)
+            dm = getattr(tel, "device_metrics", None)
+            if dm is None:
+                return
+            nf = getattr(dm, "noise_floor", None)
+            if nf is None:
+                return
+            from_id = _node_id_from_num(packet.get("from"))
+            if not from_id:
+                return
+            with self._nodes_lock:
+                node = next(
+                    (n for n in self._nodes if n.get("id") == from_id), None
+                )
+                if node is not None:
+                    node["noise_floor"] = nf
+        except Exception:  # noqa: BLE001 - never crash the receive thread
+            return
+
     def _capture_neighborinfo(self, packet: dict[str, Any]) -> None:
         """
         Capture a NEIGHBORINFO_APP packet and attach the neighbor list to
@@ -2732,6 +2913,12 @@ class MeshtasticConnection:
                     "gas_resistance": environment.get("gasResistance"),
                     "role": MeshtasticConnection._normalize_role(user.get("role")),
                     "has_remote_config": node_id in remote_cache,
+                    # 2.8: nodes may broadcast a status text and/or carry a public
+                    # key (packet signing). The installed python lib may not expose
+                    # these on the User dict, so we read them defensively — they
+                    # are None on older libraries and simply omitted from output.
+                    "public_key": user.get("publicKey"),
+                    "status": user.get("status") or user.get("statusBoot"),
                 }
                 # traceroute is NOT present in the library's raw node dict —
                 # it is only populated by _capture_traceroute into our own
@@ -2928,6 +3115,8 @@ class MeshtasticConnection:
 
         # Build a name lookup from whichever source has names filled in.
         name_by_idx: dict[int, str] = {}
+        # Build a public/unencrypted flag per channel index (no PSK == public).
+        public_by_idx: dict[int, bool] = {}
         for src in (ch_from_node, ch_from_config):
             if not src:
                 continue
@@ -2939,6 +3128,12 @@ class MeshtasticConnection:
                 raw = getattr(settings, "name", "") if settings else ""
                 if raw:
                     name_by_idx[idx] = raw
+                # A channel with no PSK (the "none" channel) is unencrypted/public.
+                # We surface this so callers (e.g. the /setpos public-channel guard)
+                # can warn the user that 2.8 firmware blocks precise position
+                # broadcasts on public channels.
+                psk = getattr(settings, "psk", None) if settings else None
+                public_by_idx[idx] = not bool(psk)
 
         result: list[dict[str, Any]] = []
         for ch in primary:
@@ -2966,6 +3161,7 @@ class MeshtasticConnection:
                 "index": idx,
                 "name": name or role_upper.title() or f"Channel {idx}",
                 "role": role_upper,
+                "public": public_by_idx.get(idx, False),
             })
 
         # Guarantee slot 0 exists (PRIMARY) even if the radio omitted it.

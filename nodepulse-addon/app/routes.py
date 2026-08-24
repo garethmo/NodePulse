@@ -439,6 +439,186 @@ async def handle_clear_stale_nodes(request: web.Request) -> web.Response:
 
 
 # ---------------------------------------------------------------------------
+# Route: GET /api/node/{node_id}/signal
+# ---------------------------------------------------------------------------
+
+async def handle_node_signal(request: web.Request) -> web.Response:
+    """
+    Return per-node signal/health diagnostics (2.8 feature set).
+
+    Mirrors the Telegram ``/diag`` command. Computes hops-away, rolling SNR
+    average + quality classification, battery/voltage/uptime, channel/air
+    utilisation, environment telemetry, and (on 2.8 firmware) the noise floor.
+
+    Returns 404 when the node is unknown, 503 when the radio is offline.
+    """
+    conn: MeshtasticConnection = request.app["connection"]
+    node_id = request.match_info.get("node_id", "").strip()
+    if not _NODE_ID_RE.match(node_id):
+        return _error_response("node_id must be a valid !hex Meshtastic node ID", status=400)
+    _apply_access_key(request)
+    try:
+        result = await conn.get_node_signal(node_id)
+        if not result:
+            return _error_response("Node not found", status=404)
+        return _json_response(result)
+    except ConnectionError as exc:
+        return _error_response(str(exc), status=503)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Error computing node signal for %s: %s", node_id, exc)
+        return _error_response("Failed to compute node diagnostics")
+
+
+# ---------------------------------------------------------------------------
+# Route: GET /api/node/{node_id}/gpx
+# ---------------------------------------------------------------------------
+
+async def handle_node_gpx(request: web.Request) -> web.Response:
+    """
+    Export a single node's position history as a downloadable GPX 1.1 track.
+
+    The track (``<trk>``) is built from the gateway's stored position history
+    so it works even when the node is offline. When there are no fixes the
+    response is a valid (empty) GPX document with just metadata.
+    """
+    conn: MeshtasticConnection = request.app["connection"]
+    node_id = request.match_info.get("node_id", "").strip()
+    if not _NODE_ID_RE.match(node_id):
+        return _error_response("node_id must be a valid !hex Meshtastic node ID", status=400)
+    try:
+        history = await conn.get_position_history(node_id)
+        points = (history or {}).get(node_id, []) if isinstance(history, dict) else []
+        nodes = await conn.get_nodes()
+        node = next((n for n in nodes if n.get("id") == node_id), None)
+        name = (node or {}).get("long_name") or (node or {}).get("short_name") or node_id
+        gpx = _build_gpx_track(node_id, name, points)
+        filename = f"nodepulse_{node_id.lstrip('!')}_track.gpx"
+        return web.Response(
+            body=gpx.encode("utf-8"),
+            content_type="application/gpx+xml",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Error building GPX for %s: %s", node_id, exc)
+        return _error_response("Failed to build GPX track")
+
+
+def _build_gpx_track(node_id: str, name: str, points: list[dict]) -> str:
+    """Build a GPX 1.1 document with a single <trk> from position history."""
+    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    escapes = {k: v for k, v in [("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"), ('"', "&quot;"), ("'", "&apos;")]}
+
+    def esc(s):
+        return "".join(escapes.get(c, c) for c in str(s))
+
+    def _fmt(ts):
+        if not ts:
+            return now
+        try:
+            return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        except Exception:  # noqa: BLE001
+            return now
+
+    trkpts = []
+    for p in points:
+        lat = p.get("latitude") if "latitude" in p else p.get("lat")
+        lng = p.get("longitude") if "longitude" in p else p.get("lng")
+        if lat is None or lng is None:
+            continue
+        alt = p.get("altitude") if "altitude" in p else p.get("alt")
+        alt_str = f'<ele>{alt}</ele>' if alt is not None else ""
+        trkpts.append(
+            f'      <trkpt lat="{lat}" lon="{lng}">\n'
+            f'        {alt_str}\n'
+            f'        <time>{_fmt(p.get("timestamp"))}</time>\n'
+            f'      </trkpt>'
+        )
+    track = "\n".join(trkpts)
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<gpx version="1.1" creator="NodePulse" '
+        'xmlns="http://www.topografix.com/GPX/1/1" '
+        'xmlns:gpxtpx="http://www.garmin.com/xmlschemas/TrackPointExtension/v1">\n'
+        '  <metadata>\n'
+        f'    <name>NodePulse Track {esc(name)}</name>\n'
+        f'    <time>{now}</time>\n'
+        '  </metadata>\n'
+        '  <trk>\n'
+        f'    <name>{esc(name)} ({esc(node_id)})</name>\n'
+        '    <trkseg>\n'
+        f'{track}\n'
+        '    </trkseg>\n'
+        '  </trk>\n'
+        '</gpx>'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Route: GET /api/hops
+# ---------------------------------------------------------------------------
+
+async def handle_hops(request: web.Request) -> web.Response:
+    """
+    Return the distribution of nodes by hop count from the gateway.
+
+    Response shape:
+        {
+          "distribution": [ {"hops": 0, "count": 1}, {"hops": 1, "count": 7}, ... ],
+          "total": 23,
+          "max_hops": 3
+        }
+    """
+    conn: MeshtasticConnection = request.app["connection"]
+    _apply_access_key(request)
+    try:
+        nodes = await conn.get_nodes()
+        buckets: dict[int, int] = {}
+        total = 0
+        max_hops = 0
+        for n in nodes:
+            h = n.get("hops_away")
+            if h is None:
+                continue
+            h = int(h)
+            buckets[h] = buckets.get(h, 0) + 1
+            total += 1
+            if h > max_hops:
+                max_hops = h
+        distribution = [{"hops": h, "count": buckets.get(h, 0)} for h in range(0, max_hops + 1)]
+        return _json_response({
+            "distribution": distribution,
+            "total": total,
+            "max_hops": max_hops,
+        })
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Error computing hop distribution: %s", exc)
+        return _error_response("Failed to compute hop distribution")
+
+
+# ---------------------------------------------------------------------------
+# Route: GET /api/beacon
+# ---------------------------------------------------------------------------
+
+async def handle_beacon(request: web.Request) -> web.Response:
+    """
+    Return the local gateway's Mesh Beacon (2.8) module configuration.
+
+    The 2.8 beacon broadcasts the gateway's position on a fixed interval.
+    Returns { "available": bool, ... } — ``available`` is False when the
+    installed meshtastic library predates 2.8 and cannot read the config.
+    """
+    conn: MeshtasticConnection = request.app["connection"]
+    _apply_access_key(request)
+    try:
+        return _json_response(await conn.get_beacon_config())
+    except ConnectionError as exc:
+        return _error_response(str(exc), status=503)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Error reading beacon config: %s", exc)
+        return _error_response("Failed to read beacon configuration")
+
+
+# ---------------------------------------------------------------------------
 # Route: DELETE /api/node/{node_id}
 # ---------------------------------------------------------------------------
 

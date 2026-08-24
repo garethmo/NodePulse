@@ -7,6 +7,7 @@ Telegram chat, and provides a callback to forward inbound mesh text messages.
 """
 import asyncio
 import contextlib
+import datetime
 import logging
 import threading
 import time
@@ -301,7 +302,12 @@ class TelegramBot:
                 for n in sorted_nodes:
                     name = n.get("short_name") or n.get("long_name") or n.get("id", "?")
                     snr = n.get("snr", "N/A")
-                    lines.append(f"• {self._escape_md(name)} (SNR: {snr})")
+                    badge = " 🔒" if n.get("public_key") else ""
+                    line = f"• {self._escape_md(name)}{badge} (SNR: {snr})"
+                    status = n.get("status")
+                    if status:
+                        line += f" — {self._escape_md(status)}"
+                    lines.append(line)
                 if len(nodes) > 20:
                     lines.append(f"...and {len(nodes) - 20} more.")
                 await self._send_text("\n".join(lines)[:4000])
@@ -393,8 +399,11 @@ class TelegramBot:
                 lat = node.get("latitude")
                 lng = node.get("longitude")
                 name = self._node_label(node)
+                signed = " 🔒" if node.get("public_key") else ""
+                status = node.get("status")
+                status_line = f"\nStatus: {self._escape_md(status)}" if status else ""
                 if lat is None or lng is None:
-                    await self._send_text(f"📍 *{name}*\nNo position known.")
+                    await self._send_text(f"📍 *{name}*{signed}\nNo position known.{status_line}")
                     return
                 lh = (
                     self._format_relative_time(node.get("last_heard"))
@@ -403,11 +412,11 @@ class TelegramBot:
                 )
                 map_url = f"https://www.openstreetmap.org/?mlat={lat}&mlon={lng}#map=15/{lat}/{lng}"
                 await self._send_text(
-                    f"📍 *{name}*\n"
+                    f"📍 *{name}*{signed}\n"
                     f"Lat: {lat:.5f}\n"
                     f"Lon: {lng:.5f}\n"
                     f"Last heard: {lh}\n"
-                    f"{map_url}"
+                    f"{map_url}{status_line}"
                 )
 
             elif command == "/neighbors":
@@ -701,8 +710,27 @@ class TelegramBot:
                         "set_fixed_position",
                         {"lat": lat, "lng": lng, "alt": alt},
                     )
+                    # 2.8 firmware blocks precise position broadcasts on public
+                    # (unencrypted) channels. Fixed position set via admin still
+                    # applies locally, but warn the user if the primary channel
+                    # is public so they aren't surprised that others can't see it.
+                    warn = ""
+                    channels = None
+                    if self.get_channels_callback is not None:
+                        try:
+                            channels = await self.get_channels_callback()
+                        except Exception:  # noqa: BLE001
+                            channels = None
+                    if channels and any(
+                        c.get("index") == 0 and c.get("public") for c in channels
+                    ):
+                        warn = (
+                            "\n⚠️ Primary channel is public — 2.8 firmware blocks "
+                            "precise position broadcasts there. The fixed position is "
+                            "set on the node but won't be shared on the public channel."
+                        )
                     await self._send_text(
-                        f"📌 Fixed position set for {name}: {lat:.5f}, {lng:.5f} (alt {alt}m)."
+                        f"📌 Fixed position set for {name}: {lat:.5f}, {lng:.5f} (alt {alt}m).{warn}"
                     )
                 except Exception as exc:  # noqa: BLE001
                     await self._send_text(f"❌ Set position failed: {exc}")
@@ -733,6 +761,163 @@ class TelegramBot:
                     f"📡 Requested position from {name}.\n{pos}"
                 )
 
+            elif command == "/diag":
+                if not self._conn:
+                    await self._send_text("❌ Mesh connection unavailable.")
+                    return
+                if not args:
+                    await self._send_text("Usage: `/diag !node`")
+                    return
+                nodes = await self.get_nodes_callback()
+                node = self._resolve_node(nodes, args)
+                if not node:
+                    await self._send_text(f"❌ Node not found: {self._escape_md(args)}")
+                    return
+                dest = node.get("id")
+                name = self._node_label(node)
+                try:
+                    sig = await self._conn.get_node_signal(dest)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Telegram /diag failed: %s", exc)
+                    await self._send_text("❌ Could not read node diagnostics.")
+                    return
+                if not sig:
+                    await self._send_text(f"❌ No diagnostics for {name}.")
+                    return
+
+                def fval(v, unit="", na="n/a"):
+                    return f"{v}{unit}" if v is not None else na
+
+                lh = (
+                    self._format_relative_time(node.get("last_heard"))
+                    if node.get("last_heard")
+                    else "Unknown"
+                )
+                await self._send_text(
+                    f"🩺 *Diag {name}*\n"
+                    f"Hops away: {fval(node.get('hops_away'))}\n"
+                    f"SNR avg: {fval(sig.get('snr_avg'), 'dB')}\n"
+                    f"Signal: {sig.get('signal_quality') or 'n/a'}\n"
+                    f"Battery: {fval(node.get('battery_level'), '%')}\n"
+                    f"Voltage: {fval(node.get('voltage'), 'V')}\n"
+                    f"Uptime: {self._format_uptime(node.get('uptime'))}\n"
+                    f"Chan util: {fval(node.get('channel_utilization'), '%')}\n"
+                    f"Air util TX: {fval(node.get('air_util_tx'), '%')}\n"
+                    f"Noise floor: {fval(sig.get('noise_floor'), 'dBm')}\n"
+                    f"Pos fixes: {fval(node.get('position_fix_count'))}\n"
+                    f"Last heard: {lh}"
+                )
+
+            elif command == "/gpx":
+                if not self._conn:
+                    await self._send_text("❌ Mesh connection unavailable.")
+                    return
+                if not args:
+                    await self._send_text("Usage: `/gpx !node`")
+                    return
+                nodes = await self.get_nodes_callback()
+                node = self._resolve_node(nodes, args)
+                if not node:
+                    await self._send_text(f"❌ Node not found: {self._escape_md(args)}")
+                    return
+                dest = node.get("id")
+                name = self._node_label(node)
+                try:
+                    history = await self._conn.get_position_history(dest)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Telegram /gpx failed: %s", exc)
+                    await self._send_text("❌ Could not read position history.")
+                    return
+                trail = history.get(dest, [])
+                if not trail:
+                    await self._send_text(f"📍 *{name}* has no position history to export.")
+                    return
+                gpx = self._build_gpx(name, dest, trail)
+                sent = await self._send_document(gpx, f"{dest.lstrip('!')}_track.gpx")
+                if not sent:
+                    await self._send_text("❌ Failed to send GPX file.")
+
+            elif command == "/hops":
+                nodes = await self.get_nodes_callback()
+                buckets: dict[str, int] = {}
+                for n in nodes:
+                    h = n.get("hops_away")
+                    key = str(h) if (h is not None and h <= 5) else ("6+" if h is not None else "unknown")
+                    buckets[key] = buckets.get(key, 0) + 1
+                lines = ["*Nodes per hop:*"]
+                for k in ("0", "1", "2", "3", "4", "5", "6+", "unknown"):
+                    if k in buckets:
+                        lines.append(f"Hop {k}: {buckets[k]}")
+                lines.append(f"\nTotal nodes: {len(nodes)}")
+                await self._send_text("\n".join(lines)[:4000])
+
+            elif command == "/waypoint":
+                if not self._conn:
+                    await self._send_text("❌ Mesh connection unavailable.")
+                    return
+                parts = args.split()
+                if len(parts) < 2:
+                    await self._send_text("Usage: `/waypoint <lat> <lon> [name] [expire_hours]`")
+                    return
+                try:
+                    lat = float(parts[0])
+                    lng = float(parts[1])
+                except ValueError:
+                    await self._send_text("❌ Latitude/longitude must be numbers.")
+                    return
+                name = parts[2] if len(parts) >= 3 else "Waypoint"
+                expire = None
+                if len(parts) >= 4:
+                    try:
+                        expire = int(time.time() + float(parts[3]) * 3600)
+                    except ValueError:
+                        await self._send_text("❌ expire_hours must be a number.")
+                        return
+                wp = {
+                    "lat": lat,
+                    "lng": lng,
+                    "name": name,
+                    "description": "",
+                    "icon": "📍",
+                    "expire": expire,
+                }
+                try:
+                    res = await self._conn.send_waypoint(wp)
+                except Exception as exc:  # noqa: BLE001
+                    await self._send_text(f"❌ Waypoint failed: {exc}")
+                    return
+                await self._send_text(
+                    f"📌 Waypoint '{self._escape_md(name)}' created ({res.get('detail', '')})."
+                )
+
+            elif command == "/beacon":
+                if not self._conn:
+                    await self._send_text("❌ Mesh connection unavailable.")
+                    return
+                try:
+                    bc = await self._conn.get_beacon_config()
+                except Exception as exc:  # noqa: BLE001
+                    await self._send_text(f"❌ Could not read beacon config: {exc}")
+                    return
+                if not bc.get("available"):
+                    await self._send_text(
+                        f"📡 *Mesh Beacon*\nNot available: {self._escape_md(bc.get('reason', ''))}"
+                    )
+                    return
+                en = "enabled" if bc.get("enabled") else "disabled"
+                lines = [f"📡 *Mesh Beacon* ({en})"]
+                if bc.get("listen") is not None:
+                    lines.append(f"Listen: {'yes' if bc['listen'] else 'no'}")
+                if bc.get("share_beacon_location") is not None:
+                    lines.append(f"Share location: {'yes' if bc['share_beacon_location'] else 'no'}")
+                if bc.get("interval_seconds") is not None:
+                    lines.append(f"Interval: {bc['interval_seconds']}s")
+                if bc.get("channel_name"):
+                    lines.append(f"Channel: {self._escape_md(bc['channel_name'])}")
+                if bc.get("region"):
+                    lines.append(f"Region: {self._escape_md(bc['region'])}")
+                await self._send_text("\n".join(lines)[:4000])
+
             elif command == "/help":
                 await self._send_text(
                     "Commands:\n"
@@ -749,6 +934,11 @@ class TelegramBot:
                     "`/find !node` - Request a node's position\n"
                     "`/reboot [!node]` - Reboot gateway or a remote node\n"
                     "`/setpos !node <lat> <lon> [alt]` - Set a node's fixed position\n"
+                    "`/diag !node` - Node diagnostics (SNR, battery, noise floor)\n"
+                    "`/gpx !node` - Export a node's position history as GPX\n"
+                    "`/hops` - Nodes per hop-count distribution\n"
+                    "`/waypoint <lat> <lon> [name] [expire_h]` - Drop a waypoint\n"
+                    "`/beacon` - Mesh Beacon module status\n"
                     "`/channels` - List configured channels\n"
                     "`/send <msg>` - Broadcast to primary channel\n"
                     "`/send <ch> <msg>` or `/send #<ch> <msg>` - Broadcast to a specific channel\n"
@@ -853,10 +1043,21 @@ class TelegramBot:
         """Render a captured traceroute record as a readable path string."""
 
         def _name(num) -> str:
+            # Route entries may be raw uint32 ints OR "!hex" node-id strings.
+            s = str(num).lstrip("!")
             try:
-                key = int(num) & 0xFFFFFFFF
-            except (TypeError, ValueError):
-                return str(num)
+                key = int(s)
+            except ValueError:
+                try:
+                    key = int(s, 16)
+                except ValueError:
+                    return str(num)
+            key &= 0xFFFFFFFF
+            # 0xffffffff is Meshtastic's NODE_NONE placeholder: a hop whose node
+            # ID was not recorded (typically the local gateway or an unadvertised
+            # relay). Label it instead of dumping the raw number.
+            if key == 0xFFFFFFFF:
+                return "unknown"
             return num_to_name.get(key, str(num))
 
         def _path(route, snrs) -> str:
@@ -919,6 +1120,74 @@ class TelegramBot:
             logger.error("Failed to send Telegram response to chat %s: %s", target_chat_id, exc)
         return None
 
+    async def _send_document(self, content: str, filename: str) -> bool:
+        """Send a text file (e.g. a GPX track) as a Telegram document.
+
+        Returns True if Telegram accepted the upload, False otherwise. Uses
+        multipart form-data so the file is attached rather than pasted as text.
+        """
+        try:
+            from aiohttp import FormData
+            target_chat_id = self._current_chat_id or self._default_forward_chat
+            if not target_chat_id:
+                return False
+            data = FormData()
+            data.add_field("chat_id", target_chat_id)
+            data.add_field(
+                "document",
+                content.encode("utf-8"),
+                filename=filename,
+                content_type="application/gpx+xml",
+            )
+            url = f"https://api.telegram.org/bot{self.token}/sendDocument"
+            async with self._session.post(url, data=data) as resp:
+                result = await resp.json()
+            if result.get("ok"):
+                return True
+            logger.error("Telegram sendDocument rejected: %s", result)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Failed to send Telegram document: %s", exc)
+        return False
+
+    @staticmethod
+    def _build_gpx(name: str, node_id: str, trail: list[dict]) -> str:
+        """Render a node's position history as a GPX 1.1 track file.
+
+        ``trail`` is a list of dicts with ``lat``/``lng`` (required), and
+        optional ``alt``/``timestamp``. Names are XML-escaped defensively.
+        """
+        esc = (name or node_id).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        pts = []
+        for p in trail:
+            lat = p.get("lat")
+            lng = p.get("lng")
+            if lat is None or lng is None:
+                continue
+            ele = p.get("alt")
+            ele_str = f"      <ele>{ele}</ele>\n" if ele is not None else ""
+            ts = p.get("timestamp")
+            time_str = ""
+            if ts:
+                try:
+                    time_str = (
+                        "      <time>"
+                        + datetime.datetime.utcfromtimestamp(ts).strftime("%Y-%m-%dT%H:%M:%SZ")
+                        + "</time>\n"
+                    )
+                except (TypeError, ValueError):
+                    time_str = ""
+            pts.append(
+                f'    <trkpt lat="{lat}" lon="{lng}">\n{ele_str}{time_str}    </trkpt>'
+            )
+        return (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<gpx version="1.1" creator="NodePulse" '
+            'xmlns="http://www.topografix.com/GPX/1/1">\n'
+            f"  <trk>\n    <name>{esc}</name>\n    <trkseg>\n"
+            + "\n".join(pts)
+            + "\n    </trkseg>\n  </trk>\n</gpx>"
+        )
+
     def forward_mesh_message(self, entry: dict[str, Any]) -> None:
         """
         Called synchronously by the mesh receive thread when a new message arrives.
@@ -947,7 +1216,6 @@ class TelegramBot:
             return
 
         from_id = entry.get("from_id", "")
-        name = entry.get("from_name", "Unknown")
         text = entry.get("text", "")
         snr = entry.get("rx_snr")
 
@@ -955,8 +1223,22 @@ class TelegramBot:
         ch_str = "[DM]" if is_dm else f"[Ch {channel}]"
         id_str = f" ({from_id})" if from_id else ""
 
+        # Resolve a human-readable sender label, prioritising the short name
+        # (e.g. "Bob") and appending the long name when it adds clarity, so the
+        # user can tell at a glance who a message came from.
+        short = entry.get("from_short") or ""
+        long = entry.get("from_long") or ""
+        if short and long and short != long:
+            label = f"{short} ({long})"
+        elif short:
+            label = short
+        elif long:
+            label = long
+        else:
+            label = entry.get("from_name", "Unknown")
+
         # Escape markdown formatting characters in the user's name
-        safe_name = name.replace("*", "").replace("_", "").replace("`", "")
+        safe_name = label.replace("*", "").replace("_", "").replace("`", "")
 
         msg = f"📩 {ch_str} *{safe_name}*{id_str}{snr_str}:\n{text}"
 

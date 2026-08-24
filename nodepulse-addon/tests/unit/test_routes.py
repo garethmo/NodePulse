@@ -834,3 +834,92 @@ class TestRemoteAdminRoutes:
         )
         resp = await routes.handle_admin_action(request)
         assert resp.status == 504
+
+
+# ----------------------------------------------------------------------
+# 2.8 firmware feature routes
+# ----------------------------------------------------------------------
+class TestRoutes28Features:
+    @pytest.mark.asyncio
+    async def test_handle_node_signal_returns_diagnostics(self):
+        conn = MagicMock()
+        conn.get_node_signal = AsyncMock(
+            return_value={"id": "!abc123", "snr_avg": 5.2, "signal_quality": "good"}
+        )
+        request = make_request(app_dict={"connection": conn}, match_info={"node_id": "!abc123"})
+        resp = await routes.handle_node_signal(request)
+        assert resp.status == 200
+        body = json.loads(resp.text)
+        assert body["id"] == "!abc123"
+        assert body["snr_avg"] == 5.2
+
+    @pytest.mark.asyncio
+    async def test_handle_node_signal_404_when_unknown(self):
+        conn = MagicMock()
+        conn.get_node_signal = AsyncMock(return_value={})
+        request = make_request(app_dict={"connection": conn}, match_info={"node_id": "!abcdef12"})
+        resp = await routes.handle_node_signal(request)
+        assert resp.status == 404
+        assert "error" in json.loads(resp.text)
+
+    @pytest.mark.asyncio
+    async def test_handle_node_signal_rejects_bad_id(self):
+        conn = MagicMock()
+        request = make_request(app_dict={"connection": conn}, match_info={"node_id": "not-a-node"})
+        resp = await routes.handle_node_signal(request)
+        assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_handle_hops_distribution(self):
+        conn = MagicMock()
+        conn.get_nodes = AsyncMock(return_value=[
+            {"id": "!a", "hops_away": 0},
+            {"id": "!b", "hops_away": 1},
+            {"id": "!c", "hops_away": 1},
+            {"id": "!d", "hops_away": 2},
+            {"id": "!e", "hops_away": None},  # ignored (no hops_away)
+        ])
+        request = make_request(app_dict={"connection": conn})
+        resp = await routes.handle_hops(request)
+        assert resp.status == 200
+        body = json.loads(resp.text)
+        assert body["total"] == 4
+        assert body["max_hops"] == 2
+        by_hop = {d["hops"]: d["count"] for d in body["distribution"]}
+        assert by_hop == {0: 1, 1: 2, 2: 1}
+
+    @pytest.mark.asyncio
+    async def test_handle_beacon_unavailable_on_old_lib(self):
+        conn = MagicMock()
+        conn.get_beacon_config = AsyncMock(
+            return_value={"available": False, "reason": "meshtastic library predates 2.8"}
+        )
+        request = make_request(app_dict={"connection": conn})
+        resp = await routes.handle_beacon(request)
+        assert resp.status == 200
+        assert json.loads(resp.text)["available"] is False
+
+    @pytest.mark.asyncio
+    async def test_handle_node_gpx_builds_track(self):
+        conn = MagicMock()
+        conn.get_position_history = AsyncMock(return_value={
+            "!abc123": [
+                {"latitude": -29.85, "longitude": 31.02, "altitude": 120, "timestamp": 1700000000},
+                {"latitude": -29.86, "longitude": 31.05, "timestamp": 1700000100},
+            ]
+        })
+        conn.get_nodes = AsyncMock(return_value=[{"id": "!abc123", "long_name": "NodeA"}])
+        request = make_request(app_dict={"connection": conn}, match_info={"node_id": "!abc123"})
+        resp = await routes.handle_node_gpx(request)
+        assert resp.status == 200
+        body = resp.text
+        assert "<trk>" in body
+        assert "NodeA" in body
+        assert "trkpt" in body
+
+    @pytest.mark.asyncio
+    async def test_handle_node_gpx_rejects_bad_id(self):
+        conn = MagicMock()
+        request = make_request(app_dict={"connection": conn}, match_info={"node_id": "bad"})
+        resp = await routes.handle_node_gpx(request)
+        assert resp.status == 400

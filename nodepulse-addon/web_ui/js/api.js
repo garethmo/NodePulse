@@ -202,6 +202,50 @@ export async function deleteNode(nodeId) {
   });
 }
 
+/**
+ * Fetch per-node signal/health diagnostics (mirrors the Telegram /diag command).
+ * Returns the diagnostics dict from the backend, or throws on HTTP error.
+ * @param {string} nodeId - Canonical "!hex" node ID.
+ */
+export async function fetchNodeSignal(nodeId) {
+  return _apiFetch(`/node/${encodeURIComponent(nodeId)}/signal`);
+}
+
+/**
+ * Fetch a single node's position history as a GPX 1.1 track document.
+ * Returns the raw GPX string (not parsed JSON) so the caller can download it.
+ * @param {string} nodeId - Canonical "!hex" node ID.
+ */
+export async function fetchNodeGpx(nodeId) {
+  const url = `${BASE_URL}/api/node/${encodeURIComponent(nodeId)}/gpx`;
+  const response = await fetch(url);
+  if (!response.ok) {
+    let msg = `HTTP ${response.status}`;
+    try {
+      const body = await response.json();
+      msg = body.error || msg;
+    } catch { /* non-JSON error */ }
+    throw new Error(msg);
+  }
+  return response.text();
+}
+
+/**
+ * Fetch the node distribution grouped by hop count from the gateway.
+ * Returns { distribution: [{hops, count}], total, max_hops }.
+ */
+export async function fetchHops() {
+  return _apiFetch('/hops');
+}
+
+/**
+ * Fetch the local gateway's Mesh Beacon (2.8) module configuration.
+ * Returns { available: bool, ... }.
+ */
+export async function fetchBeacon() {
+  return _apiFetch('/beacon');
+}
+
 /** Fetch all active (non-expired) waypoints from the server. */
 export async function fetchWaypoints() {
   return _apiFetch('/waypoints');

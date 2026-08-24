@@ -439,6 +439,64 @@ class TestTelegramBotForwardMeshMessage:
         })
         bot._loop.call_soon_threadsafe.assert_called_once()
 
+    def _capture_forward_msg(self, bot, entry):
+        """Run forward_mesh_message and return the formatted Telegram string."""
+        captured = []
+        bot._loop = Mock()
+        bot._loop.call_soon_threadsafe = lambda cb: captured.append(cb)
+        bot.forward_mesh_message(entry)
+        # The scheduled lambda closes over the formatted message as its first
+        # default argument, so we can inspect it without running the coroutine.
+        return captured[0].__defaults__[0]
+
+    def test_forward_mesh_message_shows_short_name(self):
+        mock_config = make_mock_config(telegram_forward_channels=[0])
+        bot = TelegramBot(mock_config, Mock(), Mock(), Mock(), Mock())
+        bot._task = Mock(done=Mock(return_value=False))
+        bot._session = Mock()
+        msg = self._capture_forward_msg(bot, {
+            "text": "Hello",
+            "is_dm": False,
+            "channel": 0,
+            "from_id": "!abcdef",
+            "from_name": "TestNode",
+            "from_short": "Bob",
+            "from_long": "Bob The Tester",
+            "rx_snr": 5.0,
+        })
+        assert "Bob" in msg
+        assert "Bob The Tester" in msg  # long name appended in parens
+
+    def test_forward_mesh_message_short_equals_long_no_double_paren(self):
+        mock_config = make_mock_config(telegram_forward_channels=[0])
+        bot = TelegramBot(mock_config, Mock(), Mock(), Mock(), Mock())
+        bot._task = Mock(done=Mock(return_value=False))
+        bot._session = Mock()
+        msg = self._capture_forward_msg(bot, {
+            "text": "Hi",
+            "is_dm": False,
+            "channel": 0,
+            "from_id": "!abcdef",
+            "from_short": "Bob",
+            "from_long": "Bob",
+        })
+        assert "*Bob*" in msg
+        assert "Bob (Bob)" not in msg
+
+    def test_forward_mesh_message_falls_back_to_from_name(self):
+        mock_config = make_mock_config(telegram_forward_channels=[0])
+        bot = TelegramBot(mock_config, Mock(), Mock(), Mock(), Mock())
+        bot._task = Mock(done=Mock(return_value=False))
+        bot._session = Mock()
+        msg = self._capture_forward_msg(bot, {
+            "text": "Hi",
+            "is_dm": False,
+            "channel": 0,
+            "from_id": "!abcdef",
+            "from_name": "TestNode",  # no short/long available
+        })
+        assert "TestNode" in msg
+
 
 class TestTelegramBotSendForward:
     @pytest.mark.asyncio
@@ -750,6 +808,239 @@ class TestTelegramBotMeshCommands:
         args = bot._send_text.call_args[0][0]
         assert "Traceroute" in args
         assert "→" in args
+
+    @pytest.mark.asyncio
+    async def test_traceroute_unknown_hop_labeled(self, monkeypatch):
+        conn = Mock()
+        conn.request_traceroute = AsyncMock(return_value=True)
+        final_nodes = [
+            {
+                "id": "!a",
+                "long_name": "A",
+                "traceroute": {
+                    "route": ["!a", "!ffffffff"],
+                    "snr_towards": [4, 8],
+                    "route_back": [],
+                    "snr_back": [],
+                },
+            }
+        ]
+        bot = self._bot(conn=conn, nodes=AsyncMock(return_value=final_nodes))
+        import app.telegram_bot as tb
+
+        monkeypatch.setattr(tb.asyncio, "sleep", AsyncMock())
+        await bot._handle_command("/traceroute !a")
+        args = bot._send_text.call_args[0][0]
+        # A known "!hex" hop resolves to its name...
+        assert "A" in args
+        # ...and the NODE_NONE placeholder is labeled, not shown raw.
+        assert "unknown" in args
+        assert "4294967295" not in args
+        assert "!ffffffff" not in args
+
+
+class TestTelegramBot28Commands(TestTelegramBotMeshCommands):
+    """Tests for the Meshtastic 2.8-derived commands."""
+
+    @pytest.mark.asyncio
+    async def test_diag(self):
+        conn = Mock()
+        conn.get_node_signal = AsyncMock(
+            return_value={
+                "snr_avg": 3.5,
+                "signal_quality": "good",
+                "noise_floor": -95,
+                "position_fix_count": 12,
+            }
+        )
+        nodes = [
+            {
+                "id": "!abc123",
+                "long_name": "NodeA",
+                "hops_away": 2,
+                "battery_level": 80,
+                "channel_utilization": 5.0,
+                "air_util_tx": 1.0,
+                "uptime": 3600,
+                "last_heard": 2000,
+            }
+        ]
+        bot = self._bot(conn=conn, nodes=AsyncMock(return_value=nodes))
+        await bot._handle_command("/diag !abc123")
+        args = bot._send_text.call_args[0][0]
+        assert "Diag NodeA" in args
+        assert "3.5dB" in args
+        assert "-95dBm" in args
+        assert "80%" in args
+        conn.get_node_signal.assert_called_once_with("!abc123")
+
+    @pytest.mark.asyncio
+    async def test_diag_noise_floor_absent(self):
+        conn = Mock()
+        conn.get_node_signal = AsyncMock(
+            return_value={"snr_avg": None, "signal_quality": "no_signal", "noise_floor": None}
+        )
+        nodes = [{"id": "!abc123", "long_name": "NodeA"}]
+        bot = self._bot(conn=conn, nodes=AsyncMock(return_value=nodes))
+        await bot._handle_command("/diag !abc123")
+        args = bot._send_text.call_args[0][0]
+        # Graceful 'n/a' when the library/firmware doesn't expose noise floor.
+        assert "Noise floor: n/a" in args
+
+    @pytest.mark.asyncio
+    async def test_gpx_exports_track(self):
+        conn = Mock()
+        conn.get_position_history = AsyncMock(
+            return_value={
+                "!abc123": [
+                    {"lat": -29.85, "lng": 31.02, "alt": 10, "timestamp": 1000},
+                    {"lat": -29.86, "lng": 31.05, "timestamp": 1060},
+                ]
+            }
+        )
+        nodes = [{"id": "!abc123", "long_name": "NodeA"}]
+        bot = self._bot(conn=conn, nodes=AsyncMock(return_value=nodes))
+        bot._send_document = AsyncMock(return_value=True)
+        await bot._handle_command("/gpx !abc123")
+        content = bot._send_document.call_args[0][0]
+        assert bot._send_document.called
+        assert "trkpt" in content
+        assert "NodeA" in content
+
+    @pytest.mark.asyncio
+    async def test_gpx_no_history(self):
+        conn = Mock()
+        conn.get_position_history = AsyncMock(return_value={"!abc123": []})
+        nodes = [{"id": "!abc123", "long_name": "NodeA"}]
+        bot = self._bot(conn=conn, nodes=AsyncMock(return_value=nodes))
+        bot._send_document = AsyncMock(return_value=True)
+        await bot._handle_command("/gpx !abc123")
+        args = bot._send_text.call_args[0][0]
+        assert "no position history" in args
+        assert not bot._send_document.called
+
+    @pytest.mark.asyncio
+    async def test_hops_distribution(self):
+        nodes = [
+            {"id": "!a", "long_name": "A", "hops_away": 0},
+            {"id": "!b", "long_name": "B", "hops_away": 1},
+            {"id": "!c", "long_name": "C", "hops_away": 1},
+            {"id": "!d", "long_name": "D", "hops_away": 3},
+            {"id": "!e", "long_name": "E"},  # unknown hop
+        ]
+        bot = self._bot(nodes=AsyncMock(return_value=nodes))
+        await bot._handle_command("/hops")
+        args = bot._send_text.call_args[0][0]
+        assert "Hop 0: 1" in args
+        assert "Hop 1: 2" in args
+        assert "Hop 3: 1" in args
+        assert "unknown: 1" in args
+        assert "Total nodes: 5" in args
+
+    @pytest.mark.asyncio
+    async def test_waypoint(self):
+        conn = Mock()
+        conn.send_waypoint = AsyncMock(
+            return_value={"stored": {"id": "local-1"}, "broadcast": False, "detail": "stored locally"}
+        )
+        bot = self._bot(conn=conn)
+        await bot._handle_command("/waypoint -29.85 31.02 Home 12")
+        conn.send_waypoint.assert_called_once()
+        wp = conn.send_waypoint.call_args[0][0]
+        assert wp["lat"] == -29.85
+        assert wp["lng"] == 31.02
+        assert wp["name"] == "Home"
+        assert wp["expire"] is not None
+        args = bot._send_text.call_args[0][0]
+        assert "Waypoint 'Home'" in args
+
+    @pytest.mark.asyncio
+    async def test_beacon_available(self):
+        conn = Mock()
+        conn.get_beacon_config = AsyncMock(
+            return_value={
+                "available": True,
+                "enabled": True,
+                "listen": True,
+                "share_beacon_location": False,
+                "interval_seconds": 900,
+                "channel_name": "LongFast",
+                "region": "US",
+            }
+        )
+        bot = self._bot(conn=conn)
+        await bot._handle_command("/beacon")
+        args = bot._send_text.call_args[0][0]
+        assert "Mesh Beacon" in args
+        assert "enabled" in args
+        assert "900s" in args
+        assert "LongFast" in args
+
+    @pytest.mark.asyncio
+    async def test_beacon_unavailable(self):
+        conn = Mock()
+        conn.get_beacon_config = AsyncMock(
+            return_value={"available": False, "reason": "lib too old"}
+        )
+        bot = self._bot(conn=conn)
+        await bot._handle_command("/beacon")
+        args = bot._send_text.call_args[0][0]
+        assert "Not available" in args
+        assert "lib too old" in args
+
+    @pytest.mark.asyncio
+    async def test_nodes_shows_signed_badge(self):
+        nodes = [
+            {
+                "id": "!a",
+                "long_name": "SignedNode",
+                "short_name": "SN",
+                "snr": 2.0,
+                "public_key": b"abc",
+                "status": "on duty",
+            },
+            {"id": "!b", "long_name": "Plain", "short_name": "PL", "snr": 1.0},
+        ]
+        bot = self._bot(nodes=AsyncMock(return_value=nodes))
+        await bot._handle_command("/nodes")
+        args = bot._send_text.call_args[0][0]
+        assert "🔒" in args
+        assert "on duty" in args  # status message shown
+
+    @pytest.mark.asyncio
+    async def test_setpos_public_channel_warning(self):
+        conn = Mock()
+        conn.remote_admin_action = AsyncMock(return_value={"ok": True})
+        nodes = [{"id": "!abc123", "long_name": "NodeA"}]
+        channels = [{"index": 0, "name": "Primary", "role": "PRIMARY", "public": True}]
+        bot = self._bot(
+            conn=conn,
+            nodes=AsyncMock(return_value=nodes),
+            channels=AsyncMock(return_value=channels),
+        )
+        await bot._handle_command("/setpos !abc123 -29.85 31.02 120")
+        args = bot._send_text.call_args[0][0]
+        assert "Fixed position set" in args
+        assert "public" in args  # warns about 2.8 public-channel restriction
+
+    @pytest.mark.asyncio
+    async def test_where_shows_signed_badge_and_status(self):
+        nodes = [
+            {
+                "id": "!abc123",
+                "long_name": "NodeA",
+                "latitude": -29.85,
+                "longitude": 31.02,
+                "last_heard": 2000,
+                "public_key": b"abc",
+                "status": "on duty",
+            }
+        ]
+        bot = self._bot(nodes=AsyncMock(return_value=nodes))
+        await bot._handle_command("/where !abc123")
+        args = bot._send_text.call_args[0][0]
+        assert "🔒" in args
+        assert "on duty" in args  # broadcasted status message shown
 
 
 class TestTelegramBotCommandOutputSafety:

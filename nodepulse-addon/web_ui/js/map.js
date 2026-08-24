@@ -823,6 +823,10 @@ export class MapManager {
         this._map.getContainer().dispatchEvent(new CustomEvent('nodepulse:traceroute', { detail: { nodeId: node } }));
       } else if (action === 'message') {
         this._map.getContainer().dispatchEvent(new CustomEvent('nodepulse:message', { detail: { nodeId: node } }));
+      } else if (action === 'diagnostics') {
+        this._map.getContainer().dispatchEvent(new CustomEvent('nodepulse:diagnostics', { detail: { nodeId: node } }));
+      } else if (action === 'gpx') {
+        this._map.getContainer().dispatchEvent(new CustomEvent('nodepulse:gpx', { detail: { nodeId: node } }));
       }
     });
   }
@@ -1488,6 +1492,10 @@ export class MapManager {
     const hum      = node.relative_humidity != null ? `${node.relative_humidity.toFixed(0)} %` : 'N/A';
     const pres     = node.barometric_pressure != null ? `${node.barometric_pressure.toFixed(0)} hPa` : 'N/A';
 
+    // 2.8 signed-node badge + broadcasted status text.
+    const signedMark = node.public_key ? ' <span class="signed-badge" title="Signed node — public key present">🔒</span>' : '';
+    const statusLine = node.status ? `<div style="font-size:11px;color:#8892a4;margin:-2px 0 8px">📣 ${escapeHtml(node.status)}</div>` : '';
+
     // Distance from the self node, if both have GPS fixes.
     let dist = 'N/A';
     if (this._selfId && node.id !== this._selfId) {
@@ -1503,8 +1511,9 @@ export class MapManager {
 
     return `
       <div style="font-family:Inter,sans-serif;min-width:170px">
-        <div style="font-weight:700;font-size:14px;margin-bottom:6px">${escapeHtml(node.long_name || node.id)}</div>
+        <div style="font-weight:700;font-size:14px;margin-bottom:6px">${signedMark}${escapeHtml(node.long_name || node.id)}</div>
         <div style="font-size:11px;color:#8892a4;margin-bottom:8px">${escapeHtml(node.id)}</div>
+        ${statusLine}
         <table style="width:100%;font-size:12px;border-collapse:collapse">
           ${row('SNR', snrText)}
           ${row('RSSI', rssiText)}
@@ -1522,6 +1531,8 @@ export class MapManager {
         <div style="display:flex;gap:6px;margin-top:8px;padding-top:8px;border-top:1px solid #2a2a2a">
           <button class="map-popup-btn" data-action="traceroute" data-node="${escapeHtml(node.id)}" style="display:inline-flex;align-items:center;justify-content:center;flex:1;padding:6px 8px;background:#4fc3f7;color:#0a0e1a;border:none;border-radius:4px;font-size:11px;font-weight:600;cursor:pointer;min-height:28px;white-space:nowrap;">🔍 Traceroute</button>
           <button class="map-popup-btn" data-action="message" data-node="${escapeHtml(node.id)}" style="display:inline-flex;align-items:center;justify-content:center;flex:1;padding:6px 8px;background:#00d4aa;color:#0a0e1a;border:none;border-radius:4px;font-size:11px;font-weight:600;cursor:pointer;min-height:28px;white-space:nowrap;">💬 Message</button>
+          <button class="map-popup-btn" data-action="diagnostics" data-node="${escapeHtml(node.id)}" style="display:inline-flex;align-items:center;justify-content:center;flex:1;padding:6px 8px;background:#a78bfa;color:#0a0e1a;border:none;border-radius:4px;font-size:11px;font-weight:600;cursor:pointer;min-height:28px;white-space:nowrap;">🩺 Diag</button>
+          <button class="map-popup-btn" data-action="gpx" data-node="${escapeHtml(node.id)}" style="display:inline-flex;align-items:center;justify-content:center;flex:1;padding:6px 8px;background:#ff7043;color:#0a0e1a;border:none;border-radius:4px;font-size:11px;font-weight:600;cursor:pointer;min-height:28px;white-space:nowrap;">📍 GPX</button>
 </div>`;
   }
 }

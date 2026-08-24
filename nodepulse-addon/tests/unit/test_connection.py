@@ -973,6 +973,36 @@ class TestOnMeshReceive:
         assert entry["outgoing"] is False
         assert entry["rx_snr"] == -5.0
 
+    def test_from_short_and_long_captured(self):
+        conn = self._conn_with_interface()
+        with patch.object(conn, "_schedule_save"):
+            conn._on_mesh_receive({
+                "from": 0x1234,
+                "to": 0xFFFFFFFF,
+                "channel": 0,
+                "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "hi"},
+            })
+        entry = conn._messages[0]
+        assert entry["from_short"] == "AB"
+        assert entry["from_long"] == "Alpha Bravo"
+
+    def test_from_name_fallback_to_persistent_store(self):
+        # Sender not in the live interface.nodes snapshot, but known in the
+        # persisted node store — we should still resolve the short name.
+        conn = self._conn_with_interface()
+        conn._nodes = [{"id": "!00005555", "short_name": "Stored", "long_name": "Stored Node"}]
+        with patch.object(conn, "_schedule_save"):
+            conn._on_mesh_receive({
+                "from": 0x5555,
+                "to": 0xFFFFFFFF,
+                "channel": 0,
+                "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "via store"},
+            })
+        entry = conn._messages[0]
+        assert entry["from_id"] == "!00005555"
+        assert entry["from_short"] == "Stored"
+        assert entry["from_name"] == "Stored"
+
     def test_direct_message_conversation_key(self):
         conn = self._conn_with_interface()
         with patch.object(conn, "_schedule_save"):
@@ -1185,3 +1215,153 @@ class TestRemoteAdminConnection:
         assert result["available"] is True
         assert result["admin_channel_index"] == 1
         assert "reboot" in result["actions"]
+
+
+class TestConnection28Features:
+    """Unit tests for the Meshtastic 2.8-derived connection features."""
+
+    def _conn(self):
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        mock_config.auto_responder_enabled = False
+        mock_config.auto_traceroute_enabled = False
+        return MeshtasticConnection(
+            host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
+        )
+
+    def test_get_node_signal(self):
+        import collections
+
+        conn = self._conn()
+        nid = "!abc123"
+        conn._nodes = [
+            {
+                "id": nid,
+                "battery_level": 80,
+                "channel_utilization": 5.0,
+                "air_util_tx": 1.0,
+                "hops_away": 2,
+                "uptime": 3600,
+                "last_heard": 2000,
+                "position_fix_count": 12,
+            }
+        ]
+        conn._snr_history[nid] = collections.deque([3.0, 4.0])
+        sig = conn._get_node_signal_sync(nid)
+        assert sig["snr_avg"] == 3.5
+        assert sig["signal_quality"] == "good"
+        assert sig["battery_level"] == 80
+        assert sig["noise_floor"] is None  # not captured without 2.8 telemetry
+
+    def test_get_node_signal_unknown(self):
+        conn = self._conn()
+        assert conn._get_node_signal_sync("!nope") == {}
+
+    def test_get_beacon_config_unavailable(self):
+        conn = self._conn()
+        conn._interface = Mock()
+        conn._connected = True
+        # A library without the Beacon module: moduleConfig.beacon is absent.
+        local_node = Mock()
+        local_node.moduleConfig.beacon = None
+        conn._interface.localNode = local_node
+        bc = conn._get_beacon_config_sync()
+        assert bc["available"] is False
+        assert "reason" in bc
+
+    def test_get_beacon_config_disconnected(self):
+        conn = self._conn()
+        conn._interface = None
+        conn._connected = False
+
+        with pytest.raises(ConnectionError):
+            conn._get_beacon_config_sync()
+
+    def test_send_waypoint_stores_locally(self):
+        conn = self._conn()
+        conn._interface = Mock()  # no sendWaypoint attribute -> local only
+        wp = {"lat": -29.85, "lng": 31.02, "name": "Home", "expire": None}
+        res = conn._send_waypoint_sync(wp)
+        assert res["broadcast"] is False
+        assert "stored locally" in res["detail"]
+        assert len(conn._waypoints) == 1
+        assert conn._waypoints[0]["name"] == "Home"
+
+    def test_capture_telemetry_noise_floor(self):
+        # Older python libs won't decode noise_floor; the capture must no-op.
+        conn = self._conn()
+        conn._nodes = [{"id": "!abc123"}]
+        # A DEVICE_METRICS_APP packet the library can't parse as Telemetry.
+        packet = {
+            "from": int("abc123", 16),
+            "decoded": {"portnum": "DEVICE_METRICS_APP", "payload": b"\x00\x01"},
+        }
+        conn._capture_telemetry(packet)
+        assert conn._nodes[0].get("noise_floor") is None
+
+    def test_channel_public_flag(self):
+        conn = self._conn()
+        conn._interface = Mock()
+        conn._connected = True
+        local_node = MagicMock()
+        conn._interface.localConfig.channel_settings = None
+        # Channel 0 with an empty PSK -> public.
+        ch0 = MagicMock()
+        ch0.index = 0
+        ch0.role = "PRIMARY"
+        ch0.settings.name = ""
+        ch0.settings.psk = b""
+        # Channel 1 with a real PSK -> encrypted.
+        ch1 = MagicMock()
+        ch1.index = 1
+        ch1.role = "SECONDARY"
+        ch1.settings.name = "sec"
+        ch1.settings.psk = b"\x01\x02"
+        local_node.channels = [ch0, ch1]
+        conn._interface.localNode = local_node
+        channels = conn._read_channels_from_interface()
+        assert channels[0]["public"] is True
+        assert channels[1]["public"] is False
+
+    def test_node_serialization_includes_public_key_and_status(self):
+        # The 2.8 signed-node / status-text fields must surface on each node.
+        conn = self._conn()
+        conn._interface = Mock()
+        conn._connected = True
+        conn._interface.myInfo = None
+        conn._interface.nodes = {
+            "!abc123": {
+                "user": {
+                    "longName": "NodeA",
+                    "shortName": "NA",
+                    "publicKey": b"\x01\x02",
+                    "status": "on duty",
+                },
+                "position": {"latitude": -29.85, "longitude": 31.02},
+                "lastHeard": 2000,
+            }
+        }
+        with patch("app.remote_cache.load_remote_cache", return_value={}):
+            result = conn._get_nodes_sync()
+        assert len(result) == 1
+        node = result[0]
+        assert node["public_key"] == b"\x01\x02"
+        assert node["status"] == "on duty"
+
+    def test_node_serialization_missing_2_8_fields(self):
+        # Older libraries omit publicKey/status entirely; they must not crash
+        # and should be absent (not raise) from the serialized node.
+        conn = self._conn()
+        conn._interface = Mock()
+        conn._connected = True
+        conn._interface.myInfo = None
+        conn._interface.nodes = {
+            "!abc123": {
+                "user": {"longName": "NodeA", "shortName": "NA"},
+                "lastHeard": 2000,
+            }
+        }
+        with patch("app.remote_cache.load_remote_cache", return_value={}):
+            result = conn._get_nodes_sync()
+        assert result[0].get("public_key") is None
+        assert result[0].get("status") is None

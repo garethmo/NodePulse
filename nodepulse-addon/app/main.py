@@ -30,6 +30,7 @@ from .routes import (
     handle_add_waypoint,
     handle_admin_action,
     handle_admin_available,
+    handle_beacon,
     handle_channels,
     handle_clear_stale_nodes,
     handle_delete_node,
@@ -41,7 +42,10 @@ from .routes import (
     handle_get_remote_config_section,
     handle_get_security_scan,
     handle_get_waypoints,
+    handle_hops,
     handle_messages,
+    handle_node_gpx,
+    handle_node_signal,
     handle_nodes,
     handle_packets,
     handle_position_history,
@@ -287,6 +291,10 @@ def build_app(config) -> web.Application:
     app.router.add_get("/api/tracked-nodes", handle_tracked_nodes)
     app.router.add_post("/api/track-node", handle_track_node)
     app.router.add_get("/api/packets", handle_packets)
+    app.router.add_get("/api/node/{node_id}/signal", handle_node_signal)
+    app.router.add_get("/api/node/{node_id}/gpx", handle_node_gpx)
+    app.router.add_get("/api/hops", handle_hops)
+    app.router.add_get("/api/beacon", handle_beacon)
     app.router.add_get("/api/sniffer/stats", handle_sniffer_stats)
     app.router.add_get("/api/waypoints", handle_get_waypoints)
     app.router.add_post("/api/waypoints", handle_add_waypoint)

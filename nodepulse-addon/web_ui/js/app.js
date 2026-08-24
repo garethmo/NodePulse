@@ -13,7 +13,7 @@
  * is easy to trace top-to-bottom.
  */
 
-import { fetchStatus, fetchNodes, fetchChannels, fetchMessages, sendMessage, requestTraceRoute, requestPosition, fetchTrackedNodes, trackNode, clearStaleNodes, fetchTags, setTags, fetchFavorites, setFavorite, fetchPositionHistory, fetchPackets, fetchSnifferStats, fetchWaypoints, addWaypoint, updateWaypoint, deleteWaypoint, deleteNode, fetchSecurityScan } from './api.js';
+import { fetchStatus, fetchNodes, fetchChannels, fetchMessages, sendMessage, requestTraceRoute, requestPosition, fetchTrackedNodes, trackNode, clearStaleNodes, fetchTags, setTags, fetchFavorites, setFavorite, fetchPositionHistory, fetchPackets, fetchSnifferStats, fetchWaypoints, addWaypoint, updateWaypoint, deleteWaypoint, deleteNode, fetchSecurityScan, fetchNodeSignal, fetchNodeGpx, fetchHops, fetchBeacon } from './api.js';
 import { MapManager } from './map.js';
 import { ChartManager } from './charts.js';
 import { TopologyManager } from './topology.js';
@@ -391,6 +391,10 @@ function renderNodesGrid(nodes) {
     const humText  = node.relative_humidity != null ? `${node.relative_humidity.toFixed(0)} %` : 'N/A';
     const presText = node.barometric_pressure != null ? `${node.barometric_pressure.toFixed(0)} hPa` : 'N/A';
 
+    // 2.8 signed-node badge + broadcasted status text (shown when present).
+    const signedMark = node.public_key ? `<span class="signed-badge" title="Signed node — public key present">🔒</span>` : '';
+    const statusLine = node.status ? `<div class="node-card-status" title="Broadcasted status">${escapeHtml(node.status)}</div>` : '';
+
     // Traceroute route (if one has been captured for this node).
     let tracerouteHtml = '';
     const tr = node.traceroute;
@@ -438,8 +442,9 @@ function renderNodesGrid(nodes) {
     card.innerHTML = `
       <div class="node-card-header">
         <div>
-          <div class="node-card-name">${noGpsMark} ${escapeHtml(node.long_name || node.id)} ${staleMark}</div>
+          <div class="node-card-name">${signedMark} ${noGpsMark} ${escapeHtml(node.long_name || node.id)} ${staleMark}</div>
           <div class="node-card-id">${escapeHtml(node.id)}</div>
+          ${statusLine}
         </div>
         <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
           <span class="node-card-hw">${escapeHtml(node.hw_model || 'Unknown')}</span>
@@ -503,6 +508,8 @@ function renderNodesGrid(nodes) {
         <button class="action-btn" data-action="traceroute" data-node="${escapeHtml(node.id)}">Traceroute</button>
         <button class="action-btn" data-action="position"   data-node="${escapeHtml(node.id)}">Req. Position</button>
         <button class="action-btn" data-action="message"    data-node="${escapeHtml(node.id)}">Message</button>
+        <button class="action-btn" data-action="diagnostics" data-node="${escapeHtml(node.id)}" title="Per-node diagnostics (2.8)">Diagnostics</button>
+        <button class="action-btn" data-action="gpx" data-node="${escapeHtml(node.id)}" title="Download this node's GPS track as GPX">GPX</button>
         <label class="node-track-toggle" title="Create Home Assistant entities for this node">
           <input type="checkbox" data-action="track" data-node="${escapeHtml(node.id)}" ${state.trackedNodes.has(node.id) ? 'checked' : ''} />
           <span>Track in HA</span>
@@ -548,6 +555,10 @@ async function handleNodeCardAction(event) {
   } else if (action === 'message') {
     // Open (or focus) this node's Direct-Message thread on the dashboard.
     openDirectMessage(nodeId);
+  } else if (action === 'diagnostics') {
+    openDiagnostics(nodeId);
+  } else if (action === 'gpx') {
+    downloadNodeGpx(nodeId);
   } else if (action === 'track') {
     const checkbox = btn;
     const enabled = checkbox.checked;
@@ -611,6 +622,151 @@ async function handleNodeCardAction(event) {
       showToast(`Delete failed: ${err.message}`, 'error');
     }
   }
+}
+
+// ============================================================================
+// Node Diagnostics (2.8 feature set) — modal
+// ============================================================================
+
+let _diagNodeId = null;
+
+/** Open the per-node diagnostics modal and populate it from the backend. */
+async function openDiagnostics(nodeId) {
+  _diagNodeId = nodeId;
+  const modal       = document.getElementById('diag-modal');
+  const content     = document.getElementById('diag-content');
+  const loading     = document.getElementById('diag-loading');
+  const nameEl      = document.getElementById('diag-node-name');
+  const signedBadge = document.getElementById('diag-signed-badge');
+  const statusLine  = document.getElementById('diag-status-line');
+  const beaconEl    = document.getElementById('diag-beacon');
+
+  content.classList.add('hidden');
+  beaconEl.classList.add('hidden');
+  statusLine.classList.add('hidden');
+  loading.classList.remove('hidden');
+  modal.classList.remove('hidden');
+
+  const node = state.nodes.find(n => n.id === nodeId);
+  nameEl.textContent = node ? (node.long_name || node.short_name || nodeId) : nodeId;
+  if (node && node.public_key) signedBadge.classList.remove('hidden');
+  else signedBadge.classList.add('hidden');
+  if (node && node.status) {
+    statusLine.textContent = `📣 ${node.status}`;
+    statusLine.classList.remove('hidden');
+  } else {
+    statusLine.classList.add('hidden');
+  }
+
+  try {
+    const sig = await fetchNodeSignal(nodeId);
+    loading.classList.add('hidden');
+    content.classList.remove('hidden');
+    content.innerHTML = renderDiagnosticRows(sig);
+
+    // The Mesh Beacon module only makes sense for the local gateway.
+    if (nodeId === state.selfId) {
+      try {
+        const beacon = await fetchBeacon();
+        beaconEl.classList.remove('hidden');
+        beaconEl.innerHTML = renderBeaconSection(beacon);
+      } catch {
+        beaconEl.classList.add('hidden');
+      }
+    } else {
+      beaconEl.classList.add('hidden');
+    }
+  } catch (err) {
+    loading.classList.add('hidden');
+    content.classList.remove('hidden');
+    content.innerHTML = `<div class="diag-error">${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function _fmtVal(v, suffix) {
+  if (v === null || v === undefined || v === '') return 'N/A';
+  return `${v}${suffix || ''}`;
+}
+
+function _fmtUptime(seconds) {
+  if (seconds == null) return 'N/A';
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const parts = [];
+  if (d) parts.push(`${d}d`);
+  if (h) parts.push(`${h}h`);
+  if (m) parts.push(`${m}m`);
+  return parts.length ? parts.join(' ') : `${seconds}s`;
+}
+
+function renderDiagnosticRows(sig) {
+  const row = (label, value) =>
+    `<div class="diag-row"><span class="diag-row-label">${label}</span><span class="diag-row-value">${value}</span></div>`;
+  const q = sig.signal_quality || 'n/a';
+  const qColor = { excellent: '#00e5ff', good: '#69f0ae', fair: '#ffeb3b', poor: '#ff5252', no_signal: '#9e9e9e' }[q] || '#9e9e9e';
+  const env = sig.environment || {};
+  const rows = [
+    row('Hops away', _fmtVal(sig.hops_away)),
+    row('SNR', _fmtVal(sig.snr, ' dB')),
+    row('SNR (avg)', _fmtVal(sig.snr_avg, ' dB')),
+    row('Signal quality', `<span class="quality-badge" style="background:${qColor}18;color:${qColor};border:1px solid ${qColor}50">${q.toUpperCase()}</span>`),
+    row('Last heard', sig.last_heard ? formatRelativeTime(sig.last_heard) : 'N/A'),
+    row('Battery', _fmtVal(sig.battery_level, '%')),
+    row('Voltage', _fmtVal(sig.voltage, ' V')),
+    row('Uptime', _fmtUptime(sig.uptime)),
+    row('Channel util', _fmtVal(sig.channel_utilization, ' %')),
+    row('Air util (TX)', _fmtVal(sig.air_util_tx, ' %')),
+    row('Noise floor', _fmtVal(sig.noise_floor, ' dBm')),
+    row('Temperature', _fmtVal(env.temperature, ' °C')),
+    row('Humidity', _fmtVal(env.relative_humidity, ' %')),
+    row('Pressure', _fmtVal(env.barometric_pressure, ' hPa')),
+    row('Position fixes', _fmtVal(sig.position_fixes)),
+  ];
+  return `<div class="diag-grid">${rows.join('')}</div>` +
+    (sig.note ? `<div class="diag-note">${escapeHtml(sig.note)}</div>` : '');
+}
+
+function renderBeaconSection(beacon) {
+  if (!beacon || beacon.available === false) {
+    const reason = beacon && beacon.reason ? ` — ${escapeHtml(beacon.reason)}` : '';
+    return `<div class="diag-row"><span class="diag-row-label">Mesh Beacon</span><span class="diag-row-value">N/A${reason}</span></div>`;
+  }
+  const row = (label, value) =>
+    `<div class="diag-row"><span class="diag-row-label">${label}</span><span class="diag-row-value">${value}</span></div>`;
+  return `<div class="diag-section-title">Mesh Beacon (2.8)</div>` +
+    row('Enabled', beacon.enabled ? '✅ Yes' : '❌ No') +
+    row('Interval', _fmtVal(beacon.interval_seconds, ' s')) +
+    row('Wait (BLE/GPS)', _fmtVal(beacon.wait_bluetooth_secs, ' s')) +
+    row('Revert to phone', beacon.revert_to_phone ? 'Yes' : 'No');
+}
+
+/** Download a node's GPX track (reused by grid button and modal button). */
+async function downloadNodeGpx(nodeId) {
+  try {
+    const gpx = await fetchNodeGpx(nodeId);
+    const safe = (nodeId || '').replace(/^!/, '').replace(/[^\w\-]+/g, '_') || 'node';
+    downloadFile(gpx, `nodepulse_${safe}_track.gpx`, 'application/gpx+xml');
+  } catch (err) {
+    showToast(`GPX download failed: ${err.message}`, 'error');
+  }
+}
+
+/** Wire the diagnostics modal close buttons + backdrop click (called once). */
+function initDiagnosticsModal() {
+  const modal = document.getElementById('diag-modal');
+  const close = () => modal.classList.add('hidden');
+  document.getElementById('diag-modal-close')?.addEventListener('click', close);
+  document.getElementById('diag-close-btn')?.addEventListener('click', close);
+  document.getElementById('diag-gpx-btn')?.addEventListener('click', () => {
+    if (_diagNodeId) downloadNodeGpx(_diagNodeId);
+  });
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) close();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !modal.classList.contains('hidden')) close();
+  });
 }
 
 // ============================================================================
@@ -1370,6 +1526,12 @@ function switchView(viewName) {
       dashMap._map?.getContainer().addEventListener('nodepulse:message', (e) => {
         openDirectMessage(e.detail.nodeId);
       });
+      dashMap._map?.getContainer().addEventListener('nodepulse:diagnostics', (e) => {
+        openDiagnostics(e.detail.nodeId);
+      });
+      dashMap._map?.getContainer().addEventListener('nodepulse:gpx', (e) => {
+        downloadNodeGpx(e.detail.nodeId);
+      });
     } else if (viewName === 'map') {
       fullMap.init();
       fullMap.updateNodes(state.nodes);
@@ -1381,6 +1543,12 @@ function switchView(viewName) {
       });
       fullMap._map.getContainer().addEventListener('nodepulse:message', (e) => {
         openDirectMessage(e.detail.nodeId);
+      });
+      fullMap._map.getContainer().addEventListener('nodepulse:diagnostics', (e) => {
+        openDiagnostics(e.detail.nodeId);
+      });
+      fullMap._map.getContainer().addEventListener('nodepulse:gpx', (e) => {
+        downloadNodeGpx(e.detail.nodeId);
       });
     } else if (viewName === 'settings') {
       renderSettings();
@@ -1760,6 +1928,13 @@ async function pollData() {
     });
   }
 
+  // Fetch hop distribution for the Hops chart — first poll, then every 4 polls.
+  if (isFirstPoll || state._pollCount % 4 === 0) {
+    fetchHops().then(data => charts.renderHops(data)).catch(err => {
+      console.warn('Hops fetch failed:', err);
+    });
+  }
+
   // Slow path: relay to HA for tracked-node state. Run only on the first poll
   // (so the checkboxes on the Nodes tab render correctly on initial load) and
   // then every TRACKED_NODES_POLL_EVERY_N cycles thereafter. This avoids
@@ -1900,6 +2075,7 @@ async function init() {
   // Initialise maps — they need the DOM to be ready.
   dashMap.init();
   charts.init();
+  initDiagnosticsModal();
   initTerrainPanel();
   initCoveragePanel(fullMap);
 

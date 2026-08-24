@@ -137,6 +137,34 @@ export class ChartManager {
         },
       }
     );
+
+    this._charts.hops = new Chart(
+      document.getElementById('chart-hops'),
+      {
+        type: 'bar',
+        data: { labels: [], datasets: [{ label: 'Nodes', data: [], backgroundColor: CHART_COLOR_TEAL + 'cc', borderColor: CHART_COLOR_TEAL, borderWidth: 1 }] },
+        options: {
+          ...SHARED_DEFAULTS,
+          plugins: { ...SHARED_DEFAULTS.plugins, legend: { display: false } },
+          scales: {
+            x: { display: true, grid: { display: false }, ticks: { color: '#8892a4', font: { size: 10 }, callback: (v) => `H${v}` } },
+            y: { ...SHARED_DEFAULTS.scales.y, min: 0, ticks: { ...SHARED_DEFAULTS.scales.y.ticks, precision: 0, stepSize: 1 }, title: { display: true, text: 'Nodes', color: '#4a5568', font: { size: 10 } } },
+          },
+        },
+      }
+    );
+  }
+
+  /**
+   * Render the hop-count distribution as a bar chart.
+   * @param {{distribution: Array<{hops:number, count:number}>, total:number, max_hops:number}} data
+   */
+  renderHops(data) {
+    if (!this._charts.hops) return;
+    const dist = (data && data.distribution) || [];
+    this._charts.hops.data.labels = dist.map((d) => d.hops);
+    this._charts.hops.data.datasets[0].data = dist.map((d) => d.count);
+    this._charts.hops.update('none');
   }
 
   /**

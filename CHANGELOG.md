@@ -2,6 +2,30 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.21.3] - 2026-08-23
+### Added
+- **Meshtastic 2.8 features surfaced in the Web UI** — the diagnostics, GPX, hops, signed-node, status-text and beacon capabilities (previously Telegram-only) are now in the dashboard:
+  - **Node Diagnostics modal** — "Diagnostics" button on every node card and map popup (hops-away, rolling SNR + signal quality, battery/voltage/uptime, channel/air utilisation, 2.8 noise floor, environment telemetry, plus the gateway's Mesh Beacon status).
+  - **GPX download** — "GPX" button per node downloads its position history as a GPX 1.1 track.
+  - **Hops Distribution chart** — new dashboard bar chart of nodes per hop count (`/api/hops`).
+  - **Signed-node 🔒 badge + broadcasted status text** — on node cards, the node list, and map popups.
+  - New backend routes `GET /api/node/{id}/signal`, `GET /api/node/{id}/gpx`, `GET /api/hops`, `GET /api/beacon`.
+
+### Changed
+- **Telegram sender attribution** — forwarded mesh messages now show the sender's short name (e.g. `*Bob*`), appending the long name in parentheses when it adds clarity, so incoming messages are immediately identifiable. The sender name is resolved from the live node snapshot and falls back to the persistent node store; the node ID is still included for unambiguous replies.
+
+## [1.21.2] - 2026-08-23
+### Added
+- **Meshtastic 2.8 features in the Telegram bot** — New commands built on the 2.8 firmware capabilities:
+  - `/diag !node` — per-node diagnostics: hops-away, rolling SNR average + signal quality, battery, voltage, uptime, channel/air utilisation, and (where the python library exposes it) the 2.8 noise floor.
+  - `/gpx !node` — exports a node's position history as a GPX 1.1 track file sent via Telegram (uses position history already recorded by the addon).
+  - `/hops` — distribution of heard nodes by hop count ("nodes per hop").
+  - `/waypoint <lat> <lon> [name] [expire_hours]` — drops a waypoint (stored locally, and broadcast over the mesh when the library supports `sendWaypoint`).
+  - `/beacon` — shows the local node's Mesh Beacon module status (`available: false` + a clear reason when the installed library predates 2.8).
+  - Signed-node 🔒 badge and broadcasted status text in `/nodes` and `/where` (read defensively; absent on older libraries).
+  - `/setpos` now warns when the primary channel is public (2.8 firmware blocks precise position broadcasts on public channels).
+- **Connection helpers** — `get_node_signal()`, `send_waypoint()`, `get_beacon_config()`; device-telemetry capture of the 2.8 noise floor; channel `public` flag for the public-channel guard.
+
 ## [1.21.1] - 2026-08-21
 ### Fixed
 - **Syntax error in terrain analysis** — Removed extraneous `},` at `app/terrain.py:270` that caused `ImportError` on module load.

@@ -238,6 +238,14 @@
               <canvas id="chart-air-util"></canvas>
             </div>
           </div>
+          <div class="card chart-card">
+            <div class="card-header">
+              <span class="card-title">Hops Distribution</span>
+            </div>
+            <div class="chart-wrapper">
+              <canvas id="chart-hops"></canvas>
+            </div>
+          </div>
         </div>
       </div><!-- /view-dashboard -->
 
@@ -970,6 +978,29 @@
 
   <!-- Toast container — appended here, positioned fixed via CSS -->
   <div id="toast-container" aria-live="polite"></div>
+
+  <!-- Node Diagnostics modal (2.8 feature set) -->
+  <div id="diag-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-label="Node diagnostics">
+    <div class="modal-card diag-modal-card">
+      <div class="modal-header">
+        <div class="diag-modal-title">
+          <span id="diag-node-name">Node</span>
+          <span id="diag-signed-badge" class="signed-badge hidden" title="Signed node (public key present)">🔒 Signed</span>
+        </div>
+        <button type="button" class="modal-close" id="diag-modal-close" aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="diag-status-line" class="diag-status-line hidden"></div>
+        <div id="diag-loading" class="diag-loading">Loading diagnostics…</div>
+        <div id="diag-content" class="diag-content hidden"></div>
+        <div id="diag-beacon" class="diag-beacon hidden"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="action-btn" id="diag-gpx-btn">⬇ Download GPX</button>
+        <button type="button" class="action-btn" id="diag-close-btn">Close</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Main application module — defer ensures CDN scripts (Leaflet, Chart.js) load first -->
   <script type="module" src="js/app.js" defer></script>

@@ -2,6 +2,22 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.21.3] - 2026-08-23
+### Added
+- **Meshtastic 2.8 features surfaced in the Web UI** — the diagnostics, GPX, hops, signed-node, status-text and beacon capabilities (previously Telegram-only) are now available in the dashboard:
+  - **Node Diagnostics modal** — "Diagnostics" button on every node card and map popup opens a panel with hops-away, rolling SNR + signal quality, battery/voltage/uptime, channel/air utilisation, the 2.8 noise floor, and environment telemetry. For the local gateway it also shows the **Mesh Beacon (2.8)** module status.
+  - **GPX download** — "GPX" button on each node card / map popup downloads that node's position history as a GPX 1.1 track.
+  - **Hops Distribution chart** — new dashboard bar chart of nodes per hop count from the gateway (`/api/hops`).
+  - **Signed-node 🔒 badge + broadcasted status text** — shown on node cards, the node list, and map popups when a node advertises a public key / status message.
+  - New backend routes: `GET /api/node/{id}/signal`, `GET /api/node/{id}/gpx`, `GET /api/hops`, `GET /api/beacon`.
+
+### Changed
+- **Telegram sender attribution** — forwarded mesh messages now show the sender's short name (e.g. `*Bob*`), appending the long name in parentheses when it adds clarity (e.g. `*Bob (Bob The Tester)*`), so incoming messages are immediately identifiable. The sender name is resolved from the live node snapshot and falls back to the persistent node store (e.g. for nodes heard via MQTT/traceroute). The node ID is still included for unambiguous replies.
+
+## [1.21.2] - 2026-08-23
+### Added
+- **Meshtastic 2.8 features in the Telegram bot** — `/diag`, `/gpx`, `/hops`, `/waypoint`, `/beacon` commands, signed-node 🔒 + status badges in `/nodes`/`/where`, and a `/setpos` public-channel warning. Connection helpers `get_node_signal()`, `send_waypoint()`, `get_beacon_config()`, 2.8 noise-floor capture, and a channel `public` flag.
+
 ## [1.21.1] - 2026-08-21
 ### Fixed
 - **Syntax error in terrain analysis** — Removed extraneous `},` at `app/terrain.py:270` that caused `ImportError` on module load.
