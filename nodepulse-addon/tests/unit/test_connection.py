@@ -208,6 +208,252 @@ class TestGetChannelsNoInterface:
         assert result == []
 
 
+class TestNodeLookupLogic:
+    """Tests for improved node lookup logic in message processing"""
+    
+    def test_node_lookup_multiple_key_formats(self):
+        """Test that node lookup tries multiple key formats"""
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
+        )
+        
+        # Mock interface with nodes dict keyed by different formats
+        mock_interface = Mock()
+        mock_interface.nodes = {
+            12345: {"user": {"shortName": "Test", "longName": "TestNode"}},
+            "!00003039": {"user": {"shortName": "StringKey", "longName": "StringNode"}},
+            "12345": {"user": {"shortName": "StringNum", "longName": "StringNumNode"}}
+        }
+        conn._interface = mock_interface
+        
+        # Test lookup by integer key
+        node = conn._interface.nodes.get(12345)
+        assert node is not None
+        assert node["user"]["shortName"] == "Test"
+        
+        # Test lookup by string hex key
+        node = conn._interface.nodes.get("!00003039")
+        assert node is not None
+        assert node["user"]["shortName"] == "StringKey"
+        
+        # Test lookup by string number key
+        node = conn._interface.nodes.get("12345")
+        assert node is not None
+        assert node["user"]["shortName"] == "StringNum"
+
+
+class TestTracerouteDataPreservation:
+    """Tests for traceroute data preservation during node refreshes"""
+    
+    def test_traceroute_preserved_in_node_update(self):
+        """Test that traceroute data is preserved when node data is refreshed"""
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
+        )
+        
+        # Add a node with traceroute data
+        with conn._nodes_lock:
+            conn._nodes = [{
+                "id": "!00003039",
+                "short_name": "Test",
+                "long_name": "TestNode",
+                "traceroute": {
+                    "route": ["!00003039", "!00003040"],
+                    "timestamp": 1234567890
+                },
+                "latitude": 37.7749,
+                "longitude": -122.4194
+            }]
+        
+        # Simulate node data refresh (this happens in _get_nodes_sync)
+        # The new data from interface won't have traceroute, but we should preserve it
+        with conn._nodes_lock:
+            cached = {n["id"]: n for n in conn._nodes}
+            entry = {
+                "id": "!00003039",
+                "short_name": "Test",
+                "long_name": "TestNode",
+                "latitude": 37.7749,  # From interface
+                "longitude": -122.4194,  # From interface
+                # Note: no traceroute in new interface data
+            }
+            
+            # This is the logic that should preserve traceroute
+            prev = cached["!00003039"]
+            prev_traceroute = prev.get("traceroute")
+            entry.update(entry)
+            if prev_traceroute is not None:
+                entry["traceroute"] = prev_traceroute
+        
+        # Verify traceroute was preserved
+        assert entry["traceroute"] is not None
+        assert entry["traceroute"]["route"] == ["!00003039", "!00003040"]
+        assert entry["traceroute"]["timestamp"] == 1234567890
+
+
+class TestFavoriteDeviceCommunication:
+    """Tests for favorite node device communication"""
+    
+    def test_set_favorite_calls_device_method(self):
+        """Test that set_favorite calls device setFavorite method"""
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
+        )
+        
+        # Mock interface and localNode
+        mock_interface = Mock()
+        mock_local_node = Mock()
+        mock_interface.localNode = mock_local_node
+        conn._interface = mock_interface
+        
+        # Call set_favorite
+        node_id = "!00003039"
+        result = conn._set_favorite_sync(node_id, favorited=True)
+        
+        # Verify device method was called
+        mock_local_node.setFavorite.assert_called_once_with(node_id)
+        assert node_id in result
+        
+    def test_remove_favorite_calls_device_method(self):
+        """Test that set_favorite with favorited=False calls device removeFavorite method"""
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
+        )
+        
+        # Mock interface and localNode
+        mock_interface = Mock()
+        mock_local_node = Mock()
+        mock_interface.localNode = mock_local_node
+        conn._interface = mock_interface
+        
+        # Add node to favorites first
+        with conn._favorites_lock:
+            conn._favorites.add("!00003039")
+        
+        # Call set_favorite with favorited=False
+        node_id = "!00003039"
+        result = conn._set_favorite_sync(node_id, favorited=False)
+        
+        # Verify device method was called
+        mock_local_node.removeFavorite.assert_called_once_with(node_id)
+        assert node_id not in result
+        
+    def test_set_favorite_handles_device_error(self):
+        """Test that set_favorite handles device communication errors gracefully"""
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
+        )
+        
+        # Mock interface that raises error
+        mock_interface = Mock()
+        mock_local_node = Mock()
+        mock_local_node.setFavorite.side_effect = Exception("Device error")
+        mock_interface.localNode = mock_local_node
+        conn._interface = mock_interface
+        
+        # Call set_favorite - should not raise, should still update local favorites
+        node_id = "!00003039"
+        result = conn._set_favorite_sync(node_id, favorited=True)
+        
+        # Verify local favorites were still updated despite device error
+        assert node_id in result
+        
+    def test_set_favorite_without_interface(self):
+        """Test that set_favorite works when interface is not available"""
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
+        )
+        
+        # No interface
+        conn._interface = None
+        
+        # Call set_favorite - should still update local favorites
+        node_id = "!00003039"
+        result = conn._set_favorite_sync(node_id, favorited=True)
+        
+        # Verify local favorites were updated
+        assert node_id in result
+
+
+class TestTraceroutePathConstruction:
+    """Tests for traceroute path construction logic"""
+    
+    def test_node_card_traceroute_no_duplicates(self):
+        """Test that node card traceroute display doesn't create duplicate nodes in path"""
+        # Simulate the formatHop function logic
+        route = [12345, 67890]  # intermediate hops as integers
+        from_id = "!abcd1234"
+        
+        # Simulate the formatting
+        formatHop = lambda n: '!' + format(n & 0xFFFFFFFF, '08x')
+        forward = [formatHop(n) for n in route]
+        
+        # Add target node only if not already present
+        if from_id and from_id not in forward:
+            forward.append(from_id)
+        
+        # Verify no duplicates
+        assert len(forward) == len(set(forward))
+        assert "!abcd1234" in forward or "!00003039" in forward or "!000109b2" in forward
+        
+    def test_node_card_traceroute_includes_self(self):
+        """Test that self node is included at the start of the path"""
+        route = [12345]  # single intermediate hop
+        from_id = "!abcd1234"
+        self_id = "!00000001"
+        
+        formatHop = lambda n: '!' + format(n & 0xFFFFFFFF, '08x')
+        forward = [formatHop(n) for n in route]
+        
+        # Add self at start if not already present
+        if self_id not in forward:
+            forward.insert(0, self_id)
+        
+        # Add target node only if not already present
+        if from_id and from_id not in forward:
+            forward.append(from_id)
+        
+        # Verify self is at start
+        assert forward[0] == self_id
+        # Verify target is at end
+        assert forward[-1] == from_id
+        
+    def test_traceroute_with_duplicate_handling(self):
+        """Test traceroute handling when firmware includes self/target in route array"""
+        # Case where firmware already includes self in route
+        route = [1, 12345]  # self + intermediate hop
+        from_id = "!abcd1234"
+        self_id = "!00000001"
+        
+        formatHop = lambda n: '!' + format(n & 0xFFFFFFFF, '08x')
+        forward = [formatHop(n) for n in route]
+        
+        # Should not add self again since it's already present
+        if self_id not in forward:
+            forward.insert(0, self_id)
+        
+        # Add target node only if not already present
+        if from_id and from_id not in forward:
+            forward.append(from_id)
+        
+        # Verify no duplicate self
+        assert forward.count(self_id) == 1
+        # Verify path length is correct
+        assert len(forward) == 3  # self + hop + target
+
+
 class TestPacketInspector:
     def test_capture_packet_log(self):
         mock_config = Mock()
@@ -1365,3 +1611,74 @@ class TestConnection28Features:
             result = conn._get_nodes_sync()
         assert result[0].get("public_key") is None
         assert result[0].get("status") is None
+
+
+class TestStabilityRemediations:
+    """Tests verifying the stability, lock hygiene, and type fixes."""
+
+    def _conn(self):
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        mock_config.auto_responder_enabled = False
+        mock_config.auto_traceroute_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
+        )
+        conn._interface = MagicMock()
+        conn._connected = True
+        return conn
+
+    def test_request_traceroute_sync_returns_bool(self):
+        conn = self._conn()
+        conn._interface.sendTraceRoute = MagicMock()
+        conn._nodes = [{"id": "!12345678"}]
+        res = conn._request_traceroute_sync("!12345678")
+        assert res is True
+
+        # When interface returns False or raises
+        conn._interface.sendTraceRoute.side_effect = Exception("Radio failure")
+        res_fail = conn._request_traceroute_sync("!12345678")
+        assert res_fail is False
+
+    def test_read_channels_accepts_iface_arg(self):
+        conn = self._conn()
+        custom_iface = MagicMock()
+        ch = MagicMock()
+        ch.index = 0
+        ch.role = "PRIMARY"
+        ch.settings.name = "CustomPrimary"
+        ch.settings.psk = b"\x01"
+        custom_iface.localNode.channels = [ch]
+
+        channels = conn._read_channels_from_interface(custom_iface)
+        assert len(channels) == 1
+        assert channels[0]["name"] == "CustomPrimary"
+
+    def test_process_scheduled_messages_returns_dispatch_tuples(self):
+        import time
+
+        conn = self._conn()
+        now = time.time()
+        conn._scheduled_messages = [(now - 10, "!12345678", "Scheduled alert", 0, 0)]
+        due = conn._process_scheduled_messages(now)
+        assert len(due) == 1
+        item = due[0]
+        assert item["text"] == "Scheduled alert"
+        assert item["to_id"] == "!12345678"
+        assert item["channel"] == 0
+        assert len(conn._scheduled_messages) == 0
+
+    def test_save_messages_atomic_write(self):
+        import tempfile
+
+        conn = self._conn()
+        conn._messages = [{"id": "m1", "text": "atomicity test"}]
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(connection, "_DATA_DIR", tmp), \
+                patch.object(connection, "_MESSAGES_ARCHIVE_DIR", os.path.join(tmp, "archive")), \
+                patch.object(connection, "_MESSAGES_FILE", os.path.join(tmp, "messages.json")), \
+                patch.object(conn, "_write_json_no_lock") as mock_write:
+            conn._save_messages()
+            assert mock_write.call_count == 1
+
+

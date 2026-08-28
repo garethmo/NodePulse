@@ -357,6 +357,8 @@ function _renderConfigBody(content, nodeId, data) {
     saveFn: (section, patch, confirm) => saveRemoteConfig(nodeId, section, patch, confirm),
     toastFn: (msg, type, dur) => window.showToast ? window.showToast(msg, type, dur) : console.log(msg),
     localBanner: false,
+    allowSecurityKeyEdit: true,
+    gatewayPublicKey: (_capability && _capability.public_key) || null,
     reloadSectionFn: async (section) => {
       // 1. Fetch the section live from the radio (backend updates its cache).
       await fetchRemoteConfigSection(nodeId, section);

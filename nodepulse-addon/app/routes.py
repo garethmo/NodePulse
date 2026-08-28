@@ -693,10 +693,14 @@ async def handle_messages(request: web.Request) -> web.Response:
     This powers the Web UI message feed, mirroring MeshSense's "Message Window"
     — inbound packets captured via the meshtastic pubsub listener in
     connection.py, not just locally-sent ones.
+
+    Query params:
+      - load_archived: if "true", also loads archived messages from date-based files
     """
     conn: MeshtasticConnection = request.app["connection"]
     try:
-        messages = await conn.get_messages()
+        load_archived = request.query.get("load_archived", "false").lower() == "true"
+        messages = await conn.get_messages(load_archived=load_archived)
         return _json_response(messages)
     except Exception as exc:  # noqa: BLE001
         logger.error("Error fetching messages: %s", exc)
@@ -944,8 +948,6 @@ async def handle_send(request: web.Request) -> web.Response:
         conn.schedule_message(float(schedule_at), (body.get("destination") or "").strip(), text, channel)
         return _json_response({"scheduled": True, "schedule_at": schedule_at})
     else:
-        destination = body.get("destination")  # None → broadcast
-
         try:
             logger.debug(
                 "API send request: text='%s' destination=%s channel=%s",
@@ -1446,7 +1448,7 @@ async def handle_terrain_coverage(request: web.Request) -> web.Response:
     from .terrain import TerrainService, analyze_coverage
     terrain: TerrainService = request.app.get("terrain")
     if terrain is None:
-        return _error_response("Terrain analysis is not enabled")
+        return _error_response("Terrain analysis is not enabled", status=503)
     try:
         body = await request.json()
         lat = float(body["lat"])

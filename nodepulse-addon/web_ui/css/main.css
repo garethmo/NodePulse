@@ -1036,6 +1036,13 @@ body::before {
   border-color: rgba(255, 60, 60, 0.5);
   color: #ff4444;
 }
+.action-btn-pending {
+  background: var(--bg-highlight);
+  border-color: var(--border-accent);
+  color: var(--text-teal);
+  opacity: 0.7;
+  cursor: wait;
+}
 
 .node-card-traceroute {
   margin-top: var(--space-sm);
@@ -2184,6 +2191,20 @@ body::before {
   background: var(--bg-highlight);
   color: var(--text-primary);
   border-color: var(--border-accent);
+}
+
+.messages-no-more {
+  display: block;
+  width: 100%;
+  margin: 0 auto var(--space-md) auto;
+  padding: 8px;
+  background: var(--bg-subtle);
+  border: 1px dashed var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 11px;
+  text-align: center;
+  font-style: italic;
 }
 
 .messages-thread-empty {
@@ -3568,6 +3589,50 @@ body.nav-open #sidebar-backdrop { display: block; }
   font-size: 12px;
   color: var(--text-muted);
   font-style: italic;
+}
+/* Multiline field rows (editable admin-key editor) — stack label above the
+   body instead of squashing everything into one centered flex row. */
+.cfg-field-row-multiline {
+  align-items: flex-start;
+}
+.cfg-key-editor {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.cfg-key-remove {
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 7px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-danger, #ff6b6b);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), color var(--transition-fast);
+}
+.cfg-key-remove:hover {
+  border-color: var(--text-danger, #ff6b6b);
+}
+.cfg-key-add {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+.cfg-key-add-input {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+.cfg-key-add-btn {
+  flex-shrink: 0;
+  font-size: 11px;
+  padding: 4px 10px;
 }
 
 /* Checkbox — align right like other inputs */

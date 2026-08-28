@@ -112,6 +112,14 @@ NodePulse is a Home Assistant addon and custom integration that gives you deep v
 | ⏱ **Traceroute Timeout Feedback** | When a traceroute times out (300s), the node card shows "⏱ Timed out — no route discovered" with a relative timestamp; the map and topology pages skip timeout records instead of drawing bogus edges |
 | 🗄️ **Persisted Traceroutes** | Discovered routes are stored in `traceroutes.json` and survive addon restarts. Traceroute targets evicted from the radio's bounded node DB are re-injected (as stale) so the topology page keeps drawing their links — even while the radio is offline |
 | 🛰️ **Remote Node Administration** | New Remote Admin view administers OTHER mesh nodes over the Meshtastic AdminModule (requires admin capability on the gateway — an ADMIN channel or Security admin keys): read/edit their full config (schema-driven forms), set the owner, reboot/shutdown with a delay, factory reset (config or full device), reset the remote NodeDB, set/clear a fixed position, sync the clock, and evict nodes from the remote NodeDB. Every admin round-trip is bounded by a timeout so a dead node can't hang the app. |
+| 🏷️ **Node Role Display** | Each node card now shows the node's role (CLIENT, ROUTER, REPEATER, TRACKER, etc.) in its metrics grid, making it easy to spot nodes serving special functions in the mesh |
+| 🕒 **Last Heard Metric** | Node cards show a relative "Last Heard" timestamp (e.g. "2m ago", "1h ago") to quickly identify inactive or stale nodes |
+| 📍 **Position Request Feedback** | The "Req. Position" button enters a loading state ("⏳ Requesting...") and auto-refreshes node data on response, with a 30s timeout so it always returns to a usable state |
+| ⭐ **Device Favorites (NodeDB)** | Favoriting a node in the UI now also sends an admin message marking it as a favorite in the device's NodeDB — so communication with that node no longer counts against hop limits (same behaviour as the Meshtastic Android app) |
+| 🔧 **Traceroute Path Fix** | Fixed traceroute path construction on node cards and map to properly handle different firmware versions, preventing duplicate nodes in the path and ensuring correct multi-hop visualization |
+| 🔍 **Message Search Pagination** | Fixed "Load previous days" button not appearing when searching messages. Users can now expand the time window to find older matching messages |
+| 📜 **Enhanced Message History** | Hybrid storage system keeps 1000 recent messages in memory (up from 200) and automatically archives older messages to date-based files, providing unlimited message history access with "No more messages available" indicator showing oldest message date |
+| 🛡️ **Concurrency & Lock Safety (1.22.0)** | Strict lock hierarchy enforcement, deadlock-free background thread dispatching, snapshotted interface I/O, 503 terrain service contracts, and robust unit test coverage across all async pipelines |
 
 ---
 

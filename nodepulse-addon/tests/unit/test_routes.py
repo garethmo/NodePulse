@@ -923,3 +923,12 @@ class TestRoutes28Features:
         request = make_request(app_dict={"connection": conn}, match_info={"node_id": "bad"})
         resp = await routes.handle_node_gpx(request)
         assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_handle_terrain_coverage_returns_503_when_disabled(self):
+        request = make_request(app_dict={"terrain": None})
+        resp = await routes.handle_terrain_coverage(request)
+        assert resp.status == 503
+        body = json.loads(resp.text)
+        assert body["error"] == "Terrain analysis is not enabled"
+

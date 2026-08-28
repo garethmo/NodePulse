@@ -84,7 +84,7 @@ def mock_connection():
     async def _refresh_channels():
         return list(state["channels"])
 
-    async def _get_messages():
+    async def _get_messages(load_archived=False):
         return list(state["messages"])
 
     async def _get_position_history(node_id=None):

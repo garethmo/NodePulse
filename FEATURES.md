@@ -16,6 +16,7 @@ The addon runs as a Home Assistant addon (Docker container) serving a REST API a
 | **Auto-reconnect** | Capped exponential backoff (5s–60s); detects silently-dropped sessions with active health probes every 60s |
 | **Pubsub listener** | Captures all inbound packets via `meshtastic.receive` — text messages, traceroute replies, position replies, neighbor info, telemetry |
 | **Single-TCP-slot handling** | Detect and log the Meshtastic firmware's single-client limit with a clear upgrade path (serial/BLE for the official integration, TCP slot for NodePulse) |
+| **Thread-safe Lock Architecture (1.22.0+)** | Deadlock-free concurrency model enforcing strict `_lock` → `_nodes_lock` ordering, snapshotting interface and message state during I/O operations, and thread-safe scheduled message processing |
 
 ### REST API
 
@@ -26,7 +27,7 @@ The addon runs as a Home Assistant addon (Docker container) serving a REST API a
 | `/api/node/{node_id}` | DELETE | Remove a single node from the persistent store |
 | `/api/nodes/clear-stale` | POST | Purge all cached/stale nodes |
 | `/api/channels` | GET | Configured mesh channels |
-| `/api/messages` | GET | Recent message buffer (capped at 200, oldest first) |
+| `/api/messages` | GET | Recent message buffer (capped at 1000, oldest first; optional `?load_archived=true` to load unlimited history from date-based archive files) |
 | `/api/messages/export` | GET | Download message history as JSON or CSV (optional `?format=json|csv` and `?conversation=` filters) |
 | `/api/send` | POST | Send a text message (broadcast or DM) |
 | `/api/traceRoute` | POST | Dispatch a traceroute (fire-and-forget, results on next poll) |
@@ -83,10 +84,12 @@ A scrollable grid of node cards, one per mesh node.
 Each card shows:
 - **Header**: Long name, node ID, hardware model, stale/cached badge, **Favorite star (★)** — click to pin/unpin; favorites appear at top of list
 - **Tags**: Comma-separated user-defined labels with inline editor
-- **Metrics grid**: SNR, RSSI, hops away, battery, distance, GPS fix, temperature, humidity, pressure
-- **Traceroute**: Forward and return path with hop-by-hop resolved names and timing; shows "⏱ Timed out — no route discovered" when the 300s window expires
+- **Metrics grid**: SNR, RSSI, hops away, battery, distance, GPS fix, **Role** (CLIENT, ROUTER, REPEATER, TRACKER, etc.), **Last Heard** (relative time, e.g. "2m ago"), temperature, humidity, pressure
+- **Traceroute**: Forward and return path with hop-by-hop resolved names and timing; shows "⏱ Timed out — no route discovered" when the 300s window expires. Path construction properly handles different firmware versions that may or may not include self/target nodes in the route array, preventing duplicate nodes and ensuring correct multi-hop visualization.
 - **Neighbors**: Per-peer SNR chips when NEIGHBORINFO_APP data is available
 - **Actions**: Traceroute, Request Position, Message, Track in HA, Notify, Delete (red button with confirmation prompt)
+- **Position request feedback** — The "Req. Position" button enters a loading state ("⏳ Requesting...") and auto-refreshes node data on response (30s timeout) so it always returns to a usable state.
+- **Device favorite integration** — Favoriting a node also sends an admin message that marks the node as a favorite in the device's NodeDB, so communication with it no longer counts against hop limits (same behaviour as the Meshtastic Android app).
 
 **Sorting**: Favorites first → nodes with signal (snr_avg) → by signal strength → by last heard (most recent). Favorites are persisted **server-side** in `favorites.json` (via `GET/PUT /api/favorites`) so they survive reloads even when the HA addon iframe clears `localStorage`; `localStorage` (`np_favorite_nodes`) is kept only as a fallback. Toast notification on toggle.
 
@@ -129,7 +132,7 @@ Selection persists in `localStorage` across sessions.
 
 A force-directed (vis-network) graph of the whole mesh — nodes, roles, and links.
 
-- **Traceroute edges (solid)**: Drawn from persisted `traceroutes.json` results. The full forward path (`Self → relay hops → destination`) and return path are built from raw integer hop numbers canonicalised to `!hex` IDs. Relay hops that the radio's bounded node DB no longer reports are shown as neutral indigo **relay placeholder** nodes so multi-hop routes render completely.
+- **Traceroute edges (solid)**: Drawn from persisted `traceroutes.json` results. The full forward path (`Self → relay hops → destination`) and return path are built from raw integer hop numbers canonicalised to `!hex` IDs. Relay hops that the radio's bounded node DB no longer reports are shown as neutral indigo **relay placeholder** nodes so multi-hop routes render completely. Path construction properly handles different firmware versions to prevent duplicate nodes and ensure correct visualization.
 - **Neighbor edges (dashed)**: Filled in from `NEIGHBORINFO_APP` data for any link not already covered by a traceroute.
 - **Edge colouring**: SNR-based gradient; per-hop SNR labels on traceroute edges.
 - **Timeout records skipped**: `{ timeout: true }` traceroutes never draw bogus edges.
@@ -178,6 +181,7 @@ A **Remote Admin** tab (sidebar + header) for administering OTHER mesh nodes ove
 - **Gateway keys reference** — A "This gateway — keys for targets" strip shows this gateway's public key and admin keys (base64) with copy buttons, so you can configure a target's **Security → Admin Keys** without leaving the view (`GET /api/admin/available` now includes `public_key` / `admin_keys`).
 - **Identity card** — Remote node's long/short name, hardware model, firmware version, and role (best-effort from the gateway's node DB / metadata).
 - **Config editing** — All Config + ModuleConfig sections editable, with the same backend validation, enum dropdowns, danger-zone confirmations, and reboot-required feedback as local config. Reboot-required notes are shown as toasts (no local-node reboot banner). Admin traffic is sent on the channel the firmware actually honours: the primary channel with PKC admin-key auth (firmware 2.5+ default), or the reserved `admin` channel when legacy admin is enabled — so a channel merely named "admin" that the target doesn't share no longer causes timeouts.
+- **Security & Admin Keys editing** — In the Remote Admin view the **Security & Admin Keys** card's `admin_key` list is editable: paste a base64 admin/public key and click **Add** (or one click to add *this gateway's* public key from the "keys for targets" strip), and remove any existing key with its ✕. Saving rewrites the target's full admin-key list over the radio and requires a reboot to take effect — this is how you grant the gateway (or any other node) admin rights on the target. `public_key` / `private_key` remain read-only identity chips.
 - **Actions panel** — One-click admin operations, all with bounded timeouts (15 s per action, 25 s for a full config read) so a dead or non-ADMIN node can never hang the app:
   - **Reboot / Shut down** — with a seconds delay (prompted).
   - **Factory reset (config)** — restores radio defaults.

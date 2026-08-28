@@ -327,6 +327,7 @@ export class TopologyManager {
             color: { color: edgeColor, highlight: '#ffffff', hover: '#ffffff' },
             width: 2,
             dashes: isMqtt ? [2, 2] : false, // Dotted line for MQTT
+            hidden: false,
             _type: 'traceroute',
           });
         }
@@ -371,6 +372,7 @@ export class TopologyManager {
             color: { color: snrColor(nb.snr), highlight: '#ffffff', hover: '#ffffff' },
             width: 1.5,
             dashes: [4, 4], // dashed to visually distinguish from traced routes
+            hidden: false,
             _type: 'neighbor',
           });
         }

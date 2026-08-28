@@ -91,7 +91,7 @@ async function renderDeviceConfig() {
 
   try {
     _configData = await fetchDeviceConfig();
-    _renderSections(content, _configData);
+    _renderSections(content, _configData, { allowSecurityKeyEdit: true });
     _restoreRebootBanner();
   } catch (err) {
     _showError(content, err.message);
@@ -248,7 +248,7 @@ function _buildSectionCard(sectionKey, sectionData, meta, sectionSchema = null, 
   // Build fields
   for (const [fieldKey, fieldValue] of Object.entries(sectionData)) {
     const fieldSchema = (sectionSchema && sectionSchema.fields)?.[fieldKey] || null;
-    const row = _buildFieldRow(sectionKey, fieldKey, fieldValue, fieldSchema);
+    const row = _buildFieldRow(sectionKey, fieldKey, fieldValue, fieldSchema, options);
     if (row) form.appendChild(row);
   }
 
@@ -615,7 +615,7 @@ function _buildMeshBeaconFieldRow(sectionKey, fieldKey, fieldValue, fieldSchema 
  * constrain inputs. Falls back to value-derived types when absent.
  * Returns null for fields we can't render (nested messages, etc.).
  */
-function _buildFieldRow(sectionKey, fieldKey, fieldValue, fieldSchema = null) {
+function _buildFieldRow(sectionKey, fieldKey, fieldValue, fieldSchema = null, options = {}) {
   // Skip complex nested objects (repeated fields like available_pins)
   if (fieldValue !== null && typeof fieldValue === 'object' && !Array.isArray(fieldValue)) {
     return null;
@@ -642,6 +642,12 @@ function _buildFieldRow(sectionKey, fieldKey, fieldValue, fieldSchema = null) {
   const isSecurityKey = fieldSchema?.type === 'bytes' || SECURITY_KEY_FIELDS.has(fieldKey);
 
   if (isSecurityKey) {
+    // In the Remote Admin view, admin_key is an editable list — you add/remove
+    // admin keys (e.g. paste this gateway's public key so it may administer the
+    // target). public_key / private_key remain read-only identity chips.
+    if (fieldKey === 'admin_key' && options.allowSecurityKeyEdit) {
+      return _buildAdminKeyEditor(fieldKey, fieldValue, options);
+    }
     // Read-only, copyable key display (public_key / private_key / admin_key).
     const isPrivate = fieldKey === 'private_key';
     row.appendChild(label);
@@ -802,6 +808,146 @@ function _buildFieldRow(sectionKey, fieldKey, fieldValue, fieldSchema = null) {
 }
 
 // ---------------------------------------------------------------------------
+// Editable admin-key list (Remote Admin only)
+// ---------------------------------------------------------------------------
+
+function _buildAdminKeyEditor(fieldKey, fieldValue, options = {}) {
+  // admin_key is a repeated bytes field: a list of base64 public keys that are
+  // allowed to administer the node. The UI lets you add a pasted key (or this
+  // gateway's own key) and remove existing ones. The working list is mirrored
+  // into a hidden input with data-field-type="bytes-list" so it flows through
+  // the normal dirty-tracking / patch machinery as a real JSON array.
+  const row = document.createElement('div');
+  row.className = 'cfg-field-row cfg-field-row-multiline';
+  const label = document.createElement('label');
+  label.className = 'cfg-field-label';
+  label.htmlFor = `cfg-security-${fieldKey}`;
+  label.textContent = _labelify(fieldKey);
+  row.appendChild(label);
+
+  // Right-hand body: chips (stacked) + the add control, so they don't collapse
+  // into a single squashed flex row next to the label.
+  const body = document.createElement('div');
+  body.className = 'cfg-key-editor';
+
+  const wrap = document.createElement('div');
+  wrap.className = 'cfg-key-wrap';
+  body.appendChild(wrap);
+
+  const currentKeys = Array.isArray(fieldValue) ? fieldValue.slice() : [];
+
+  const hidden = document.createElement('input');
+  hidden.type = 'hidden';
+  hidden.id = `cfg-security-${fieldKey}`;
+  hidden.dataset.fieldKey = fieldKey;
+  hidden.dataset.fieldType = 'bytes-list';
+  hidden.value = JSON.stringify(currentKeys);
+
+  function renderKeys() {
+    wrap.querySelectorAll('.cfg-key-chip').forEach(c => c.remove());
+    if (currentKeys.length === 0) {
+      const empty = document.createElement('span');
+      empty.className = 'cfg-key-empty';
+      empty.textContent = 'none configured';
+      wrap.appendChild(empty);
+    } else {
+      currentKeys.forEach((b64, i) => {
+        const chip = document.createElement('div');
+        chip.className = 'cfg-key-chip';
+        const code = document.createElement('code');
+        code.className = 'cfg-key-code';
+        code.textContent = b64 || '(empty)';
+        chip.appendChild(code);
+        const copy = _makeCopyButton(b64, i === 0 ? fieldKey : `${fieldKey}-${i + 1}`);
+        chip.appendChild(copy);
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'cfg-key-remove';
+        remove.textContent = '✕';
+        remove.title = 'Remove this admin key';
+        remove.addEventListener('click', () => {
+          currentKeys.splice(i, 1);
+          hidden.value = JSON.stringify(currentKeys);
+          renderKeys();
+          hidden.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+        chip.appendChild(remove);
+        wrap.appendChild(chip);
+      });
+    }
+    hidden.value = JSON.stringify(currentKeys);
+  }
+
+  renderKeys();
+  body.appendChild(hidden);
+
+  const addRow = document.createElement('div');
+  addRow.className = 'cfg-key-add';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'cfg-input cfg-key-add-input';
+  input.placeholder = 'Paste a base64 admin / public key…';
+  input.autocomplete = 'off';
+  input.spellcheck = false;
+  const addBtn = document.createElement('button');
+  addBtn.type = 'button';
+  addBtn.className = 'action-btn cfg-key-add-btn';
+  addBtn.textContent = 'Add';
+  addBtn.addEventListener('click', () => {
+    const raw = input.value.trim();
+    if (!raw) return;
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(raw) || raw.length % 4 !== 0) {
+      window.showToast ? window.showToast('Admin key must be valid base64.', 'error') : null;
+      return;
+    }
+    if (currentKeys.includes(raw)) {
+      window.showToast ? window.showToast('That key is already in the list.', 'error') : null;
+      return;
+    }
+    currentKeys.push(raw);
+    input.value = '';
+    hidden.value = JSON.stringify(currentKeys);
+    renderKeys();
+    hidden.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  addRow.appendChild(input);
+  addRow.appendChild(addBtn);
+
+  const gatewayKey = options.gatewayPublicKey;
+  if (gatewayKey) {
+    const gwBtn = document.createElement('button');
+    gwBtn.type = 'button';
+    gwBtn.className = 'action-btn cfg-key-add-btn';
+    gwBtn.textContent = '＋ This gateway’s key';
+    gwBtn.title = 'Add this gateway’s public key so it may administer the target node';
+    gwBtn.addEventListener('click', () => {
+      if (currentKeys.includes(gatewayKey)) {
+        window.showToast ? window.showToast('This gateway’s key is already in the list.', 'error') : null;
+        return;
+      }
+      currentKeys.push(gatewayKey);
+      hidden.value = JSON.stringify(currentKeys);
+      renderKeys();
+      hidden.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    addRow.appendChild(gwBtn);
+  }
+  body.appendChild(addRow);
+  row.appendChild(body);
+
+  // Allow Revert (in _revertForm) to reset the editor from the hidden input.
+  hidden.addEventListener('cfg:revert', () => {
+    let restored = [];
+    try { restored = JSON.parse(hidden.value); } catch { /* keep as-is */ }
+    currentKeys.length = 0;
+    if (Array.isArray(restored)) currentKeys.push(...restored);
+    renderKeys();
+  });
+
+  return row;
+}
+
+// ---------------------------------------------------------------------------
 // Dirty tracking helpers
 // ---------------------------------------------------------------------------
 
@@ -818,6 +964,15 @@ function _currentFormValues(form, sectionKey) {
       values[key] = el.value !== '' ? parseInt(el.value, 10) : null;
     } else if (type === 'float') {
       values[key] = el.value !== '' ? parseFloat(el.value) : null;
+    } else if (type === 'bytes-list') {
+      // Repeated-bytes editor (admin_key) — value is a JSON array of base64
+      // strings. Parse defensively so a stray value can never break a patch.
+      try {
+        const parsed = JSON.parse(el.value);
+        values[key] = Array.isArray(parsed) ? parsed : [];
+      } catch {
+        values[key] = [];
+      }
     } else {
       values[key] = el.value;
     }
@@ -851,6 +1006,10 @@ function _revertForm(form, original, sectionKey) {
     const orig = original[key];
     if (type === 'bool') {
       el.checked = !!orig;
+    } else if (type === 'bytes-list') {
+      const restored = Array.isArray(orig) ? orig : [];
+      el.value = JSON.stringify(restored);
+      el.dispatchEvent(new Event('cfg:revert', { bubbles: true }));
     } else {
       el.value = orig ?? '';
     }

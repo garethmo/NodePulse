@@ -62,6 +62,7 @@ def _sanitize_mesh_text(value: Any, default: str = "") -> str:
 # not lost when the addon is restarted.
 _DATA_DIR = os.environ.get("NODEPULSE_DATA_DIR", "/data")
 _MESSAGES_FILE = os.path.join(_DATA_DIR, "messages.json")
+_MESSAGES_ARCHIVE_DIR = os.path.join(_DATA_DIR, "messages_archive")
 _TRACEROUTES_FILE = os.path.join(_DATA_DIR, "traceroutes.json")
 _CHANNELS_FILE = os.path.join(_DATA_DIR, "channels.json")
 _NODES_FILE = os.path.join(_DATA_DIR, "nodes.json")
@@ -236,8 +237,9 @@ class MeshtasticConnection:
         # Bounded ring buffer of recently received text messages, so the Web UI
         # and API can present a live message feed (a MeshSense-style inbox).
         # Populated by the pubsub "meshtastic.receive" listener below.
+        # Increased from 200 to 1000 to allow deeper message history.
         self._msg_lock = threading.Lock()
-        self._messages: collections.deque = collections.deque(maxlen=200)
+        self._messages: collections.deque = collections.deque(maxlen=1000)
         # Queue of messages scheduled to be sent at a specific timestamp.
         # Each entry is (execute_time, from_id, to_id, text, channel).
         # Messages are sent when their execute_time <= current_time.
@@ -607,9 +609,13 @@ class MeshtasticConnection:
         await asyncio.to_thread(self._refresh_node_from_interface, destination)
         return ok
 
-    async def get_messages(self) -> list[dict[str, Any]]:
-        """Return the most recent received text messages (oldest first)."""
-        return await asyncio.to_thread(self._get_messages_sync)
+    async def get_messages(self, load_archived: bool = False) -> list[dict[str, Any]]:
+        """Return the most recent received text messages (oldest first).
+
+        Args:
+            load_archived: If True, also loads archived messages from date-based files
+        """
+        return await asyncio.to_thread(self._get_messages_sync, load_archived)
 
     async def get_tags(self) -> dict[str, list[str]]:
         """Return the full tags dict: node_id -> list of tag strings."""
@@ -1553,17 +1559,28 @@ class MeshtasticConnection:
             # Identify the local/self node so we can mark direction and decide
             # whether an inbound packet is a broadcast (channel) or a direct
             # message to us. We derive it lazily from myInfo if available.
+            # Snapshot the interface reference under _lock so we never read a
+            # torn reference while a reconnect is swapping self._interface.
+            with self._lock:
+                _iface_snap = self._interface
             self_num = None
-            if self._interface is not None:
-                my_info = getattr(self._interface, "myInfo", None)
+            if _iface_snap is not None:
+                my_info = getattr(_iface_snap, "myInfo", None)
                 self_num = getattr(my_info, "my_node_num", None)
             self_id = ("!" + format(self_num, "08x")) if self_num is not None else None
 
             name = None
             from_short = ""
             from_long = ""
-            if from_num is not None and self._interface is not None:
-                node = self._interface.nodes.get(from_num)
+            if from_num is not None and _iface_snap is not None:
+                # Try multiple lookup methods since meshtastic library nodes dict
+                # may be keyed by integer node number or string node ID depending on version.
+                # Use the already-snapshotted reference — never re-read self._interface here.
+                node = (
+                    _iface_snap.nodes.get(from_num) or
+                    _iface_snap.nodes.get(from_id) or
+                    _iface_snap.nodes.get(str(from_num))
+                )
                 if node:
                     user = node.get("user") or {}
                     # Prefer the short name in the chat window (compact), falling
@@ -1571,6 +1588,10 @@ class MeshtasticConnection:
                     from_short = user.get("shortName") or ""
                     from_long = user.get("longName") or ""
                     name = from_short or from_long
+                    logger.debug("Resolved node name from live interface: %s (short: %s, long: %s)", 
+                                from_id, from_short, from_long)
+                else:
+                    logger.debug("Node not found in live interface: %s (num: %s)", from_id, from_num)
             # Fallback to the persistent node store for senders we don't have a
             # live user dict for (e.g. nodes heard via MQTT or traceroute). This
             # keeps the Telegram/UI sender label human-readable instead of an
@@ -1584,6 +1605,10 @@ class MeshtasticConnection:
                     from_short = persisted.get("short_name") or ""
                     from_long = persisted.get("long_name") or ""
                     name = from_short or from_long
+                    logger.debug("Resolved node name from persistent store: %s (short: %s, long: %s)", 
+                                from_id, from_short, from_long)
+                else:
+                    logger.debug("Node not found in persistent store: %s", from_id)
 
             channel = packet.get("channel", 0)
             # A packet is a DM if it is addressed to a specific node (not the
@@ -1603,7 +1628,7 @@ class MeshtasticConnection:
             entry = {
                 "from_id": from_id,
                 "to_id": to_id,
-                "from_name": name or from_id or "Unknown",
+                "from_name": (name if name and name.strip() else from_id) or "Unknown",
                 "from_short": from_short,
                 "from_long": from_long,
                 "text": text,
@@ -1741,15 +1766,20 @@ class MeshtasticConnection:
         Any pending ACK older than _ACK_TIMEOUT_S that has not yet received a
         ROUTING_APP reply is considered failed. Called from a periodic background
         task via expire_pending_acks().
+
+        The snapshot of _pending_ack_times is taken inside _msg_lock so we never
+        race with _capture_routing_ack (which also mutates the dict under the same
+        lock). Taking the snapshot outside the lock was a TOCTOU bug.
         """
         now = time.time()
-        timed_out = [
-            pid for pid, sent_at in list(self._pending_ack_times.items())
-            if now - sent_at > _ACK_TIMEOUT_S
-        ]
-        if not timed_out:
-            return
         with self._msg_lock:
+            # Snapshot under lock to avoid racing with _capture_routing_ack.
+            timed_out = [
+                pid for pid, sent_at in list(self._pending_ack_times.items())
+                if now - sent_at > _ACK_TIMEOUT_S
+            ]
+            if not timed_out:
+                return
             for pid in timed_out:
                 msg_id = self._pending_acks.pop(pid, None)
                 self._pending_ack_times.pop(pid, None)
@@ -1897,6 +1927,7 @@ class MeshtasticConnection:
             return sorted(self._favorites)
 
     def _set_favorite_sync(self, node_id: str, favorited: bool) -> list[str]:
+        # Update local UI favorites
         with self._favorites_lock:
             if favorited:
                 self._favorites.add(node_id)
@@ -1904,6 +1935,22 @@ class MeshtasticConnection:
                 self._favorites.discard(node_id)
             result = sorted(self._favorites)
         self._save_favorites()
+        
+        # Send admin message to device to mark node as favorite in NodeDB
+        # This makes communication with favorite nodes not count against hop limits
+        try:
+            with self._lock:
+                iface = self._interface
+            if iface is not None and iface.localNode is not None:
+                if favorited:
+                    iface.localNode.setFavorite(node_id)
+                    logger.info("Set node %s as favorite on device", node_id)
+                else:
+                    iface.localNode.removeFavorite(node_id)
+                    logger.info("Removed node %s from favorites on device", node_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to set favorite on device for %s: %s", node_id, exc)
+        
         return result
 
     def _load_position_history(self) -> None:
@@ -1966,16 +2013,50 @@ class MeshtasticConnection:
         """Restore the message buffer from disk so history survives restarts.
 
         Best-effort: any read/parse failure is ignored and we start empty.
+        Loads both recent messages from messages.json and archived messages from date-based files.
         """
         try:
-            if not os.path.exists(_MESSAGES_FILE):
-                return
-            with self._persist_lock, open(_MESSAGES_FILE, encoding="utf-8") as fh:
-                    data = json.load(fh)
-            if isinstance(data, list):
-                # Keep only the most recent `maxlen` entries.
-                self._messages = collections.deque(data[-self._messages.maxlen:], maxlen=self._messages.maxlen)
-                logger.debug("Restored %s messages from %s", len(self._messages), _MESSAGES_FILE)
+            # Use persist_lock to prevent race conditions with saving
+            with self._persist_lock:
+                # First load archived messages (oldest first)
+                archived_messages = []
+                if os.path.exists(_MESSAGES_ARCHIVE_DIR):
+                    for filename in sorted(os.listdir(_MESSAGES_ARCHIVE_DIR)):
+                        if filename.endswith('.json'):
+                            filepath = os.path.join(_MESSAGES_ARCHIVE_DIR, filename)
+                            try:
+                                with open(filepath, encoding="utf-8") as fh:
+                                    data = json.load(fh)
+                                if isinstance(data, list):
+                                    archived_messages.extend(data)
+                                    logger.debug("Loaded %s messages from archive %s", len(data), filename)
+                            except Exception as exc:
+                                logger.debug("Could not load archive file %s (ignored): %s", filename, exc)
+
+                # Then load recent messages
+                recent_messages = []
+                if os.path.exists(_MESSAGES_FILE):
+                    with open(_MESSAGES_FILE, encoding="utf-8") as fh:
+                        data = json.load(fh)
+                    if isinstance(data, list):
+                        recent_messages = data
+                        logger.debug("Loaded %s recent messages from %s", len(data), _MESSAGES_FILE)
+
+                # Combine: archived + recent, deduplicate by ID, then keep only the most recent maxlen entries
+                all_messages = archived_messages + recent_messages
+                seen_ids = set()
+                unique_messages = []
+                for msg in all_messages:
+                    msg_id = msg.get("id")
+                    if msg_id and msg_id not in seen_ids:
+                        seen_ids.add(msg_id)
+                        unique_messages.append(msg)
+                    elif not msg_id:
+                        unique_messages.append(msg)
+
+                self._messages = collections.deque(unique_messages[-self._messages.maxlen:], maxlen=self._messages.maxlen)
+                logger.debug("Restored %s total messages (oldest from archive: %s, recent: %s, deduped to %s)",
+                            len(self._messages), len(archived_messages), len(recent_messages), len(unique_messages))
         except Exception as exc:  # pragma: no cover - defensive  # noqa: BLE001
             logger.debug("Could not load persisted messages (ignored): %s", exc)
 
@@ -1992,15 +2073,79 @@ class MeshtasticConnection:
         except Exception as exc:  # noqa: BLE001
             logger.debug("Could not load persisted scheduled messages (ignored): %s", exc)
     def _save_messages(self) -> None:
-        """Persist the current message buffer to disk (best-effort)."""
+        """Persist the current message buffer to disk (best-effort).
+
+        Archives messages older than 7 days to date-based files and keeps recent
+        messages in the main messages.json file for fast access.
+        """
         try:
             os.makedirs(_DATA_DIR, exist_ok=True)
-            # Snapshot under lock so the writer sees a consistent list, then
-            # release before the (slow) disk write. The _persist_lock guards
-            # against concurrent reads/writes to the same file.
+            os.makedirs(_MESSAGES_ARCHIVE_DIR, exist_ok=True)
+
+            # Snapshot under lock so the writer sees a consistent list
             with self._msg_lock:
                 snapshot = list(self._messages)
-            self._write_json(snapshot, _MESSAGES_FILE)
+
+            if not snapshot:
+                return
+
+            # Split messages into recent (last 7 days) and old (archived)
+            now = time.time()
+            seven_days_ago = now - (7 * 86400)
+            recent_messages = []
+            old_messages_by_date = {}
+
+            for msg in snapshot:
+                msg_time = msg.get("timestamp", now)
+                if msg_time >= seven_days_ago:
+                    recent_messages.append(msg)
+                else:
+                    # Group old messages by date
+                    msg_date = time.strftime("%Y-%m-%d", time.localtime(msg_time))
+                    if msg_date not in old_messages_by_date:
+                        old_messages_by_date[msg_date] = []
+                    old_messages_by_date[msg_date].append(msg)
+
+            # Save recent messages inside the persist_lock we are about to hold
+            # for the archive loop. Using _write_json_no_lock avoids acquiring
+            # _persist_lock a second time (which would deadlock if _write_json
+            # ran concurrently on another thread still holding the lock).
+
+            # Archive old messages by date with deduplication and write recent
+            # messages — all under a single _persist_lock acquisition so there
+            # is no window between the two writes.
+            with self._persist_lock:
+                self._write_json_no_lock(recent_messages, _MESSAGES_FILE)
+                for date_str, date_messages in old_messages_by_date.items():
+                    archive_file = os.path.join(_MESSAGES_ARCHIVE_DIR, f"messages_{date_str}.json")
+                    # Load existing archived messages for this date
+                    existing = []
+                    if os.path.exists(archive_file):
+                        try:
+                            with open(archive_file, encoding="utf-8") as fh:
+                                existing = json.load(fh)
+                            if not isinstance(existing, list):
+                                existing = []
+                        except Exception:
+                            existing = []
+
+                    # Deduplicate by ID before merging
+                    existing_ids = {msg.get("id") for msg in existing if msg.get("id")}
+                    new_to_add = [msg for msg in date_messages if msg.get("id") not in existing_ids]
+
+                    # Merge and save (without _write_json to avoid double-locking)
+                    tmp_path = archive_file + ".tmp"
+                    merged = existing + new_to_add
+                    with open(tmp_path, "w", encoding="utf-8") as fh:
+                        json.dump(merged, fh)
+                        fh.flush()
+                        os.fsync(fh.fileno())
+                    os.replace(tmp_path, archive_file)
+                    logger.debug("Archived %s messages to %s (total %s, added %s new)",
+                                len(date_messages), archive_file, len(merged), len(new_to_add))
+
+            logger.debug("Saved %s recent messages, archived %s old messages across %s dates",
+                        len(recent_messages), len(snapshot) - len(recent_messages), len(old_messages_by_date))
         except Exception as exc:  # pragma: no cover - defensive  # noqa: BLE001
             logger.debug("Could not persist messages (ignored): %s", exc)
     def schedule_message(self, execute_time: float, destination: str, text: str, channel: int) -> None:
@@ -2010,37 +2155,34 @@ class MeshtasticConnection:
 
 
     def _process_scheduled_messages(self, current_time: float) -> list[dict[str, Any]]:
-        """Remove and return any scheduled messages whose execute_time <= current_time."""
-        sent: list[dict[str, Any]] = []
+        """Remove and return dispatch info for any scheduled messages due now.
+
+        Returns a minimal list of dicts — each containing only the fields needed
+        by the main.py dispatch loop (text, to_id, channel). Actual message
+        storage happens inside _send_message_sync (called via send_message) so
+        messages appear in the UI feed without duplication.
+        """
         with self._scheduled_messages_lock:
             to_send = [
                 entry for entry in self._scheduled_messages
                 if entry[0] <= current_time
             ]
-            # Remove sent entries from the queue
+            # Remove due entries from the queue before returning so a crash in
+            # the caller doesn't re-queue the same messages on the next tick.
             self._scheduled_messages = [
                 entry for entry in self._scheduled_messages
                 if entry[0] > current_time
             ]
-            for execute_time, destination, text, channel, _ in to_send:
-                sent.append({
-                    "from_id": None,
-                    "to_id": destination,
-                    "text": text,
-                    "channel": channel,
-                    "outgoing": True,
-                    "conversation": f"sch:{execute_time}",
-                    "is_dm": destination is not None and destination != "",
-                    "timestamp": int(execute_time),
-                    "ack_status": "sending",
-                    "packet_id": None,
-                })
-                # Actually send the message
-                # Note: we can't await here since we're in a sync method,
-                # but we schedule it via asyncio
             if to_send:
                 self._schedule_save(self._scheduled_messages, _SCHEDULED_MESSAGES_FILE)
-        return sent
+
+        # Return only the dispatch info the caller needs. _send_message_sync
+        # (invoked via conn.send_message) creates and appends the canonical
+        # message entry to self._messages, so we must NOT do that here too.
+        return [
+            {"text": text, "to_id": destination, "channel": channel}
+            for execute_time, destination, text, channel, *_ in to_send
+        ]
 
     # ----------------------------------------------------------------
     # Waypoint helpers
@@ -2228,6 +2370,19 @@ class MeshtasticConnection:
                     fh.flush()
                     os.fsync(fh.fileno())
                 os.replace(tmp_path, path)
+        except Exception as exc:  # pragma: no cover - defensive  # noqa: BLE001
+            logger.debug("Persist write failed (ignored): %s", exc)
+
+    def _write_json_no_lock(self, snapshot, path: str) -> None:
+        """Write `snapshot` as JSON to `path` without internal locking (caller must hold _persist_lock)."""
+        try:
+            os.makedirs(_DATA_DIR, exist_ok=True)
+            tmp_path = path + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as fh:
+                json.dump(snapshot, fh)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp_path, path)
         except Exception as exc:  # pragma: no cover - defensive  # noqa: BLE001
             logger.debug("Persist write failed (ignored): %s", exc)
 
@@ -2611,10 +2766,47 @@ class MeshtasticConnection:
         except Exception as exc:  # pragma: no cover - defensive  # noqa: BLE001
             logger.debug("Error capturing neighbor info (ignored): %s", exc)
 
-    def _get_messages_sync(self) -> list[dict[str, Any]]:
+    def _get_messages_sync(self, load_archived: bool = False) -> list[dict[str, Any]]:
+        """Return messages from the in-memory buffer, optionally including archived messages."""
         with self._msg_lock:
             messages = list(self._messages)
-            logger.debug("Returning %d messages from store", len(messages))
+
+        if load_archived:
+            # Load archived messages from date-based files with persist_lock to prevent race conditions
+            archived_messages = []
+            try:
+                with self._persist_lock:
+                    if os.path.exists(_MESSAGES_ARCHIVE_DIR):
+                        for filename in sorted(os.listdir(_MESSAGES_ARCHIVE_DIR)):
+                            if filename.endswith('.json'):
+                                filepath = os.path.join(_MESSAGES_ARCHIVE_DIR, filename)
+                                try:
+                                    with open(filepath, encoding="utf-8") as fh:
+                                        data = json.load(fh)
+                                    if isinstance(data, list):
+                                        archived_messages.extend(data)
+                                except Exception as exc:
+                                    logger.debug("Could not load archive file %s (ignored): %s", filename, exc)
+            except Exception as exc:
+                logger.debug("Could not load archived messages (ignored): %s", exc)
+
+            # Combine: archived + in-memory, removing duplicates by ID
+            all_messages = archived_messages + messages
+            seen_ids = set()
+            unique_messages = []
+            for msg in all_messages:
+                msg_id = msg.get("id")
+                if msg_id and msg_id not in seen_ids:
+                    seen_ids.add(msg_id)
+                    unique_messages.append(msg)
+                elif not msg_id:
+                    unique_messages.append(msg)
+
+            logger.debug("Returning %d messages (in-memory: %d, archived: %d)",
+                        len(unique_messages), len(messages), len(archived_messages))
+            return unique_messages
+        else:
+            logger.debug("Returning %d messages from in-memory store", len(messages))
             return messages
 
     def _is_interface_healthy(self) -> bool:
@@ -2868,6 +3060,7 @@ class MeshtasticConnection:
         with self._traceroutes_lock:
             traceroutes_snapshot = dict(self._traceroutes)
 
+        newly_discovered: list[str] = []
         with self._nodes_lock:
             cached = {n.get("id"): n for n in self._nodes if n.get("id")}
             for node_id, node_data in nodes_raw.items():
@@ -2934,7 +3127,19 @@ class MeshtasticConnection:
                     prev_lng = prev.get("longitude")
                     prev_alt = prev.get("altitude")
                     prev_fix = prev.get("last_position_fix")
+                    prev_traceroute = prev.get("traceroute")
                     cached[node_id].update(entry)
+                    # Restore preserved position and traceroute data
+                    if prev_lat is not None:
+                        cached[node_id]["latitude"] = prev_lat
+                    if prev_lng is not None:
+                        cached[node_id]["longitude"] = prev_lng
+                    if prev_alt is not None:
+                        cached[node_id]["altitude"] = prev_alt
+                    if prev_fix is not None:
+                        cached[node_id]["last_position_fix"] = prev_fix
+                    if prev_traceroute is not None:
+                        cached[node_id]["traceroute"] = prev_traceroute
                     # Last-known-position retention: a node that loses GPS (or
                     # stops reporting) sends position=None. Instead of dropping
                     # the fix and making the marker vanish from the map, keep
@@ -2963,67 +3168,97 @@ class MeshtasticConnection:
                         entry["last_position_fix"] = int(time.time())
                     cached[node_id] = entry
                     result.append(entry)
-
-                    # Auto Responder Logic
-                    self_num = getattr(getattr(self._interface, "myInfo", None), "my_node_num", None)
-                    self_id = ("!" + format(self_num, "08x")) if self_num is not None else None
-                    if node_id != self_id and self._config and getattr(self._config, "auto_responder_enabled", False):
-                        msg = getattr(self._config, "auto_responder_message", "")
-                        if msg:
-                            logger.info("Auto-responder triggered: Discovered new node %s", node_id)
-                            # Run in a separate thread to avoid blocking the sync loop
-                            # and to respect lock ordering (cannot acquire _lock while holding _nodes_lock).
-                            import threading
-                            t = threading.Thread(
-                                target=self._send_message_sync,
-                                args=(msg, node_id, 0),
-                                kwargs={"want_ack": False},
-                                daemon=True
-                            )
-                            t.start()
-
-                    # Auto Traceroute Logic — dispatch a traceroute immediately when a new node is discovered
-                    if node_id != self_id and self._config and getattr(self._config, "auto_traceroute_enabled", False):
-                        # Quick pre-check to avoid spawning threads when the queue is
-                        # saturated. We cannot acquire _lock while holding _nodes_lock,
-                        # so the authoritative (locked) cap check happens in the thread.
-                        if len(self._pending_traceroute_dests) >= _MAX_PENDING_TRACEROUTES:
-                            logger.debug("Skipping auto-traceroute for %s: queue full", node_id)
-                            continue
-                        logger.info("Auto-traceroute triggered: Discovered new node %s", node_id)
-                        # Run in a separate thread to avoid blocking the sync loop
-                        # and to respect lock ordering (cannot acquire _lock while
-                        # holding _nodes_lock). Register the destination in the
-                        # pending queue (deduped, bounded) so its RouteDiscovery
-                        # reply is attributed to it and not to a manual request.
-                        def _auto_traceroute_thread(dest: str) -> None:
-                            with self._lock:
-                                if dest in self._pending_traceroute_dests:
-                                    logger.debug("Skipping auto-traceroute for %s: already pending", dest)
-                                    return
-                                if len(self._pending_traceroute_dests) >= _MAX_PENDING_TRACEROUTES:
-                                    logger.debug("Skipping auto-traceroute for %s: queue full", dest)
-                                    return
-                                self._pending_traceroute_dests.append(dest)
-                            try:
-                                self._request_traceroute_sync(dest)
-                            finally:
-                                with self._lock, contextlib.suppress(ValueError):
-                                    self._pending_traceroute_dests.remove(dest)
-
-                        import threading
-                        t = threading.Thread(
-                            target=_auto_traceroute_thread,
-                            args=(node_id,),
-                            daemon=True
-                        )
-                        t.start()
+                    newly_discovered.append(node_id)
 
             # Merge persisted traceroute results back onto their nodes so a
             # previously-discovered route is shown even before (or without)
             # a fresh traceroute request this session. Nodes that only exist
             # in the persisted traceroute store (evicted from the radio's
             # bounded node DB, or never surfaced in a poll) are re-injected
+            # into the returned array with minimal metadata.
+            persisted = {n["id"]: n for n in self._nodes if n.get("id")}
+            for node_id, tr in traceroutes_snapshot.items():
+                if not tr or tr.get("timeout"):
+                    continue
+                node = persisted.get(node_id)
+                if node:
+                    if not node.get("traceroute"):
+                        node["traceroute"] = tr
+                else:
+                    synthetic = {
+                        "id": node_id,
+                        "long_name": node_id,
+                        "short_name": node_id[-4:] if len(node_id) > 4 else node_id,
+                        "hw_model": "",
+                        "last_heard": None,
+                        "snr": None,
+                        "rssi": None,
+                        "hops_away": None,
+                        "latitude": None,
+                        "longitude": None,
+                        "altitude": None,
+                        "traceroute": tr,
+                    }
+                    self._nodes.append(synthetic)
+                    persisted[node_id] = synthetic
+                    result.append(synthetic)
+
+        # Trigger auto-responder and auto-traceroute for newly discovered nodes
+        # OUTSIDE _nodes_lock to preserve lock hierarchy and avoid holding locks
+        # during thread initialization.
+        if newly_discovered:
+            with self._lock:
+                _iface_snap = self._interface
+            self_num = getattr(getattr(_iface_snap, "myInfo", None), "my_node_num", None) if _iface_snap else None
+            self_id = ("!" + format(self_num, "08x")) if self_num is not None else None
+
+            for node_id in newly_discovered:
+                if node_id == self_id:
+                    continue
+
+                # Auto Responder Logic
+                if self._config and getattr(self._config, "auto_responder_enabled", False):
+                    msg = getattr(self._config, "auto_responder_message", "")
+                    if msg:
+                        logger.info("Auto-responder triggered: Discovered new node %s", node_id)
+                        import threading
+                        t = threading.Thread(
+                            target=self._send_message_sync,
+                            args=(msg, node_id, 0),
+                            kwargs={"want_ack": False},
+                            daemon=True,
+                        )
+                        t.start()
+
+                # Auto Traceroute Logic
+                if self._config and getattr(self._config, "auto_traceroute_enabled", False):
+                    if len(self._pending_traceroute_dests) >= _MAX_PENDING_TRACEROUTES:
+                        logger.debug("Skipping auto-traceroute for %s: queue full", node_id)
+                        continue
+                    logger.info("Auto-traceroute triggered: Discovered new node %s", node_id)
+
+                    def _auto_traceroute_thread(dest: str) -> None:
+                        with self._lock:
+                            if dest in self._pending_traceroute_dests:
+                                logger.debug("Skipping auto-traceroute for %s: already pending", dest)
+                                return
+                            if len(self._pending_traceroute_dests) >= _MAX_PENDING_TRACEROUTES:
+                                logger.debug("Skipping auto-traceroute for %s: queue full", dest)
+                                return
+                            self._pending_traceroute_dests.append(dest)
+                        try:
+                            self._request_traceroute_sync(dest)
+                        finally:
+                            with self._lock, contextlib.suppress(ValueError):
+                                self._pending_traceroute_dests.remove(dest)
+
+                    import threading
+                    t = threading.Thread(
+                        target=_auto_traceroute_thread,
+                        args=(node_id,),
+                        daemon=True,
+                    )
+                    t.start()
             # as minimal stale entries so the topology/map can still draw
             # their discovered links instead of silently dropping them.
             for tid, rec in traceroutes_snapshot.items():
@@ -3085,7 +3320,7 @@ class MeshtasticConnection:
 
         return result
 
-    def _read_channels_from_interface(self) -> list[dict[str, Any]]:
+    def _read_channels_from_interface(self, interface: Any | None = None) -> list[dict[str, Any]]:
         """Read the channel list straight from the connected node.
 
         Returns every channel slot the radio knows about. Names are sourced
@@ -3098,7 +3333,7 @@ class MeshtasticConnection:
         Disabled slots are skipped (role == DISABLED) except slot 0, which is
         always present as the PRIMARY channel even when unnamed.
         """
-        iface = self._interface
+        iface = interface if interface is not None else self._interface
         if iface is None:
             return []
 
@@ -3173,37 +3408,43 @@ class MeshtasticConnection:
         return result
 
     def _get_channels_sync(self) -> list[dict[str, Any]]:
-        # Return cached channels if available.
-        if self._channels_lock.acquire(blocking=False):
-            try:
-                if self._channels:
-                    return self._channels
-            finally:
-                self._channels_lock.release()
+        # Return cached channels if available — no I/O needed.
+        with self._channels_lock:
+            if self._channels:
+                return list(self._channels)
 
-        # Fallback: fetch directly from interface if cache is empty.
+        # Cache is empty: snapshot the interface reference under _lock, then
+        # release the lock BEFORE reading from the interface. Holding _lock
+        # during radio I/O would block the health probe and other polling threads
+        # for the full duration of the channel read (same pattern as traceroute).
         with self._lock:
             if not self._connected or self._interface is None:
                 return []
+            iface = self._interface
 
-            result = self._read_channels_from_interface()
+        result = self._read_channels_from_interface(iface)
 
-            # Cache the result for future calls.
-            with self._channels_lock:
-                self._channels = result
+        # Cache the result so future calls are served from memory.
+        with self._channels_lock:
+            self._channels = result
 
-            return result
+        return result
 
     def _refresh_channels_sync(self) -> list[dict[str, Any]]:
         """Read the channel list straight from the node and replace the cache.
 
         Unlike ``_get_channels_sync`` (which returns the cache when non-empty),
         this always re-reads from the interface so callers can force a refresh.
+        Interface is snapshotted under _lock and then released before the read
+        to avoid holding _lock during blocking I/O.
         """
         with self._lock:
             if not self._connected or self._interface is None:
-                return list(self._channels)
-            result = self._read_channels_from_interface()
+                with self._channels_lock:
+                    return list(self._channels)
+            iface = self._interface
+
+        result = self._read_channels_from_interface(iface)
 
         with self._channels_lock:
             self._channels = result
@@ -3329,7 +3570,7 @@ class MeshtasticConnection:
             logger.error("Failed to send MQTT proxy message to radio: %s", exc)
             return False
 
-    def _request_traceroute_sync(self, destination: str) -> None:
+    def _request_traceroute_sync(self, destination: str) -> bool:
         # Take a snapshot of the interface under the lock, then release it
         # BEFORE calling sendTraceRoute. sendTraceRoute blocks internally
         # waiting for the firmware RouteDiscovery ack (can take 30 s+);

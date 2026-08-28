@@ -1043,13 +1043,28 @@ export class MapManager {
       const segments = [];
 
       // Forward path: self → intermediate hops → responding node.
-      const forward = [this._selfId, ...(route.route || []).map(toNodeId)];
-      if (route.from_id) forward.push(route.from_id);
+      // The route array contains the intermediate hops, we need to add self at start and target at end
+      const forward = [...(route.route || []).map(toNodeId)];
+      // Only add self at start if not already in route (some firmware versions include it)
+      if (!forward.includes(this._selfId)) {
+        forward.unshift(this._selfId);
+      }
+      // Add the target node (from_id) at the end if not already present
+      if (route.from_id && !forward.includes(route.from_id)) {
+        forward.push(route.from_id);
+      }
       segments.push({ path: forward, label: `Traceroute → ${id}` });
 
       // Return path (if the device reported one).
       if (route.route_back && route.route_back.length) {
-        const back = [route.from_id, ...(route.route_back || []).map(toNodeId), this._selfId];
+        const back = [...(route.route_back || []).map(toNodeId)];
+        // Build the return path: target → intermediate hops → self
+        if (!back.includes(route.from_id)) {
+          back.unshift(route.from_id);
+        }
+        if (!back.includes(this._selfId)) {
+          back.push(this._selfId);
+        }
         segments.push({ path: back, label: `Traceroute ← ${id}` });
       }
 

@@ -53,6 +53,7 @@ import { escapeHtml, haversineKm, formatDistance, buildKml, buildGpx, downloadFi
    nodeFilter:     '',       // free-text filter for the Nodes tab
    signalFilter:   '',       // signal-strength filter for the Nodes tab
    activeConversation: 'ch:0', // currently-open thread (ch:<n> or dm:<nodeId>)
+   pendingPositionRequests: new Set(), // node IDs with pending position requests
    messageFilter:    '',       // free-text filter for message history
    conversations:  {},       // key -> { key, name, kind, unread }
    messagesByConv: {},       // key -> [message objects], persisted across polls
@@ -413,8 +414,13 @@ function renderNodesGrid(nodes) {
           const match = state.nodes.find(nn => nn.id === id);
           return escapeHtml(match ? (match.short_name || match.long_name || id) : id);
         };
+        // The route array contains intermediate hops between self and the target
+        // Build the full path: self → intermediate hops → target node
         const forward = (tr.route || []).map(formatHop);
-        if (tr.from_id) forward.push(escapeHtml(state.nodes.find(n => n.id === tr.from_id)?.short_name || tr.from_id));
+        // Only add the target node if it's not already in the route (some firmware versions include it)
+        if (tr.from_id && !forward.includes(tr.from_id)) {
+          forward.push(escapeHtml(state.nodes.find(n => n.id === tr.from_id)?.short_name || tr.from_id));
+        }
         const pathStr = forward.length
           ? `<strong>${escapeHtml(state.selfId || 'Self')}</strong> → ${forward.join(' → ')}`
           : 'No route discovered';
@@ -482,6 +488,14 @@ function renderNodesGrid(nodes) {
           <div class="metric-value ${hasGps ? 'good' : 'neutral'}" style="font-size:12px">${hasGps ? '✓ Fix' : 'No fix'}</div>
         </div>
         <div class="metric-item">
+          <div class="metric-label">Role</div>
+          <div class="metric-value neutral" style="font-size:12px">${node.role || 'CLIENT'}</div>
+        </div>
+        <div class="metric-item">
+          <div class="metric-label">Last Heard</div>
+          <div class="metric-value neutral" style="font-size:12px">${heardText}</div>
+        </div>
+        <div class="metric-item">
           <div class="metric-label">Temp</div>
           <div class="metric-value neutral" style="font-size:12px">${tempText}</div>
         </div>
@@ -506,7 +520,7 @@ function renderNodesGrid(nodes) {
       </div>` : ''}
       <div class="node-card-actions">
         <button class="action-btn" data-action="traceroute" data-node="${escapeHtml(node.id)}">Traceroute</button>
-        <button class="action-btn" data-action="position"   data-node="${escapeHtml(node.id)}">Req. Position</button>
+        <button class="action-btn ${state.pendingPositionRequests.has(node.id) ? 'action-btn-pending' : ''}" data-action="position"   data-node="${escapeHtml(node.id)}">${state.pendingPositionRequests.has(node.id) ? '⏳ Requesting...' : 'Req. Position'}</button>
         <button class="action-btn" data-action="message"    data-node="${escapeHtml(node.id)}">Message</button>
         <button class="action-btn" data-action="diagnostics" data-node="${escapeHtml(node.id)}" title="Per-node diagnostics (2.8)">Diagnostics</button>
         <button class="action-btn" data-action="gpx" data-node="${escapeHtml(node.id)}" title="Download this node's GPS track as GPX">GPX</button>
@@ -547,10 +561,34 @@ async function handleNodeCardAction(event) {
     }
   } else if (action === 'position') {
     try {
+      // Add loading state to the button
+      btn.disabled = true;
+      btn.textContent = 'Requesting...';
+      
+      // Mark as pending position request
+      state.pendingPositionRequests.add(nodeId);
+      
       await requestPosition(nodeId);
       showToast(`Position request sent to ${nodeId}`, 'success');
+      
+      // Refresh nodes to show updated position if available
+      await pollData();
+      
+      // Remove from pending after a reasonable timeout (30 seconds)
+      setTimeout(() => {
+        state.pendingPositionRequests.delete(nodeId);
+        // Re-render if still on nodes view to update the indicator
+        if (document.getElementById('view-nodes')?.classList.contains('active')) {
+          renderNodesGrid(state.nodes);
+        }
+      }, 30000);
     } catch (err) {
       showToast(`Position request failed: ${err.message}`, 'error');
+      state.pendingPositionRequests.delete(nodeId);
+    } finally {
+      // Reset button state
+      btn.disabled = false;
+      btn.textContent = 'Req. Position';
     }
   } else if (action === 'message') {
     // Open (or focus) this node's Direct-Message thread on the dashboard.
@@ -1202,7 +1240,11 @@ function renderMessagesThread() {
   let hasMore = false;
   
   if (q) {
-    filtered = thread.filter(m =>
+    // When searching: first filter by time, then by search terms
+    const timeFiltered = thread.filter(m => (m.timestamp || (Date.now() / 1000)) >= cutoffTime);
+    const allLen = thread.length;
+    hasMore = timeFiltered.length < allLen;
+    filtered = timeFiltered.filter(m =>
       (m.text || '').toLowerCase().includes(q) ||
       (m.from_name || '').toLowerCase().includes(q)
     );
@@ -1228,6 +1270,16 @@ function renderMessagesThread() {
       renderMessagesThread();
     };
     list.appendChild(loadMoreBtn);
+  } else if (daysToShow > 0) {
+    // Show indicator that we've reached the oldest available messages
+    const oldestMsg = thread.length > 0 ? thread[0] : null;
+    const oldestDate = oldestMsg && oldestMsg.timestamp
+      ? new Date(oldestMsg.timestamp * 1000).toLocaleDateString()
+      : 'unknown';
+    const noMoreDiv = document.createElement('div');
+    noMoreDiv.className = 'messages-no-more';
+    noMoreDiv.textContent = `No more messages available (oldest from ${oldestDate})`;
+    list.appendChild(noMoreDiv);
   }
 
   if (filtered.length === 0) {

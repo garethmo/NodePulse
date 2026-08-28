@@ -2,6 +2,50 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.22.0] - 2026-08-28
+### Fixed
+- **Lock Hierarchy & Concurrency Deadlocks** — Resolved thread-blocking lock acquisition in `_get_nodes_sync`, `_read_channels_from_interface`, and background thread dispatches (auto-responder, traceroute) by executing thread creation outside `_nodes_lock` and snapshotting interface/message state safely under dedicated locks (`_lock`, `_msg_lock`).
+- **Terrain Service 503 Contract** — Updated `handle_terrain_coverage` in `routes.py` to return HTTP `503 Service Unavailable` when the terrain elevation service is disabled.
+- **Scheduled Message Tuple Handling** — Corrected queue element processing in `_process_scheduled_messages` to ensure scheduled messages dispatch cleanly without type errors.
+- **Topology Edge Synchronization** — Fixed traceroute and neighbor edge rendering in `topology.js` by explicitly setting `hidden: false` on edge initialization.
+- **Test Suite Signature Sync** — Synchronized `mock_connection.get_messages` signature in `tests/conftest.py` with production parameters (`load_archived`), ensuring 100% test pass rate across unit and E2E suites (516 tests passing).
+
+### Added
+- **Concurrency & Remediation Test Suite** — Added `TestStabilityRemediations` test class in `tests/unit/test_connection.py` covering background traceroutes, channel interface snapshotting, scheduled message processing, and atomic message persistence.
+
+## [1.21.8] - 2026-08-27
+### Added
+- **Enhanced message history** — Implemented hybrid message storage system: recent messages (last 7 days) kept in memory for fast access, older messages automatically archived to date-based JSON files in `messages_archive/`. In-memory buffer increased from 200 to 1000 messages for deeper history.
+- **Message history endpoint** — Added `load_archived=true` query parameter to `GET /api/messages` to load archived messages on demand, enabling unlimited message history access.
+- **UI history indication** — Added visual indicator showing when users have reached the oldest available messages in a conversation, displaying the date of the oldest message.
+
+## [1.21.7] - 2026-08-27
+### Fixed
+- **Message search pagination** — Fixed "Load previous days" button not appearing when searching messages. The search logic now properly checks for older messages before applying search filters, allowing users to expand the time window to find older matching messages.
+
+## [1.21.6] - 2026-08-27
+### Fixed
+- **Traceroute path construction** — Fixed traceroute path display on both node cards and map. The logic now properly handles different firmware versions that may or may not include self/target nodes in the route array, preventing duplicate nodes in the path and ensuring correct multi-hop path visualization. Added comprehensive unit tests for path construction logic.
+
+## [1.21.5] - 2026-08-24
+### Added
+- **Editable Security & Admin Keys in Remote Admin** — The Remote Admin view's **Security & Admin Keys** card now lets you manage a remote node's `admin_key` list: paste a base64 admin/public key and click **Add**, one-click add *this gateway's* public key (from the "keys for targets" strip), and remove any existing key with its ✕. Saving rewrites the target's full admin-key list over the radio (requires a reboot to take effect) — the workflow for granting the gateway or any other node admin rights on the target. `public_key` / `private_key` remain read-only identity chips.
+
+## [1.21.4] - 2026-08-24
+### Added
+- **Node role display in node cards** — The node's role (CLIENT, ROUTER, REPEATER, TRACKER, etc.) is now displayed in the metrics section of each node card in the Nodes view, making it easy to identify nodes serving special functions in the mesh network.
+- **Last heard metric in node cards** — Added "Last Heard" metric to node cards showing the relative time since the node was last heard from (e.g., "2m ago", "1h ago"), helping identify inactive or stale nodes.
+- **Position request visual feedback** — When requesting a node's position, the button now shows a loading state ("⏳ Requesting...") and automatically refreshes node data to show updated GPS coordinates when available. A timeout of 30 seconds is applied to the pending state.
+- **Device favorite integration** — When marking a node as a favorite in the UI, the addon now sends admin messages to the device to actually mark the node as favorite in the device's NodeDB. This makes communication with favorited nodes not count against hop limits (same behavior as the Meshtastic Android app).
+
+### Fixed
+- **Telegram node name display** — Fixed node name resolution in Telegram messages. The lookup logic now tries multiple key formats (integer node number, string node ID, string without `!`) to handle different meshtastic library versions. Added comprehensive debug logging and improved fallback to persistent node store. Telegram messages now show human-readable node names instead of node IDs.
+- **Traceroute data preservation** — Fixed traceroute data being lost during node data refreshes. The node update logic now preserves the `traceroute` field (including timeout markers) when merging fresh interface data, ensuring successful traceroute results override timeout entries correctly.
+- **Node name lookup fallback** — Improved node name resolution in message processing to handle cases where the live interface lookup fails by better utilizing the persistent node store with proper field name handling (`short_name`/`long_name`).
+
+### Changed
+- **Unit tests expanded** — Added comprehensive unit tests for node lookup logic, traceroute data preservation, and device favorite communication to prevent regression of the fixes.
+
 ## [1.21.3] - 2026-08-23
 ### Added
 - **Meshtastic 2.8 features surfaced in the Web UI** — the diagnostics, GPX, hops, signed-node, status-text and beacon capabilities (previously Telegram-only) are now in the dashboard:
