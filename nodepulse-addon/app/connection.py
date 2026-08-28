@@ -3045,7 +3045,11 @@ class MeshtasticConnection:
         from .remote_cache import load_remote_cache
         remote_cache = load_remote_cache()
 
-        result = []
+        result: list[dict[str, Any]] = []
+        # Track which node IDs were added from the live radio data so the
+        # stale re-injection loop below can correctly identify which persisted
+        # nodes are absent from the current poll and need restoring.
+        result_ids: set[str] = set()
 
         # Normalize a node identity (int or "!hex" string) to the canonical
         # "!xxxxxxxx" form used everywhere in the Web UI and our caches. The
@@ -3056,10 +3060,10 @@ class MeshtasticConnection:
             if raw is None:
                 return None
             if isinstance(raw, str):
-                s = raw.strip()
+                s = raw.strip().lower()
                 return s if s.startswith("!") else ("!" + s)
             try:
-                return "!" + format(int(raw), "08x")
+                return "!" + format(int(raw) & 0xFFFFFFFF, "08x")
             except Exception:  # noqa: BLE001
                 return None
 
@@ -3074,7 +3078,12 @@ class MeshtasticConnection:
 
         newly_discovered: list[str] = []
         with self._nodes_lock:
-            cached = {n.get("id"): n for n in self._nodes if n.get("id")}
+            cached = {}
+            for n in self._nodes:
+                nid = _norm_id(n.get("id"))
+                if nid:
+                    n["id"] = nid
+                    cached[nid] = n
             for node_id, node_data in nodes_raw.items():
                 node_id = _norm_id(node_id)
                 if not node_id:
@@ -3174,33 +3183,55 @@ class MeshtasticConnection:
                     elif prev_alt is not None:
                         cached[node_id]["altitude"] = prev_alt
                     result.append(cached[node_id])
+                    result_ids.add(node_id)
                 else:
                     entry["traceroute"] = None
                     if entry["latitude"] is not None or entry["longitude"] is not None:
                         entry["last_position_fix"] = int(time.time())
                     cached[node_id] = entry
                     result.append(entry)
+                    result_ids.add(node_id)
                     newly_discovered.append(node_id)
+
+            # Re-inject nodes the radio no longer reports (its bounded node DB
+            # evicts the oldest heard nodes once full). Any node we have
+            # persisted but which is absent from this poll is restored from our
+            # durable cache and flagged "stale" so the UI can show it faded and
+            # we retain its last-known position. Freshly-present nodes are never
+            # marked stale.
+            # Any node the radio reported this cycle is already in result_ids.
+            # Nodes missing from result_ids are either freshly-evicted by the
+            # radio's bounded DB or were never seen this session. Re-inject them
+            # as stale so the UI keeps showing them rather than silently dropping
+            # them. This is the primary fix for the "only 250 shown" issue: the
+            # previous guard (`nid not in cached`) was always False because every
+            # persisted node was already in `cached` from the snapshot at the top
+            # of this block.
+            for node in list(self._nodes):
+                nid = _norm_id(node.get("id"))
+                if not nid or nid in result_ids:
+                    # Already emitted from live radio data — skip.
+                    continue
+                # Evicted / absent from radio this cycle: restore from store.
+                restored = dict(node)
+                restored["stale"] = True
+                cached[nid] = restored
+                result.append(restored)
 
             # Merge persisted traceroute results back onto their nodes so a
             # previously-discovered route is shown even before (or without)
-            # a fresh traceroute request this session. Nodes that only exist
-            # in the persisted traceroute store (evicted from the radio's
-            # bounded node DB, or never surfaced in a poll) are re-injected
-            # into the returned array with minimal metadata.
-            persisted = {n["id"]: n for n in self._nodes if n.get("id")}
-            for node_id, tr in traceroutes_snapshot.items():
-                if not tr or tr.get("timeout"):
+            # a fresh traceroute request this session.
+            for tid, rec in traceroutes_snapshot.items():
+                tid = _norm_id(tid)
+                if not tid or not rec:
                     continue
-                node = persisted.get(node_id)
-                if node:
-                    if not node.get("traceroute"):
-                        node["traceroute"] = tr
+                if tid in cached:
+                    cached[tid]["traceroute"] = rec
                 else:
                     synthetic = {
-                        "id": node_id,
-                        "long_name": node_id,
-                        "short_name": node_id[-4:] if len(node_id) > 4 else node_id,
+                        "id": tid,
+                        "long_name": tid,
+                        "short_name": tid[-4:] if len(tid) > 4 else tid,
                         "hw_model": "",
                         "last_heard": None,
                         "snr": None,
@@ -3209,11 +3240,13 @@ class MeshtasticConnection:
                         "latitude": None,
                         "longitude": None,
                         "altitude": None,
-                        "traceroute": tr,
+                        "traceroute": rec,
+                        "stale": True,
                     }
-                    self._nodes.append(synthetic)
-                    persisted[node_id] = synthetic
+                    cached[tid] = synthetic
                     result.append(synthetic)
+
+            self._nodes = list(cached.values())
 
         # Trigger auto-responder and auto-traceroute for newly discovered nodes
         # OUTSIDE _nodes_lock to preserve lock hierarchy and avoid holding locks
@@ -3274,43 +3307,6 @@ class MeshtasticConnection:
                         daemon=True,
                     )
                     t.start()
-            # as minimal stale entries so the topology/map can still draw
-            # their discovered links instead of silently dropping them.
-            for tid, rec in traceroutes_snapshot.items():
-                if not rec:
-                    continue
-                if tid in cached:
-                    cached[tid]["traceroute"] = rec
-                else:
-                    cached[tid] = {
-                        "id": tid,
-                        "traceroute": rec,
-                        "stale": True,
-                        "long_name": "",
-                        "short_name": "",
-                    }
-                    result.append(cached[tid])
-
-            # Re-inject nodes the radio no longer reports (its bounded node DB
-            # evicts the oldest heard nodes once full). Any node we have
-            # persisted but which is absent from this poll is restored from our
-            # durable cache and flagged "stale" so the UI can show it faded and
-            # we retain its last-known position. Freshly-present nodes are never
-            # marked stale.
-            # fresh_ids is the set of node IDs the radio actually reported this
-            # poll (not the union with our cache), so an evicted-but-cached node
-            # is correctly re-injected exactly once.
-            fresh_ids = {_norm_id(k) for k in nodes_raw}
-            for node in list(self._nodes):
-                nid = node.get("id")
-                if not nid or nid in fresh_ids:
-                    continue
-                restored = dict(node)
-                restored["stale"] = True
-                cached[nid] = restored
-                result.append(restored)
-
-            self._nodes = list(cached.values())
 
         # Inject extra fields from other caches into each node.
         with self._tags_lock:

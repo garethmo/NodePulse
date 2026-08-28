@@ -86,10 +86,12 @@ async def test_web_ui_last_heard_metric_display(async_page: Page, aio_server):
 
     # Check that node cards have metric items structure
     metric_items = async_page.locator(".metric-item")
-    await expect(metric_items).to_have_count.greater_than(0)
-    
+    # to_have_count() is a coroutine — use count() to get the value for comparison
+    metric_count = await metric_items.count()
+    assert metric_count > 0, f"Expected at least one .metric-item, found {metric_count}"
+
     # Check for Last Heard metric labels in all metric labels
-    all_metric_labels = async_page.locator(".metric-label").all_text_contents()
+    all_metric_labels = await async_page.locator(".metric-label").all_text_contents()
     last_heard_count = sum(1 for label in all_metric_labels if "Last Heard" in label)
     # At least some nodes should have last heard data (may be 0 in mock data)
     assert last_heard_count >= 0
@@ -111,7 +113,9 @@ async def test_web_ui_pending_position_requests_state(async_page: Page, aio_serv
     pending_buttons = async_page.locator(".action-btn-pending")
     # Initially should be 0 pending requests
     await expect(pending_buttons).to_have_count(0)
-    await expect(async_page.locator("#messages-thread-header")).to_be_visible(timeout=5000)
+    # Verify we are still on the nodes view (messages-thread-header belongs to the
+    # Messages view and would never be visible while the Nodes view is active)
+    await expect(async_page.locator("#view-nodes")).to_be_visible()
 
 async def test_web_ui_settings_tab(async_page: Page, aio_server):
     """Click the Settings tab and verify the connection status reflects the mock."""

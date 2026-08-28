@@ -1683,4 +1683,26 @@ class TestStabilityRemediations:
             conn._save_messages()
             assert mock_write.call_count == 1
 
+    def test_get_nodes_sync_reinjects_evicted_nodes_when_no_new_nodes(self):
+        conn = self._conn()
+        # Radio returns 1 node (already known to conn._nodes)
+        conn._interface.nodes = {
+            "!11111111": {"user": {"longName": "RadioNode", "shortName": "RN"}}
+        }
+        # conn._nodes has 2 nodes: 1 active from radio, 1 evicted/stale node
+        conn._nodes = [
+            {"id": "!11111111", "long_name": "RadioNode", "short_name": "RN"},
+            {"id": "!22222222", "long_name": "EvictedNode", "short_name": "EN"},
+        ]
+        with patch("app.remote_cache.load_remote_cache", return_value={}):
+            nodes = conn._get_nodes_sync()
+
+        # Should return BOTH nodes: radio node (live) and evicted node (marked stale)
+        assert len(nodes) == 2
+        ids = {n["id"] for n in nodes}
+        assert ids == {"!11111111", "!22222222"}
+        evicted = next(n for n in nodes if n["id"] == "!22222222")
+        assert evicted.get("stale") is True
+
+
 
