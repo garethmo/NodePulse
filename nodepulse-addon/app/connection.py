@@ -327,6 +327,7 @@ class MeshtasticConnection:
         # requests each be attributed to the right target instead of clobbering
         # a single shared slot.
         self._pending_traceroute_dests: list[str] = []
+        self._pending_traceroute_times: dict[str, float] = {}
 
         # Strong references to the in-flight traceroute dispatch Tasks so they
         # are never garbage-collected mid-flight (asyncio only keeps weak refs).
@@ -547,6 +548,7 @@ class MeshtasticConnection:
                 )
                 return False
             self._pending_traceroute_dests.append(destination)
+            self._pending_traceroute_times[destination] = time.time()
         logger.debug("Requesting traceroute to %s", destination)
         try:
             loop = asyncio.get_running_loop()
@@ -561,6 +563,8 @@ class MeshtasticConnection:
             finally:
                 with self._lock, contextlib.suppress(ValueError):
                     self._pending_traceroute_dests.remove(destination)
+                with self._lock, contextlib.suppress(KeyError):
+                    del self._pending_traceroute_times[destination]
         return True
 
     async def _traceroute_dispatch(self, destination: str) -> None:
@@ -601,6 +605,8 @@ class MeshtasticConnection:
                 # a double removal a no-op.
                 with self._lock, contextlib.suppress(ValueError):
                     self._pending_traceroute_dests.remove(destination)
+                with self._lock, contextlib.suppress(KeyError):
+                    del self._pending_traceroute_times[destination]
 
     async def request_position(self, destination: str) -> bool:
         """Request a fresh GPS position from a specific destination node."""
@@ -2030,7 +2036,7 @@ class MeshtasticConnection:
                                 if isinstance(data, list):
                                     archived_messages.extend(data)
                                     logger.debug("Loaded %s messages from archive %s", len(data), filename)
-                            except Exception as exc:
+                            except Exception as exc:  # noqa: BLE001
                                 logger.debug("Could not load archive file %s (ignored): %s", filename, exc)
 
                 # Then load recent messages
@@ -2126,7 +2132,7 @@ class MeshtasticConnection:
                                 existing = json.load(fh)
                             if not isinstance(existing, list):
                                 existing = []
-                        except Exception:
+                        except Exception:  # noqa: BLE001
                             existing = []
 
                     # Deduplicate by ID before merging
@@ -2570,15 +2576,6 @@ class MeshtasticConnection:
             from_num = packet.get("from")
             from_id = _node_id_from_num(from_num)
 
-            record = {
-                "from_id": from_id,
-                "route": route,
-                "snr_towards": [s / 4 for s in snr_towards],
-                "route_back": route_back,
-                "snr_back": [s / 4 for s in snr_back],
-                "timestamp": int(time.time()),
-            }
-
             # Store under the node this route belongs to. Prefer the node the
             # user asked about if we have a pending request; otherwise the
             # reply's origin. A re-request simply overwrites the previous result.
@@ -2592,15 +2589,30 @@ class MeshtasticConnection:
             # (e.g. when a timed-out request was already removed from the queue,
             # or when auto-traceroutes are in flight).
             target_id = from_id
+            rtt_ms = None
             with self._lock:
                 if from_id in self._pending_traceroute_dests:
                     self._pending_traceroute_dests.remove(from_id)
                 elif self._pending_traceroute_dests:
                     target_id = self._pending_traceroute_dests.pop(0)
 
+                queued_time = self._pending_traceroute_times.pop(target_id, None)
+                if queued_time is not None:
+                    rtt_ms = int((time.time() - queued_time) * 1000)
+
+            record = {
+                "from_id": from_id,
+                "route": route,
+                "snr_towards": [s / 4 for s in snr_towards],
+                "route_back": route_back,
+                "snr_back": [s / 4 for s in snr_back],
+                "rtt_ms": rtt_ms,
+                "timestamp": int(time.time()),
+            }
+
             logger.debug(
-                "Captured traceroute for %s (target=%s): route=%s route_back=%s",
-                from_id, target_id, route, route_back,
+                "Captured traceroute for %s (target=%s): route=%s route_back=%s rtt=%sms",
+                from_id, target_id, route, route_back, rtt_ms,
             )
 
             with self._nodes_lock:
@@ -2785,9 +2797,9 @@ class MeshtasticConnection:
                                         data = json.load(fh)
                                     if isinstance(data, list):
                                         archived_messages.extend(data)
-                                except Exception as exc:
+                                except Exception as exc:  # noqa: BLE001
                                     logger.debug("Could not load archive file %s (ignored): %s", filename, exc)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.debug("Could not load archived messages (ignored): %s", exc)
 
             # Combine: archived + in-memory, removing duplicates by ID
@@ -3246,11 +3258,14 @@ class MeshtasticConnection:
                                 logger.debug("Skipping auto-traceroute for %s: queue full", dest)
                                 return
                             self._pending_traceroute_dests.append(dest)
+                            self._pending_traceroute_times[dest] = time.time()
                         try:
                             self._request_traceroute_sync(dest)
                         finally:
                             with self._lock, contextlib.suppress(ValueError):
                                 self._pending_traceroute_dests.remove(dest)
+                            with self._lock, contextlib.suppress(KeyError):
+                                del self._pending_traceroute_times[dest]
 
                     import threading
                     t = threading.Thread(

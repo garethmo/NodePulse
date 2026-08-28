@@ -396,8 +396,8 @@ class TestTraceroutePathConstruction:
         route = [12345, 67890]  # intermediate hops as integers
         from_id = "!abcd1234"
         
-        # Simulate the formatting
-        formatHop = lambda n: '!' + format(n & 0xFFFFFFFF, '08x')
+        def formatHop(n):
+            return '!' + format(n & 0xFFFFFFFF, '08x')
         forward = [formatHop(n) for n in route]
         
         # Add target node only if not already present
@@ -414,7 +414,8 @@ class TestTraceroutePathConstruction:
         from_id = "!abcd1234"
         self_id = "!00000001"
         
-        formatHop = lambda n: '!' + format(n & 0xFFFFFFFF, '08x')
+        def formatHop(n):
+            return '!' + format(n & 0xFFFFFFFF, '08x')
         forward = [formatHop(n) for n in route]
         
         # Add self at start if not already present
@@ -437,7 +438,8 @@ class TestTraceroutePathConstruction:
         from_id = "!abcd1234"
         self_id = "!00000001"
         
-        formatHop = lambda n: '!' + format(n & 0xFFFFFFFF, '08x')
+        def formatHop(n):
+            return '!' + format(n & 0xFFFFFFFF, '08x')
         forward = [formatHop(n) for n in route]
         
         # Should not add self again since it's already present

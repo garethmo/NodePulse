@@ -1052,10 +1052,17 @@ body::before {
   border-radius: var(--radius-sm);
   font-size: 11px;
 }
-.node-card-traceroute .traceroute-path {
-  color: var(--text-teal);
-  margin: 2px 0;
-  line-height: 1.5;
+.node-card-traceroute .traceroute-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.node-card-traceroute .traceroute-stats {
+  display: flex;
+  gap: 8px;
+  font-size: 10px;
+  color: var(--text-secondary);
 }
 .node-card-traceroute .traceroute-time {
   color: var(--text-muted);
@@ -1066,6 +1073,50 @@ body::before {
   font-weight: 600;
   margin: 2px 0;
   line-height: 1.5;
+}
+.traceroute-table-container {
+  overflow-x: auto;
+  margin-bottom: 4px;
+}
+.traceroute-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  text-align: left;
+}
+.traceroute-table th {
+  color: var(--text-muted);
+  font-weight: 600;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border-subtle);
+  white-space: nowrap;
+}
+.traceroute-table td {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.traceroute-table tr:last-child td {
+  border-bottom: none;
+}
+.traceroute-table .hop-num {
+  color: var(--text-muted);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+}
+.traceroute-table .hop-node {
+  color: var(--text-teal);
+  font-weight: 500;
+}
+.traceroute-table .hop-rtt {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+}
+.traceroute-dir {
+  display: inline-block;
+  width: 14px;
+  text-align: center;
 }
 
 .node-track-toggle {

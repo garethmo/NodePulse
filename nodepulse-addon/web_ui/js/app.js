@@ -410,25 +410,80 @@ function renderNodesGrid(nodes) {
         </div>`;
       } else {
         const formatHop = (n) => {
+          if (n === 0xffffffff) return 'Unknown';
           const id = '!' + (n >>> 0).toString(16).padStart(8, '0');
           const match = state.nodes.find(nn => nn.id === id);
           return escapeHtml(match ? (match.short_name || match.long_name || id) : id);
         };
-        // The route array contains intermediate hops between self and the target
-        // Build the full path: self → intermediate hops → target node
-        const forward = (tr.route || []).map(formatHop);
-        // Only add the target node if it's not already in the route (some firmware versions include it)
-        if (tr.from_id && !forward.includes(tr.from_id)) {
-          forward.push(escapeHtml(state.nodes.find(n => n.id === tr.from_id)?.short_name || tr.from_id));
+
+        const targetIdNum = tr.from_id ? parseInt(tr.from_id.replace('!', ''), 16) : null;
+        const forwardIds = [...(tr.route || [])];
+        if (targetIdNum !== null && !forwardIds.includes(targetIdNum)) {
+           forwardIds.push(targetIdNum);
         }
-        const pathStr = forward.length
-          ? `<strong>${escapeHtml(state.selfId || 'Self')}</strong> → ${forward.join(' → ')}`
-          : 'No route discovered';
+        
+        let tableRows = '';
+        let hopIdx = 1;
+        const snrT = tr.snr_towards || [];
+        
+        // Self is implicit starting point
+        let prevName = escapeHtml(state.selfId || 'Self');
+        
+        for (let i = 0; i < forwardIds.length; i++) {
+           const currName = formatHop(forwardIds[i]);
+           const snrVal = snrT.length > i && snrT[i] != null ? snrT[i] : null;
+           const snrHtml = snrVal != null ? `<span class="snr-chip ${snrToValueClass(snrVal)}">${snrVal.toFixed(1)}</span>` : '—';
+           tableRows += `<tr><td class="hop-num">${hopIdx++}</td><td><span class="traceroute-dir" title="Forward">↗</span></td><td class="hop-node">${prevName} → ${currName}</td><td>${snrHtml}</td></tr>`;
+           prevName = currName;
+        }
+        
+        const backIds = [...(tr.route_back || [])];
+        const selfIdNum = state.selfId ? parseInt(state.selfId.replace('!', ''), 16) : null;
+        if (backIds.length > 0 && selfIdNum !== null && !backIds.includes(selfIdNum)) {
+           backIds.push(selfIdNum);
+        }
+        
+        const snrB = tr.snr_back || [];
+        for (let i = 0; i < backIds.length; i++) {
+           const currName = formatHop(backIds[i]);
+           const snrVal = snrB.length > i && snrB[i] != null ? snrB[i] : null;
+           const snrHtml = snrVal != null ? `<span class="snr-chip ${snrToValueClass(snrVal)}">${snrVal.toFixed(1)}</span>` : '—';
+           tableRows += `<tr><td class="hop-num">${hopIdx++}</td><td><span class="traceroute-dir" title="Return">↙</span></td><td class="hop-node">${prevName} → ${currName}</td><td>${snrHtml}</td></tr>`;
+           prevName = currName;
+        }
+
+        const tableHtml = tableRows ? `
+          <div class="traceroute-table-container">
+            <table class="traceroute-table">
+              <thead>
+                <tr>
+                  <th style="width:20px">#</th>
+                  <th style="width:20px"></th>
+                  <th>Path</th>
+                  <th>SNR (Rx)</th>
+                </tr>
+              </thead>
+              <tbody>${tableRows}</tbody>
+            </table>
+          </div>
+        ` : '<div class="traceroute-path">No route data</div>';
+
+        const rttTotal = tr.rtt_ms;
+        const totalHops = hopIdx - 1;
+        let rttStats = '';
+        if (rttTotal != null && totalHops > 0) {
+           const rttPerHop = Math.round(rttTotal / totalHops);
+           rttStats = `<span>⏱ ${rttTotal}ms RTT (~${rttPerHop}ms/hop)</span>`;
+        }
+
         tracerouteHtml = `
         <div class="node-card-traceroute">
-          <div class="metric-label">Traceroute</div>
-          <div class="traceroute-path">${pathStr}</div>
-          <div class="traceroute-time">${ago}</div>
+          <div class="traceroute-header">
+            <div class="metric-label">Traceroute</div>
+            <div class="traceroute-time">${ago}</div>
+          </div>
+          ${tableHtml}
+          ${rttStats || totalHops > 0 ? `<div class="traceroute-stats">${rttStats}<span>${totalHops} Hops</span></div>` : ''}
         </div>`;
       }
     }
