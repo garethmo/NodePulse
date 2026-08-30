@@ -120,6 +120,7 @@ NodePulse is a Home Assistant addon and custom integration that gives you deep v
 | 🔍 **Message Search Pagination** | Fixed "Load previous days" button not appearing when searching messages. Users can now expand the time window to find older matching messages |
 | 📜 **Enhanced Message History** | Hybrid storage system keeps 1000 recent messages in memory (up from 200) and automatically archives older messages to date-based files, providing unlimited message history access with "No more messages available" indicator showing oldest message date |
 | 🛡️ **Concurrency & Lock Safety (1.22.0)** | Strict lock hierarchy enforcement, deadlock-free background thread dispatching, snapshotted interface I/O, 503 terrain service contracts, and robust unit test coverage across all async pipelines |
+| 📍 **Robust Location Sync (1.23.0)** | Direct Home Assistant state machine injection bypassing cached property conflicts for instant `device_tracker` and `geo_location` coordinate resolution |
 
 ---
 

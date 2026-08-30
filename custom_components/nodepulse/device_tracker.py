@@ -19,7 +19,7 @@ from typing import Any, Dict, Optional
 from homeassistant.components.device_tracker import SourceType
 from homeassistant.components.device_tracker.config_entry import TrackerEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -56,7 +56,7 @@ async def async_setup_entry(
         hass,
         async_add_entities,
         should_create=_has_gps_fix,
-        make_entities=lambda node: NodeTracker(coordinator, entry, node["id"]),
+        make_entities=lambda node: [NodeTracker(coordinator, entry, node["id"])],
     )
 
 
@@ -110,15 +110,17 @@ class NodeTracker(CoordinatorEntity, TrackerEntity):
     def _get_node(self) -> Optional[Dict[str, Any]]:
         return self.coordinator.get_node(self._node_id)
 
-    @property
-    def latitude(self) -> Optional[float]:
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator."""
         node = self._get_node()
-        return node.get("latitude") if node else None
-
-    @property
-    def longitude(self) -> Optional[float]:
-        node = self._get_node()
-        return node.get("longitude") if node else None
+        if node:
+            self._attr_latitude = node.get("latitude")
+            self._attr_longitude = node.get("longitude")
+        else:
+            self._attr_latitude = None
+            self._attr_longitude = None
+        super()._handle_coordinator_update()
 
     @property
     def location_accuracy(self) -> int:

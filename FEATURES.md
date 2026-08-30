@@ -17,6 +17,7 @@ The addon runs as a Home Assistant addon (Docker container) serving a REST API a
 | **Pubsub listener** | Captures all inbound packets via `meshtastic.receive` — text messages, traceroute replies, position replies, neighbor info, telemetry |
 | **Single-TCP-slot handling** | Detect and log the Meshtastic firmware's single-client limit with a clear upgrade path (serial/BLE for the official integration, TCP slot for NodePulse) |
 | **Thread-safe Lock Architecture (1.22.0+)** | Deadlock-free concurrency model enforcing strict `_lock` → `_nodes_lock` ordering, snapshotting interface and message state during I/O operations, and thread-safe scheduled message processing |
+| **Robust Location Sync (1.23.0+)** | Direct Home Assistant state machine injection bypassing cached property conflicts for instant `device_tracker` and `geo_location` coordinate resolution |
 
 ### REST API
 

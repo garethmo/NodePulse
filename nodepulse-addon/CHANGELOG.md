@@ -2,6 +2,11 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.23.0] - 2026-08-30
+### Fixed
+- **Home Assistant Location State** — Fixed an integration compatibility issue with Home Assistant Core 2024+ where `device_tracker` and `geo_location` entities remained in an "Unknown" state despite having valid GPS coordinates. Removed Python `@property` overrides for `latitude`/`longitude` which conflict with the `propcache.api.cached_property` metaclass, replacing them with the standard `_attr_latitude` and `_attr_longitude` update pattern.
+- **Location Entity Registration** — Fixed a `TypeError` crash (`object is not iterable`) in `NodeDiscovery.run` that prevented location entities from registering with the Home Assistant state machine. Ensured the entity factories correctly return an iterable list.
+
 ## [1.22.0] - 2026-08-28
 ### Fixed
 - **Lock Hierarchy & Concurrency Deadlocks** — Resolved thread-blocking lock acquisition in `_get_nodes_sync`, `_read_channels_from_interface`, and background thread dispatches (auto-responder, traceroute) by executing thread creation outside `_nodes_lock` and snapshotting interface/message state safely under dedicated locks (`_lock`, `_msg_lock`).

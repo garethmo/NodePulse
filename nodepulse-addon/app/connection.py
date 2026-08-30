@@ -94,6 +94,11 @@ _TRACEROUTE_SAVE_DEBOUNCE = 1.0
 # "dispatched": false) instead of being accepted and frozen.
 _MAX_PENDING_TRACEROUTES = 8
 
+# Minimum seconds between two traceroute requests to the same destination.
+# Prevents hammering the mesh with retries while still allowing a manual
+# re-request without waiting for the full firmware timeout (up to 300 s).
+_TRACEROUTE_COOLDOWN_S = 30
+
 # Debounce for persisting the node list. Node updates arrive with every poll,
 # so we coalesce them into at most one disk write per window.
 _NODE_SAVE_DEBOUNCE = 5.0
@@ -534,12 +539,19 @@ class MeshtasticConnection:
         Returns ``False`` when the pending queue is full so a burst of requests
         cannot pile up an unbounded number of background tasks/threads.
         """
-        # Register the request (deduped, bounded) before spawning the task so a
-        # RouteDiscovery reply can be matched to it even if the dispatch task is
-        # still queued behind the serialization lock.
+        # Register the request before spawning the task so a RouteDiscovery
+        # reply can be matched to it even if the dispatch task is still queued.
+        # Gate on a per-destination cooldown rather than a hard "already pending"
+        # block, so the user can retry within 30 s without waiting for the full
+        # 300 s firmware timeout.
         with self._lock:
-            if destination in self._pending_traceroute_dests:
-                logger.debug("Traceroute to %s already pending — skipping duplicate", destination)
+            last_dispatch = self._pending_traceroute_times.get(destination, 0)
+            elapsed = time.time() - last_dispatch
+            if destination in self._pending_traceroute_dests and elapsed < _TRACEROUTE_COOLDOWN_S:
+                logger.debug(
+                    "Traceroute to %s already pending and within cooldown (%.0fs elapsed) — skipping",
+                    destination, elapsed,
+                )
                 return True
             if len(self._pending_traceroute_dests) >= _MAX_PENDING_TRACEROUTES:
                 logger.warning(
@@ -547,6 +559,10 @@ class MeshtasticConnection:
                     len(self._pending_traceroute_dests), destination,
                 )
                 return False
+            # Remove any stale entry for this destination before re-adding so
+            # the list doesn't accumulate duplicates on a retry.
+            with contextlib.suppress(ValueError):
+                self._pending_traceroute_dests.remove(destination)
             self._pending_traceroute_dests.append(destination)
             self._pending_traceroute_times[destination] = time.time()
         logger.debug("Requesting traceroute to %s", destination)
@@ -571,10 +587,12 @@ class MeshtasticConnection:
         """Background: perform the blocking send + cache refresh for a traceroute."""
         async with self._trace_dispatch_lock:
             try:
-                await asyncio.wait_for(
+                success = await asyncio.wait_for(
                     asyncio.to_thread(self._request_traceroute_sync, destination),
                     timeout=300,
                 )
+                if not success:
+                    raise asyncio.TimeoutError()
                 await asyncio.to_thread(self._refresh_node_from_interface, destination)
                 logger.info("Traceroute dispatch to %s completed", destination)
             except asyncio.TimeoutError:
@@ -3140,47 +3158,71 @@ class MeshtasticConnection:
                 # rather than overwrite it with the (always-None) raw entry.
                 if node_id in cached:
                     prev = cached[node_id]
-                    # Preserve any captured POSITION_APP fix (from a
-                    # "Req. Position" request) before the raw library update
-                    # potentially overwrites it with None — the library
-                    # never writes these replies into interface.nodes.
-                    prev_lat = prev.get("latitude")
-                    prev_lng = prev.get("longitude")
-                    prev_alt = prev.get("altitude")
-                    prev_fix = prev.get("last_position_fix")
+
+                    # Snapshot fields that must survive the update() call because
+                    # the library may omit them on any given poll cycle.
+                    prev_lat       = prev.get("latitude")
+                    prev_lng       = prev.get("longitude")
+                    prev_alt       = prev.get("altitude")
+                    prev_fix       = prev.get("last_position_fix")
                     prev_traceroute = prev.get("traceroute")
+
+                    # Merge fresh radio data over the cached entry. This is the
+                    # authoritative source for all fields the radio reports.
                     cached[node_id].update(entry)
-                    # Restore preserved position and traceroute data
-                    if prev_lat is not None:
-                        cached[node_id]["latitude"] = prev_lat
-                    if prev_lng is not None:
-                        cached[node_id]["longitude"] = prev_lng
-                    if prev_alt is not None:
-                        cached[node_id]["altitude"] = prev_alt
-                    if prev_fix is not None:
-                        cached[node_id]["last_position_fix"] = prev_fix
+
+                    # Always restore the previously-captured traceroute — it is
+                    # never present in the raw library entry so update() would
+                    # clear it if we didn't put it back.
                     if prev_traceroute is not None:
                         cached[node_id]["traceroute"] = prev_traceroute
+
+                    # For every nullable metric: use the fresh value when the
+                    # radio reported it; fall back to the last known value when
+                    # it didn't. This prevents brief poll cycles where the radio
+                    # omits a field from clearing it to None in the UI.
+                    nullable_fields = (
+                        "snr", "rssi", "hops_away",
+                        "battery_level", "voltage",
+                        "channel_utilization", "air_util_tx", "uptime",
+                        "temperature", "relative_humidity",
+                        "barometric_pressure", "gas_resistance",
+                        "last_heard",
+                    )
+                    for field in nullable_fields:
+                        if entry.get(field) is None and prev.get(field) is not None:
+                            cached[node_id][field] = prev[field]
+
+                    # String fields: preserve the last known non-empty value when
+                    # the fresh entry is empty (e.g. user info not re-broadcast).
+                    string_fields = ("long_name", "short_name", "hw_model", "role")
+                    for field in string_fields:
+                        if not entry.get(field) and prev.get(field):
+                            cached[node_id][field] = prev[field]
+
                     # Last-known-position retention: a node that loses GPS (or
                     # stops reporting) sends position=None. Instead of dropping
                     # the fix and making the marker vanish from the map, keep
                     # the most recent good coordinates so the node stays put
                     # until a newer fix (or a manual position request) arrives.
-                    # Priority: freshly-captured POSITION_APP reply > raw library
-                    # fix this cycle > previously retained last-known fix.
+                    # Priority: freshly-captured POSITION_APP reply (written
+                    # directly into self._nodes by _capture_position) > raw
+                    # library fix this cycle > previously retained last-known fix.
                     if entry["latitude"] is not None:
+                        # Fresh fix arrived — update the timestamp.
                         cached[node_id]["last_position_fix"] = int(time.time())
                     elif prev_lat is not None:
+                        # No new fix — restore the last known good coordinates.
                         cached[node_id]["latitude"] = prev_lat
                         cached[node_id]["last_position_fix"] = prev_fix
+
                     if entry["longitude"] is not None:
                         cached[node_id]["last_position_fix"] = int(time.time())
                     elif prev_lng is not None:
                         cached[node_id]["longitude"] = prev_lng
                         cached[node_id]["last_position_fix"] = prev_fix
-                    if entry["altitude"] is not None:
-                        pass
-                    elif prev_alt is not None:
+
+                    if entry["altitude"] is None and prev_alt is not None:
                         cached[node_id]["altitude"] = prev_alt
                     result.append(cached[node_id])
                     result_ids.add(node_id)
@@ -3605,20 +3647,20 @@ class MeshtasticConnection:
         # a time, preventing transport-layer crashes from concurrent calls.
         with self._send_trace_lock:
             try:
-                # hopLimit is a REQUIRED positional argument in meshtastic 2.7.x —
-                # passing None raises TypeError. A hopLimit of 0 would prevent the
-                # packet from relaying past directly-connected nodes, so most
-                # traceroutes would silently fail. We use a sane high value (10)
-                # which lets the firmware traverse the mesh; a 0 here is NOT the
-                # "default", it actually disables relaying.
+                # Use the configured hop limit for the local node (or default 7)
+                # rather than hardcoding 10, as some firmware versions reject
+                # packets with hop limits exceeding 7.
+                hop_limit = 7
+                try:
+                    lora_config = getattr(iface.localNode.localConfig, "lora", None)
+                    if lora_config is not None:
+                        hop_limit = getattr(lora_config, "hop_limit", 7)
+                except Exception:  # noqa: BLE001
+                    pass
+
                 # The call blocks until the RouteDiscovery reply arrives (the
-                # library waits internally for the acknowledgment flag). The
-                # actual per-hop route SNR is NOT stored by the library, so we
-                # capture it ourselves in _on_mesh_receive (TRACEROUTE_APP) and
-                # merge it into our node cache. The destination is already queued in
-                # request_traceroute; the cache refresh is done by the background
-                # dispatch task so this call stays non-blocking.
-                iface.sendTraceRoute(dest_num if dest_num is not None else destination, 10)
+                # library waits internally for the acknowledgment flag).
+                iface.sendTraceRoute(dest_num if dest_num is not None else destination, hop_limit)
                 return True
             except Exception as exc:  # noqa: BLE001
                 logger.error(
@@ -3679,14 +3721,24 @@ class MeshtasticConnection:
             return
 
         user = lib_node.get("user", {})
-        position = lib_node.get("position", {})
-        device_metrics = lib_node.get("deviceMetrics", {})
+        position = lib_node.get("position", {}) or {}
+        device_metrics = lib_node.get("deviceMetrics", {}) or {}
         environment = lib_node.get("environmentMetrics", {}) or {}
 
         long_name = user.get("longName", "")
         short_name = user.get("shortName", "")
         if not short_name and long_name:
             short_name = long_name[:8]
+
+        # The library's _fixupPosition converts latitudeI/longitudeI → latitude/longitude
+        # when a position packet arrives, but the initial node list sync may not have
+        # triggered it yet. Fall back to manual conversion so we always get a coordinate.
+        lat = position.get("latitude")
+        lng = position.get("longitude")
+        if lat is None and position.get("latitudeI"):
+            lat = position["latitudeI"] * 1e-7
+        if lng is None and position.get("longitudeI"):
+            lng = position["longitudeI"] * 1e-7
 
         patch = {
             "long_name": long_name,
@@ -3697,8 +3749,8 @@ class MeshtasticConnection:
             "rssi": lib_node.get("rssi"),
             "hops_away": lib_node.get("hopsAway"),
             "is_licensed": user.get("isLicensed", False),
-            "latitude": position.get("latitude"),
-            "longitude": position.get("longitude"),
+            "latitude": lat,
+            "longitude": lng,
             "altitude": position.get("altitude"),
             "battery_level": device_metrics.get("batteryLevel"),
             "voltage": device_metrics.get("voltage"),
@@ -3717,22 +3769,61 @@ class MeshtasticConnection:
                 (n for n in self._nodes if n.get("id") == node_id), None
             )
             if existing is not None:
-                # Preserve our own captured traceroute/position data, which the
-                # library's raw node dict does not carry (it only sets an
-                # internal ack flag).
-                captured_traceroute = existing.get("traceroute")
-                captured_lat = existing.get("latitude")
-                captured_lng = existing.get("longitude")
-                captured_alt = existing.get("altitude")
+                # Snapshot all prev values BEFORE update() so we can
+                # fall back to them for any field the library omitted.
+                prev_traceroute = existing.get("traceroute")
+                prev_lat        = existing.get("latitude")
+                prev_lng        = existing.get("longitude")
+                prev_alt        = existing.get("altitude")
+                prev_fix        = existing.get("last_position_fix")
+                prev_metrics    = {
+                    f: existing.get(f) for f in (
+                        "snr", "rssi", "hops_away",
+                        "battery_level", "voltage",
+                        "channel_utilization", "air_util_tx", "uptime",
+                        "temperature", "relative_humidity",
+                        "barometric_pressure", "gas_resistance",
+                        "last_heard",
+                    )
+                }
+                prev_strings    = {
+                    f: existing.get(f)
+                    for f in ("long_name", "short_name", "hw_model", "role")
+                }
+
+                # Merge fresh data from library.
                 existing.update(patch)
-                if captured_traceroute is not None:
-                    existing["traceroute"] = captured_traceroute
-                if captured_lat is not None:
-                    existing["latitude"] = captured_lat
-                if captured_lng is not None:
-                    existing["longitude"] = captured_lng
-                if captured_alt is not None:
-                    existing["altitude"] = captured_alt
+
+                # Traceroute is never in the raw library node — restore it.
+                if prev_traceroute is not None:
+                    existing["traceroute"] = prev_traceroute
+
+                # Nullable metrics: use fresh if available, else keep prev.
+                for field, prev_val in prev_metrics.items():
+                    if patch.get(field) is None and prev_val is not None:
+                        existing[field] = prev_val
+
+                # String fields: keep last known non-empty value.
+                for field, prev_val in prev_strings.items():
+                    if not patch.get(field) and prev_val:
+                        existing[field] = prev_val
+
+                # Position: use fresh fix if radio reported one, otherwise
+                # retain the last known good coordinates.
+                if patch["latitude"] is not None:
+                    existing["last_position_fix"] = int(time.time())
+                elif prev_lat is not None:
+                    existing["latitude"] = prev_lat
+                    existing["last_position_fix"] = prev_fix
+
+                if patch["longitude"] is not None:
+                    existing["last_position_fix"] = int(time.time())
+                elif prev_lng is not None:
+                    existing["longitude"] = prev_lng
+                    existing["last_position_fix"] = prev_fix
+
+                if patch["altitude"] is None and prev_alt is not None:
+                    existing["altitude"] = prev_alt
             else:
                 entry = dict(patch)
                 entry["id"] = node_id

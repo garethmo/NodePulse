@@ -314,7 +314,9 @@ function renderNodesGrid(nodes) {
   const grid = document.getElementById('nodes-grid');
 
   // Fast check: compute a fingerprint of the current state that affects the grid.
-  const fingerprint = [state.nodeFilter, state.signalFilter, state.trackedNodes.size, state.notifyNodes.size, JSON.stringify(state.nodeTags), ...nodes.map(n => `${n.id}:${n.last_heard}:${n.snr}:${n.snr_avg}:${n.latitude}:${n.longitude}`)].join('|');
+  // Include traceroute timestamp so a new route result (or timeout→success)
+  // forces a re-render even when no other node field changed.
+  const fingerprint = [state.nodeFilter, state.signalFilter, state.trackedNodes.size, state.notifyNodes.size, JSON.stringify(state.nodeTags), ...nodes.map(n => `${n.id}:${n.last_heard}:${n.snr}:${n.snr_avg}:${n.latitude}:${n.longitude}:${n.traceroute?.timestamp ?? ''}:${n.traceroute?.timeout ?? ''}`)].join('|');
   if (grid.dataset.fingerprint === fingerprint && grid.innerHTML !== '') return;
   grid.dataset.fingerprint = fingerprint;
 
@@ -1941,6 +1943,7 @@ async function pollData() {
     renderNodeList(state.nodes);
     renderNodesGrid(state.nodes);
     dashMap.updateNodes(state.nodes);
+    fullMap.updateNodes(state.nodes);
   } else {
     console.warn('Nodes fetch failed:', nodesResult.reason);
     // Even if nodes fail, try to render with empty array to clear loading state
