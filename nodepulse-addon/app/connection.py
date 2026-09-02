@@ -460,6 +460,32 @@ class MeshtasticConnection:
             before = len(self._nodes)
             self._nodes = [n for n in self._nodes if n.get("id") != node_id]
             removed = before - len(self._nodes)
+        
+        # Evict from the python library's cache so it doesn't instantly reappear on the next poll
+        node_num = None
+        try:
+            node_num = int(node_id.lstrip("!"), 16)
+        except ValueError:
+            pass
+
+        with self._lock:
+            if hasattr(self, "interface") and self.interface:
+                if hasattr(self.interface, "nodes"):
+                    self.interface.nodes.pop(node_id, None)
+                    if node_num is not None:
+                        self.interface.nodes.pop(node_num, None)
+                        self.interface.nodes.pop(str(node_num), None)
+                
+                # Try to tell the physical radio to remove it from its NodeDB as well
+                if node_num is not None and getattr(self.interface, "localNode", None) is not None:
+                    try:
+                        remove_method = getattr(self.interface.localNode, "removeNode", None)
+                        if callable(remove_method):
+                            remove_method(node_num)
+                            logger.debug("Sent removeNode(%s) admin command to local radio", node_num)
+                    except Exception as e:
+                        logger.debug("Could not send removeNode to local radio: %s", e)
+
         if removed:
             self._save_nodes()
             logger.debug("Removed node %s from the store", node_id)
@@ -492,6 +518,22 @@ class MeshtasticConnection:
                     logger.debug("Periodic channel refresh completed")
             except Exception as exc:  # defensive: never crash the task  # noqa: BLE001
                 logger.debug("Periodic channel refresh failed (ignored): %s", exc)
+
+    async def run_favorite_sync_loop(self, interval: float = 60.0) -> None:
+        """Background task: periodically sync favorites from the device.
+
+        Favorites can be set via other apps (Meshtastic Android, etc.), so we
+        periodically sync from the device to keep the UI in sync. A 1-minute
+        cadence provides reasonable responsiveness without excessive load.
+        """
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                if self._connected:
+                    await asyncio.to_thread(self._sync_favorites_from_device)
+                    logger.debug("Periodic favorite sync completed")
+            except Exception as exc:  # defensive: never crash the task  # noqa: BLE001
+                logger.debug("Periodic favorite sync failed (ignored): %s", exc)
 
     async def send_message(
         self, text: str, destination: str | None = None, channel: int = 0
@@ -1210,6 +1252,10 @@ class MeshtasticConnection:
         """Return live sniffer statistics computed over the last 60 seconds."""
         return await asyncio.to_thread(self._get_sniffer_stats_sync)
 
+    async def get_mesh_discovery(self, window_seconds: int = 300, limit: int = 100) -> dict[str, Any]:
+        """Return mesh discovery data from packet log within time window."""
+        return await asyncio.to_thread(self._get_mesh_discovery_sync, window_seconds, limit)
+
     async def expire_pending_acks(self) -> None:
         """Sweep timed-out pending ACKs and mark their messages failed.
 
@@ -1879,6 +1925,112 @@ class MeshtasticConnection:
             "total_captured": total,
         }
 
+    def _get_mesh_discovery_sync(self, window_seconds: int, limit: int) -> dict[str, Any]:
+        """Compute mesh discovery from packet log within time window."""
+        import time
+        now = time.time()
+        with self._packet_log_lock:
+            recent = [p for p in self._packet_log if (now - p["timestamp"]) <= window_seconds]
+            total_analyzed = len(recent)
+
+        # Group packets by from_id
+        nodes = {}
+        for p in recent:
+            from_id = p.get("from_id")
+            if not from_id:
+                continue
+            if from_id not in nodes:
+                nodes[from_id] = {
+                    "node_id": from_id,
+                    "packet_count": 0,
+                    "channels": set(),
+                    "portnums": set(),
+                    "snr_values": [],
+                    "rssi_values": [],
+                    "hop_limits": [],
+                    "timestamps": [],
+                    "via_mqtt_count": 0,
+                    "direct_count": 0,
+                }
+            n = nodes[from_id]
+            n["packet_count"] += 1
+            if p.get("channel") is not None:
+                n["channels"].add(p["channel"])
+            if p.get("portnum"):
+                n["portnums"].add(p["portnum"])
+            if p.get("rx_snr") is not None:
+                n["snr_values"].append(p["rx_snr"])
+            if p.get("rx_rssi") is not None:
+                n["rssi_values"].append(p["rx_rssi"])
+            if p.get("hop_limit") is not None:
+                n["hop_limits"].append(p["hop_limit"])
+            n["timestamps"].append(p["timestamp"])
+            if p.get("via_mqtt"):
+                n["via_mqtt_count"] += 1
+            else:
+                n["direct_count"] += 1
+
+        # Try to resolve names from node DB
+        node_names = {}
+        with self._lock:
+            iface = self._interface
+            if iface is not None and iface.nodes:
+                for num, node in iface.nodes.items():
+                    # Normalize node ID number to integer (handles both int and str keys)
+                    try:
+                        nid_num = int(num) & 0xffffffff
+                    except (ValueError, TypeError):
+                        # If num is a hex string like "!abcd1234" or just "abcd1234"
+                        hex_str = num.lstrip('!') if isinstance(num, str) else ''
+                        try:
+                            nid_num = int(hex_str, 16) & 0xffffffff
+                        except (ValueError, TypeError):
+                            nid_num = 0
+                    nid = "!" + format(nid_num, "08x")
+                    user = node.get("user") or {}
+                    if user.get("shortName") or user.get("longName"):
+                        node_names[nid] = {
+                            "short_name": user.get("shortName", ""),
+                            "long_name": user.get("longName", ""),
+                        }
+
+        # Build result list
+        result = []
+        for node_id, data in nodes.items():
+            names = node_names.get(node_id, {})
+            snr_vals = data["snr_values"]
+            rssi_vals = data["rssi_values"]
+            hop_vals = data["hop_limits"]
+            timestamps = data["timestamps"]
+
+            result.append({
+                "node_id": node_id,
+                "short_name": names.get("short_name", ""),
+                "long_name": names.get("long_name", ""),
+                "last_seen": max(timestamps) if timestamps else 0,
+                "packet_count": data["packet_count"],
+                "channels": sorted(data["channels"]),
+                "portnums": sorted(data["portnums"]),
+                "best_snr": max(snr_vals) if snr_vals else None,
+                "worst_snr": min(snr_vals) if snr_vals else None,
+                "avg_snr": round(sum(snr_vals) / len(snr_vals), 1) if snr_vals else None,
+                "best_rssi": max(rssi_vals) if rssi_vals else None,
+                "worst_rssi": min(rssi_vals) if rssi_vals else None,
+                "avg_rssi": round(sum(rssi_vals) / len(rssi_vals)) if rssi_vals else None,
+                "avg_hop_limit": round(sum(hop_vals) / len(hop_vals), 1) if hop_vals else None,
+                "is_direct": data["direct_count"] > data["via_mqtt_count"],
+                "via_mqtt": data["via_mqtt_count"] > 0,
+            })
+
+        # Sort by last_seen descending, then packet_count descending
+        result.sort(key=lambda x: (x["last_seen"], x["packet_count"]), reverse=True)
+
+        return {
+            "nodes": result[:limit],
+            "window_seconds": window_seconds,
+            "total_packets_analyzed": total_analyzed,
+        }
+
     def _load_tags(self) -> None:
         """Restore persisted node tags (best-effort)."""
         try:
@@ -1935,6 +2087,45 @@ class MeshtasticConnection:
                 )
         except Exception as exc:  # noqa: BLE001
             logger.debug("Could not load persisted favorites (ignored): %s", exc)
+
+        # Sync favorites from device after loading from disk
+        self._sync_favorites_from_device()
+
+    def _sync_favorites_from_device(self) -> None:
+        """Sync favorites from the device's NodeDB to the local UI favorites."""
+        try:
+            # Get the device favorites list while holding the interface lock
+            # to prevent race conditions with disconnection
+            device_favorites = None
+            with self._lock:
+                iface = self._interface
+                if iface is not None and iface.localNode is not None:
+                    device_favorites = getattr(iface.localNode, "favorites", None)
+
+            if device_favorites is None:
+                logger.debug("Device does not expose favorites list or interface unavailable")
+                return
+
+            # Convert device favorites to our node ID format using the standard formatter
+            device_favorite_ids = set()
+            for fav in device_favorites:
+                if hasattr(fav, "num"):
+                    node_id = _node_id_from_num(fav.num)
+                    if node_id:
+                        device_favorite_ids.add(node_id)
+
+            with self._favorites_lock:
+                # Merge device favorites with local favorites
+                merged = self._favorites.union(device_favorite_ids)
+                self._favorites = merged
+
+            logger.debug("Synced %s favorites from device (total: %s)",
+                        len(device_favorite_ids), len(self._favorites))
+
+            # Save the merged list
+            self._save_favorites()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Could not sync favorites from device (ignored): %s", exc)
 
     def _save_favorites(self) -> None:
         """Persist the favorites list to disk (best-effort)."""
@@ -3794,8 +3985,15 @@ class MeshtasticConnection:
                 # Merge fresh data from library.
                 existing.update(patch)
 
-                # Traceroute is never in the raw library node — restore it.
-                if prev_traceroute is not None:
+                # Preserve any existing timeout record; only restore old traceroute
+                # if the node does not already have a timeout (i.e. it had a
+                # successful traceroute previously). This ensures that when a
+                # traceroute times out, the timeout timestamp is kept rather than
+                # being overwritten by the old successful traceroute data.
+                if existing.get("traceroute", {}).get("timeout"):
+                    # Keep the existing timeout record — don't overwrite
+                    pass
+                elif prev_traceroute is not None:
                     existing["traceroute"] = prev_traceroute
 
                 # Nullable metrics: use fresh if available, else keep prev.

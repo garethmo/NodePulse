@@ -386,6 +386,104 @@ class TestFavoriteDeviceCommunication:
         # Verify local favorites were updated
         assert node_id in result
 
+    def test_sync_favorites_from_device(self):
+        """Test that favorites are synced from device to local UI"""
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
+        )
+        
+        # Mock interface with device favorites
+        mock_interface = Mock()
+        mock_local_node = Mock()
+        
+        # Create mock favorite nodes with proper node numbers
+        mock_fav1 = Mock()
+        mock_fav1.num = 0x12345678  # Will be converted to !12345678
+        mock_fav2 = Mock()
+        mock_fav2.num = 0xABCDEF01  # Will be converted to !abcdef01
+        
+        mock_local_node.favorites = [mock_fav1, mock_fav2]
+        mock_interface.localNode = mock_local_node
+        conn._interface = mock_interface
+        
+        # Set some initial local favorites
+        with conn._favorites_lock:
+            conn._favorites.add("!deadbeef")
+        
+        # Sync from device
+        conn._sync_favorites_from_device()
+        
+        # Verify device favorites were merged with local favorites
+        with conn._favorites_lock:
+            assert "!12345678" in conn._favorites
+            assert "!abcdef01" in conn._favorites
+            assert "!deadbeef" in conn._favorites  # Local favorite preserved
+
+    def test_sync_favorites_from_device_race_condition(self):
+        """Test that sync handles race conditions with interface changes"""
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
+        )
+        
+        # Start with no interface
+        conn._interface = None
+        
+        # Set initial favorites
+        with conn._favorites_lock:
+            conn._favorites.add("!deadbeef")
+        
+        # Sync should handle missing interface gracefully
+        conn._sync_favorites_from_device()
+        
+        # Verify existing favorites are preserved
+        with conn._favorites_lock:
+            assert "!deadbeef" in conn._favorites
+            assert len(conn._favorites) == 1  # No new favorites added
+
+    def test_sync_favorites_without_interface(self):
+        """Test that sync works gracefully when interface is not available"""
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
+        )
+        
+        # No interface
+        conn._interface = None
+        
+        # Should not raise
+        conn._sync_favorites_from_device()
+        
+        # Local favorites should remain unchanged
+        with conn._favorites_lock:
+            assert len(conn._favorites) == 0
+
+    def test_sync_favorites_without_device_favorites(self):
+        """Test that sync works when device doesn't expose favorites"""
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
+        )
+        
+        # Mock interface without favorites attribute
+        mock_interface = Mock()
+        mock_local_node = Mock()
+        del mock_local_node.favorites  # Remove favorites attribute
+        mock_interface.localNode = mock_local_node
+        conn._interface = mock_interface
+        
+        # Should not raise
+        conn._sync_favorites_from_device()
+        
+        # Local favorites should remain unchanged
+        with conn._favorites_lock:
+            assert len(conn._favorites) == 0
+
 
 class TestTraceroutePathConstruction:
     """Tests for traceroute path construction logic"""

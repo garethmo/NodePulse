@@ -664,6 +664,24 @@
                 <span class="sec-placeholder">Press Scan to check channel encryption keys.</span>
               </div>
             </div>
+
+            <!-- Mesh Discovery sub-section -->
+            <div id="mesh-discovery-section">
+              <div class="sec-header">
+                <strong>🌐 Mesh Discovery</strong>
+                <button id="mesh-discovery-btn" type="button" class="action-btn sec-scan-btn">Refresh</button>
+                <select id="mesh-discovery-window" style="margin-left:8px;padding:4px 8px;border:1px solid var(--border-subtle);border-radius:var(--radius-sm);background:var(--bg-input);color:var(--text-primary);font-size:12px">
+                  <option value="60">1 min</option>
+                  <option value="300" selected>5 min</option>
+                  <option value="600">10 min</option>
+                  <option value="1800">30 min</option>
+                  <option value="3600">1 hour</option>
+                </select>
+              </div>
+              <div id="mesh-discovery-content">
+                <span class="sec-placeholder">Press Refresh to discover nodes from packet captures.</span>
+              </div>
+            </div>
           </div>
           <!-- Packet table -->
           <div style="overflow-x:auto;position:relative">

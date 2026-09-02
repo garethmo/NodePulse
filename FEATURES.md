@@ -147,6 +147,7 @@ A dedicated "Packets" tab showing every inbound Meshtastic packet via a real-tim
 - **Export**: Download visible packets as JSON or CSV
 - **Sniffer stats**: Collapsible "📊 Stats" panel with packets/min, unique nodes, total captured, and portnum distribution bars
 - **Security scanner**: Server-side classification of channel PSKs (secure/weak/unencrypted), duplicate key detection, and inline 🔓 badges on flagged packet rows
+- **Mesh Discovery**: Analyze captured packets to discover active mesh nodes — shows node names, last seen time, packet count, average SNR/RSSI, channels used, portnums, average hop limit, and Direct RF vs MQTT badges. Configurable time window (1 min to 1 hour) and result limit.
 - **Responsive**: Table collapses gracefully on mobile with `.packet-table` CSS
 
 ### Web UI — Waypoints

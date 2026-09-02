@@ -195,6 +195,15 @@ export async function fetchSnifferStats() {
   return _apiFetch('/sniffer/stats');
 }
 
+/**
+ * Fetch mesh discovery data from packet captures.
+ * @param {number} windowSeconds - Time window in seconds (default 300)
+ * @param {number} limit - Max nodes to return (default 100)
+ */
+export async function fetchMeshDiscovery(windowSeconds = 300, limit = 100) {
+  return _apiFetch(`/mesh/discovery?window=${windowSeconds}&limit=${limit}`);
+}
+
 /** Delete a single node from the persistent store by hex ID. */
 export async function deleteNode(nodeId) {
   return _apiFetch(`/node/${encodeURIComponent(nodeId)}`, {

@@ -57,6 +57,7 @@ from .routes import (
     handle_set_favorite,
     handle_set_tags,
     handle_sniffer_stats,
+    handle_mesh_discovery,
     handle_status,
     handle_tags,
     handle_terrain_coverage,
@@ -107,6 +108,10 @@ async def _on_startup(app: web.Application) -> None:
     # Launch the periodic channel-refresh task so the UI's channel list stays
     # in sync with the radio without waiting for a config push.
     app["channel_refresh_task"] = asyncio.create_task(conn.run_channel_refresh_loop())
+
+    # Launch the periodic favorite sync task to keep UI favorites in sync with
+    # the device's NodeDB (favorites can be set via other apps like Meshtastic Android).
+    app["favorite_sync_task"] = asyncio.create_task(conn.run_favorite_sync_loop())
 
     # Launch the ACK expiry sweep. Runs every 10 s and marks DM messages
     # whose ROUTING_APP reply never arrived within _ACK_TIMEOUT_S as failed.
@@ -176,11 +181,23 @@ async def _on_shutdown(app: web.Application) -> None:
         with suppress(asyncio.CancelledError):  # expected on cancel
             await channel_refresh_task
 
+    favorite_sync_task: asyncio.Task = app.get("favorite_sync_task")
+    if favorite_sync_task and not favorite_sync_task.done():
+        favorite_sync_task.cancel()
+        with suppress(asyncio.CancelledError):  # expected on cancel
+            await favorite_sync_task
+
     ack_expiry_task: asyncio.Task = app.get("ack_expiry_task")
     if ack_expiry_task and not ack_expiry_task.done():
         ack_expiry_task.cancel()
         with suppress(asyncio.CancelledError):  # expected on cancel
             await ack_expiry_task
+
+    scheduled_messages_task: asyncio.Task = app.get("scheduled_messages_task")
+    if scheduled_messages_task and not scheduled_messages_task.done():
+        scheduled_messages_task.cancel()
+        with suppress(asyncio.CancelledError):  # expected on cancel
+            await scheduled_messages_task
 
     mqtt_bridge = app.get("mqtt_bridge")
     if mqtt_bridge:
@@ -296,6 +313,7 @@ def build_app(config) -> web.Application:
     app.router.add_get("/api/hops", handle_hops)
     app.router.add_get("/api/beacon", handle_beacon)
     app.router.add_get("/api/sniffer/stats", handle_sniffer_stats)
+    app.router.add_get("/api/mesh/discovery", handle_mesh_discovery)
     app.router.add_get("/api/waypoints", handle_get_waypoints)
     app.router.add_post("/api/waypoints", handle_add_waypoint)
     app.router.add_patch("/api/waypoints/{waypoint_id}", handle_update_waypoint)

@@ -372,6 +372,8 @@ export class MapManager {
     this._markers = new Map();
     // Node ID of the locally-connected node (used as the hub for link lines).
     this._selfId = null;
+    // Favorite nodes set for UI state
+    this._favoriteNodes = new Set();
     // Separate overlay line categories, each independently toggleable.
     // Map<nodeId, L.Polyline> — connectors from the self node to each node (teal).
     this._selfLinks = new Map();
@@ -783,6 +785,18 @@ export class MapManager {
     this._selfId = id;
   }
 
+  /** Set the favorite nodes set for UI state */
+  setFavoriteNodes(favoriteNodes) {
+    this._favoriteNodes = favoriteNodes || new Set();
+    // Refresh all popups to update favorite button states
+    for (const [id, marker] of this._markers) {
+      const node = marker._nodeData;
+      if (node) {
+        marker.setPopupContent(this._buildPopupHtml(node));
+      }
+    }
+  }
+
   /**
    * Centre the map on the connected (self) node once it has a GPS fix.
    * Called on the first data load so the user starts focused on their own
@@ -827,6 +841,8 @@ export class MapManager {
         this._map.getContainer().dispatchEvent(new CustomEvent('nodepulse:diagnostics', { detail: { nodeId: node } }));
       } else if (action === 'gpx') {
         this._map.getContainer().dispatchEvent(new CustomEvent('nodepulse:gpx', { detail: { nodeId: node } }));
+      } else if (action === 'favorite') {
+        this._map.getContainer().dispatchEvent(new CustomEvent('nodepulse:favorite', { detail: { nodeId: node } }));
       }
     });
   }
@@ -1521,6 +1537,11 @@ export class MapManager {
       }
     }
 
+    // Check if node is favorited
+    const isFavorited = this._favoriteNodes.has(node.id);
+    const favoriteClass = isFavorited ? 'active' : '';
+    const favoriteText = isFavorited ? '★ Favorited' : '⭐ Favorite';
+
     const row = (label, value) =>
       `<tr><td style="color:#8892a4;padding:2px 0">${label}</td><td style="text-align:right">${value}</td></tr>`;
 
@@ -1543,11 +1564,12 @@ export class MapManager {
           ${row('Humidity', hum)}
           ${row('Pressure', pres)}
         </table>
-        <div style="display:flex;gap:6px;margin-top:8px;padding-top:8px;border-top:1px solid #2a2a2a">
+        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;padding-top:8px;border-top:1px solid #2a2a2a">
           <button class="map-popup-btn" data-action="traceroute" data-node="${escapeHtml(node.id)}" style="display:inline-flex;align-items:center;justify-content:center;flex:1;padding:6px 8px;background:#4fc3f7;color:#0a0e1a;border:none;border-radius:4px;font-size:11px;font-weight:600;cursor:pointer;min-height:28px;white-space:nowrap;">🔍 Traceroute</button>
           <button class="map-popup-btn" data-action="message" data-node="${escapeHtml(node.id)}" style="display:inline-flex;align-items:center;justify-content:center;flex:1;padding:6px 8px;background:#00d4aa;color:#0a0e1a;border:none;border-radius:4px;font-size:11px;font-weight:600;cursor:pointer;min-height:28px;white-space:nowrap;">💬 Message</button>
           <button class="map-popup-btn" data-action="diagnostics" data-node="${escapeHtml(node.id)}" style="display:inline-flex;align-items:center;justify-content:center;flex:1;padding:6px 8px;background:#a78bfa;color:#0a0e1a;border:none;border-radius:4px;font-size:11px;font-weight:600;cursor:pointer;min-height:28px;white-space:nowrap;">🩺 Diag</button>
           <button class="map-popup-btn" data-action="gpx" data-node="${escapeHtml(node.id)}" style="display:inline-flex;align-items:center;justify-content:center;flex:1;padding:6px 8px;background:#ff7043;color:#0a0e1a;border:none;border-radius:4px;font-size:11px;font-weight:600;cursor:pointer;min-height:28px;white-space:nowrap;">📍 GPX</button>
-</div>`;
+          <button class="map-popup-btn ${favoriteClass}" data-action="favorite" data-node="${escapeHtml(node.id)}" style="display:inline-flex;align-items:center;justify-content:center;flex:1;padding:6px 8px;background:#ffd54f;color:#0a0e1a;border:none;border-radius:4px;font-size:11px;font-weight:600;cursor:pointer;min-height:28px;white-space:nowrap;">${favoriteText}</button>
+        </div>`;
   }
 }

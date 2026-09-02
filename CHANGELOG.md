@@ -2,6 +2,17 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.24.0] - 2026-09-01
+### Added
+- **Mesh Discovery** — New feature in the Packets view (Stats panel) that analyzes captured packets to discover and display active mesh nodes. Shows node names, last seen time, packet count, average SNR/RSSI, channels used, portnums, average hop limit, and Direct RF vs MQTT badges. Configurable time window (1 min to 1 hour) and result limit.
+- **Mesh Discovery API** — New `/api/mesh/discovery` endpoint with query parameters `window` (seconds, default 300) and `limit` (default 100).
+
+### Changed
+- **Conversation Sidebar** — Now sorts conversations by last message timestamp (most recent first) instead of alphabetically.
+
+### Fixed
+- **Map Popup Button Overflow** — Added `flex-wrap: wrap` to button container in node popups to prevent buttons from overflowing on narrow popups.
+
 ## [1.23.0] - 2026-08-30
 ### Fixed
 - **Home Assistant Location State** — Fixed an integration compatibility issue with Home Assistant Core 2024+ where `device_tracker` and `geo_location` entities remained in an "Unknown" state despite having valid GPS coordinates. Removed Python `@property` overrides for `latitude`/`longitude` which conflict with the `propcache.api.cached_property` metaclass, replacing them with the standard `_attr_latitude` and `_attr_longitude` update pattern.

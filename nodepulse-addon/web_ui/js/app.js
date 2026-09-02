@@ -684,27 +684,7 @@ async function handleNodeCardAction(event) {
       'success',
     );
   } else if (action === 'favorite') {
-    const isFav = state.favoriteNodes.has(nodeId);
-    if (isFav) {
-      state.favoriteNodes.delete(nodeId);
-      btn.classList.remove('active');
-      showToast(`Removed ${nodeId} from favorites`, 'success');
-    } else {
-      state.favoriteNodes.add(nodeId);
-      btn.classList.add('active');
-      showToast(`Added ${nodeId} to favorites`, 'success');
-    }
-    localStorage.setItem('np_favorite_nodes', JSON.stringify([...state.favoriteNodes]));
-    // Persist server-side so favorites survive reloads (localStorage is
-    // unreliable inside the HA addon iframe).
-    try {
-      const result = await setFavorite(nodeId, !isFav);
-      if (Array.isArray(result)) state.favoriteNodes = new Set(result);
-    } catch (err) {
-      showToast(`Could not save favorite: ${err.message}`, 'error');
-    }
-    // Re-render to update sort order
-    renderNodesGrid(state.nodes);
+    await toggleFavorite(nodeId, btn);
   } else if (action === 'delete') {
     if (!confirm(`Remove node ${nodeId} from the store?`)) return;
     try {
@@ -717,6 +697,36 @@ async function handleNodeCardAction(event) {
       showToast(`Delete failed: ${err.message}`, 'error');
     }
   }
+}
+
+// ============================================================================
+// Toggle Favorite
+// ============================================================================
+async function toggleFavorite(nodeId, btn = null) {
+  const isFav = state.favoriteNodes.has(nodeId);
+  if (isFav) {
+    state.favoriteNodes.delete(nodeId);
+    if (btn) btn.classList.remove('active');
+    showToast(`Removed ${nodeId} from favorites`, 'success');
+  } else {
+    state.favoriteNodes.add(nodeId);
+    if (btn) btn.classList.add('active');
+    showToast(`Added ${nodeId} to favorites`, 'success');
+  }
+  localStorage.setItem('np_favorite_nodes', JSON.stringify([...state.favoriteNodes]));
+  // Persist server-side so favorites survive reloads (localStorage is
+  // unreliable inside the HA addon iframe).
+  try {
+    const result = await setFavorite(nodeId, !isFav);
+    if (Array.isArray(result)) state.favoriteNodes = new Set(result);
+  } catch (err) {
+    showToast(`Could not save favorite: ${err.message}`, 'error');
+  }
+  // Re-render to update sort order
+  renderNodesGrid(state.nodes);
+  // Update map instances with updated favorite nodes data
+  dashMap.setFavoriteNodes(state.favoriteNodes);
+  fullMap.setFavoriteNodes(state.favoriteNodes);
 }
 
 // ============================================================================
@@ -1171,10 +1181,11 @@ function renderMessagesSidebar() {
   const filtered = [...keys].filter(k => k === state.activeConversation || !state.dismissedConvs.has(k));
 
   const ordered = filtered.sort((a, b) => {
-    const ca = a.startsWith('ch:') ? 0 : 1;
-    const cb = b.startsWith('ch:') ? 0 : 1;
-    if (ca !== cb) return ca - cb;
-    return a.localeCompare(b);
+    const threadA = state.messagesByConv[a] || [];
+    const threadB = state.messagesByConv[b] || [];
+    const lastA = threadA.length ? threadA[threadA.length - 1].timestamp : 0;
+    const lastB = threadB.length ? threadB[threadB.length - 1].timestamp : 0;
+    return lastB - lastA;
   });
 
   list.innerHTML = '';
@@ -1641,6 +1652,9 @@ function switchView(viewName) {
       dashMap._map?.getContainer().addEventListener('nodepulse:gpx', (e) => {
         downloadNodeGpx(e.detail.nodeId);
       });
+      dashMap._map?.getContainer().addEventListener('nodepulse:favorite', (e) => {
+        toggleFavorite(e.detail.nodeId, null);
+      });
     } else if (viewName === 'map') {
       fullMap.init();
       fullMap.updateNodes(state.nodes);
@@ -1658,6 +1672,9 @@ function switchView(viewName) {
       });
       fullMap._map.getContainer().addEventListener('nodepulse:gpx', (e) => {
         downloadNodeGpx(e.detail.nodeId);
+      });
+      fullMap._map.getContainer().addEventListener('nodepulse:favorite', (e) => {
+        toggleFavorite(e.detail.nodeId, null);
       });
     } else if (viewName === 'settings') {
       renderSettings();
@@ -1894,6 +1911,9 @@ async function refreshFavorites() {
     if (state.nodes.length > 0) {
       renderNodesGrid(state.nodes);
     }
+    // Update map instances with favorite nodes data
+    dashMap.setFavoriteNodes(state.favoriteNodes);
+    fullMap.setFavoriteNodes(state.favoriteNodes);
   } catch (err) {
     // Non-fatal — keep whatever localStorage has as a fallback.
     console.warn('Favorites fetch failed:', err);
@@ -2302,6 +2322,26 @@ async function init() {
     });
   }
 
+  // Clear stale nodes button (Settings view)
+  const btnClearStale = document.getElementById('btn-clear-stale');
+  if (btnClearStale) {
+    btnClearStale.addEventListener('click', async () => {
+      const originalText = btnClearStale.textContent;
+      btnClearStale.disabled = true;
+      btnClearStale.textContent = 'Clearing...';
+      try {
+        const res = await clearStaleNodes();
+        showToast(`Cleared ${res.removed} stale node(s).`, 'success');
+        pollData(); // Refresh node list
+      } catch (err) {
+        showToast(`Failed to clear stale nodes: ${err.message}`, 'error');
+      } finally {
+        btnClearStale.disabled = false;
+        btnClearStale.textContent = originalText;
+      }
+    });
+  }
+
   // ---- Full-screen Messages View event wiring ----------------------------
 
   const msgsSendBtn = document.getElementById('messages-send-btn');
@@ -2551,6 +2591,10 @@ async function init() {
 
   // Security scan button inside the Stats panel.
   document.getElementById('security-scan-btn')?.addEventListener('click', runSecurityScan);
+
+  // Mesh Discovery button inside the Stats panel.
+  document.getElementById('mesh-discovery-btn')?.addEventListener('click', fetchAndRenderMeshDiscovery);
+  document.getElementById('mesh-discovery-window')?.addEventListener('change', fetchAndRenderMeshDiscovery);
 
   // Waypoint panel — open/close and form submission.
   const waypointPanel = document.getElementById('waypoint-panel');
@@ -3037,6 +3081,65 @@ function renderSnifferStats(stats) {
       <span class="sniffer-pct">${pct}%</span>
     </div>`;
   }).join('');
+}
+
+async function fetchAndRenderMeshDiscovery() {
+  const windowSel = document.getElementById('mesh-discovery-window');
+  const content = document.getElementById('mesh-discovery-content');
+  if (!content) return;
+
+  const windowSeconds = windowSel ? parseInt(windowSel.value, 10) : 300;
+  content.innerHTML = '<span class="sec-placeholder">Scanning packet captures...</span>';
+
+  try {
+    const { fetchMeshDiscovery } = await import('./api.js');
+    const data = await fetchMeshDiscovery(windowSeconds, 100);
+    renderMeshDiscovery(data);
+  } catch (err) {
+    content.innerHTML = `<span class="sec-error">Error: ${escapeHtml(err.message)}</span>`;
+  }
+}
+
+function renderMeshDiscovery(data) {
+  const content = document.getElementById('mesh-discovery-content');
+  if (!content) return;
+
+  const { nodes, window_seconds, total_packets_analyzed } = data;
+  if (!nodes || !nodes.length) {
+    content.innerHTML = `<span class="sec-placeholder">No nodes discovered in the last ${window_seconds}s (${total_packets_analyzed} packets analyzed).</span>`;
+    return;
+  }
+
+  const rows = nodes.map(n => {
+    const name = n.short_name || n.long_name || n.node_id;
+    const lastSeen = n.last_seen ? new Date(n.last_seen * 1000).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—';
+    const snr = n.avg_snr != null ? `${n.avg_snr.toFixed(1)} dB` : 'N/A';
+    const rssi = n.avg_rssi != null ? `${n.avg_rssi} dBm` : (n.best_rssi != null ? `${n.best_rssi} dBm` : 'N/A');
+    const channels = n.channels.length ? n.channels.join(', ') : '—';
+    const portnums = n.portnums.length ? n.portnums.slice(0, 3).join(', ') + (n.portnums.length > 3 ? '…' : '') : '—';
+    const directBadge = n.is_direct ? '<span class="sec-badge-direct" title="Direct RF">📡</span>' : '';
+    const mqttBadge = n.via_mqtt ? '<span class="sec-badge-mqtt" title="Via MQTT">☁️</span>' : '';
+    const hopInfo = n.avg_hop_limit != null ? `${n.avg_hop_limit}` : '—';
+
+    return `
+      <div class="mesh-node-row" data-node="${escapeHtml(n.node_id)}">
+        <div class="mesh-node-info">
+          <strong>${escapeHtml(name)}</strong>
+          <span class="mesh-node-id mono">${escapeHtml(n.node_id)}</span>
+        </div>
+        <div class="mesh-node-metrics">
+          <span class="metric" title="Last seen">${lastSeen}</span>
+          <span class="metric" title="Packets">${n.packet_count}</span>
+          <span class="metric snr" title="Avg SNR">${snr}</span>
+          <span class="metric rssi" title="RSSI">${rssi}</span>
+          <span class="metric" title="Channels">${channels}</span>
+          <span class="metric" title="Avg Hops">${hopInfo}</span>
+          ${directBadge}${mqttBadge}
+        </div>
+      </div>`;
+  }).join('');
+
+  content.innerHTML = rows + `<div class="mesh-discovery-summary">Showing ${nodes.length} nodes • ${total_packets_analyzed} packets analyzed • ${window_seconds}s window</div>`;
 }
 
 function exportPacketsJSON() {

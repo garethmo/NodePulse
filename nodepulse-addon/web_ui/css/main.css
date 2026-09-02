@@ -914,6 +914,13 @@ body::before {
   background: rgba(255, 213, 79, 0.25);
 }
 
+/* Favorite button in map popup */
+.map-popup-btn.active {
+  background: #ffd54f !important;
+  color: #0a0e1a !important;
+  box-shadow: 0 0 8px rgba(255, 213, 79, 0.4);
+}
+
 .node-metrics {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -4041,6 +4048,96 @@ body.nav-open #sidebar-backdrop { display: block; }
   margin-top: 6px;
   padding-top: 4px;
 }
+
+/* Mesh Discovery styles */
+.mesh-node-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-wrap: wrap;
+}
+.mesh-node-row:last-of-type { border-bottom: none; }
+
+.mesh-node-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 140px;
+}
+.mesh-node-id {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.mesh-node-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.mesh-node-metrics .metric {
+  white-space: nowrap;
+}
+.mesh-node-metrics .snr { color: var(--color-teal); }
+.mesh-node-metrics .rssi { color: var(--text-warning); }
+
+.sec-badge-direct,
+.sec-badge-mqtt {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.sec-badge-direct {
+  background: rgba(0, 212, 170, 0.12);
+  color: #00d4aa;
+  border: 1px solid rgba(0, 212, 170, 0.35);
+}
+.sec-badge-mqtt {
+  background: rgba(167, 139, 250, 0.12);
+  color: #a78bfa;
+  border: 1px solid rgba(167, 139, 250, 0.35);
+}
+
+.mesh-discovery-summary {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-align: right;
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* Sniffer bar rows */
+.sniffer-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  margin: 3px 0;
+}
+.sniffer-portnum { flex: 0 0 140px; font-weight: 500; }
+.sniffer-bar-track {
+  flex: 1;
+  height: 8px;
+  background: var(--bg-input);
+  border-radius: 4px;
+  overflow: hidden;
+  position: relative;
+}
+.sniffer-bar-fill {
+  height: 100%;
+  border-radius: 4px 0 0 4px;
+  transition: width 0.2s ease;
+}
+.sniffer-pct { flex: 0 0 40px; text-align: right; color: var(--text-muted); font-size: 11px; }
 
 /* 🔓 badge on packet rows with a flagged channel */
 .sec-pkt-badge {

@@ -1284,6 +1284,55 @@ async def handle_sniffer_stats(request: web.Request) -> web.Response:
 
 
 # ---------------------------------------------------------------------------
+# Route: GET /api/mesh/discovery
+# ---------------------------------------------------------------------------
+
+async def handle_mesh_discovery(request: web.Request) -> web.Response:
+    """
+    Return mesh discovery data computed from the packet log.
+
+    Query params:
+        window (int): Time window in seconds (default 300 = 5 min, max 3600)
+        limit (int): Max nodes to return (default 100)
+
+    Response:
+        {
+            "nodes": [
+                {
+                    "node_id": "!abcd1234",
+                    "short_name": "NODE1",
+                    "long_name": "Node One",
+                    "last_seen": 1699900000,
+                    "packet_count": 42,
+                    "channels": [0, 1],
+                    "portnums": ["TEXT_MESSAGE_APP", "TELEMETRY_APP"],
+                    "best_snr": 12.5,
+                    "worst_snr": -5.2,
+                    "avg_snr": 4.3,
+                    "best_rssi": -45,
+                    "worst_rssi": -110,
+                    "avg_hop_limit": 2.5,
+                    "is_direct": true,
+                    "via_mqtt": false
+                },
+                ...
+            ],
+            "window_seconds": 300,
+            "total_packets_analyzed": 1500
+        }
+    """
+    conn: MeshtasticConnection = request.app["connection"]
+    try:
+        window = min(max(int(request.query.get("window", "300")), 60), 3600)
+        limit = min(max(int(request.query.get("limit", "100")), 1), 500)
+        data = await conn.get_mesh_discovery(window, limit)
+        return _json_response(data)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Error fetching mesh discovery: %s", exc)
+        return _error_response("Failed to retrieve mesh discovery")
+
+
+# ---------------------------------------------------------------------------
 # Routes: /api/device-config
 # ---------------------------------------------------------------------------
 
