@@ -28,7 +28,7 @@ class TestOnStartup:
 
         with patch("app.main.asyncio.create_task") as mock_create_task:
             await main._on_startup(mock_app)
-            assert mock_create_task.call_count == 4
+            assert mock_create_task.call_count == 5
 
     @pytest.mark.asyncio
     async def test_on_startup_mqtt_bridge_start(self):
@@ -42,12 +42,14 @@ class TestOnStartup:
         mock_app["connection"].expire_pending_acks = AsyncMock()
         mock_app["connection"]._process_scheduled_messages = Mock(return_value=[])
         mock_app["connection"].send_message = AsyncMock()
+        mock_app["connection"].run_favorite_sync_loop = AsyncMock()
         
         mock_app["mqtt_bridge"].start = AsyncMock()
         mock_app["telegram_bot"].start = AsyncMock()
-
-        await main._on_startup(mock_app)
-        mock_app["mqtt_bridge"].start.assert_called_once()
+        
+        with patch("app.main.asyncio.create_task") as mock_create_task:
+            await main._on_startup(mock_app)
+            mock_app["mqtt_bridge"].start.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_on_startup_telegram_bot_start(self):
