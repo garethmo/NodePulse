@@ -1,5 +1,3 @@
-import asyncio
-from unittest.mock import MagicMock
 # Just simulating dest conversion
 destination = "!4ab142c0"
 try:

@@ -1,5 +1,3 @@
-import meshtastic.protobuf.mesh_pb2 as pb
-import google.protobuf.json_format as jf
 
 node_data = {
     "position": {

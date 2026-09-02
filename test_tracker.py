@@ -1,7 +1,5 @@
-import sys
 try:
     from homeassistant.components.device_tracker.config_entry import TrackerEntity
-    from homeassistant.components.device_tracker import SourceType
     import inspect
 
     src = inspect.getsource(TrackerEntity.state)

@@ -463,10 +463,8 @@ class MeshtasticConnection:
         
         # Evict from the python library's cache so it doesn't instantly reappear on the next poll
         node_num = None
-        try:
+        with contextlib.suppress(ValueError):
             node_num = int(node_id.lstrip("!"), 16)
-        except ValueError:
-            pass
 
         with self._lock:
             if hasattr(self, "interface") and self.interface:
@@ -483,7 +481,7 @@ class MeshtasticConnection:
                         if callable(remove_method):
                             remove_method(node_num)
                             logger.debug("Sent removeNode(%s) admin command to local radio", node_num)
-                    except Exception as e:
+                    except Exception as e:  # noqa: BLE001 - never crash on node removal
                         logger.debug("Could not send removeNode to local radio: %s", e)
 
         if removed:
