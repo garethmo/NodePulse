@@ -785,7 +785,10 @@ export class MapManager {
     this._selfId = id;
   }
 
-  /** Set the favorite nodes set for UI state */
+  /**
+   * Set the favorite nodes set for UI state and refresh all popups.
+   * @param {Set<string>} favoriteNodes - Set of favorite node IDs
+   */
   setFavoriteNodes(favoriteNodes) {
     this._favoriteNodes = favoriteNodes || new Set();
     // Refresh all popups to update favorite button states

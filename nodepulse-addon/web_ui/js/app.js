@@ -702,6 +702,12 @@ async function handleNodeCardAction(event) {
 // ============================================================================
 // Toggle Favorite
 // ============================================================================
+/**
+ * Toggle a node's favorite status.
+ * Updates both localStorage and server-side storage, then refreshes the UI.
+ * @param {string} nodeId - Node ID to toggle
+ * @param {HTMLElement|null} btn - Optional button element to update visually
+ */
 async function toggleFavorite(nodeId, btn = null) {
   const isFav = state.favoriteNodes.has(nodeId);
   if (isFav) {
@@ -725,8 +731,8 @@ async function toggleFavorite(nodeId, btn = null) {
   // Re-render to update sort order
   renderNodesGrid(state.nodes);
   // Update map instances with updated favorite nodes data
-  dashMap.setFavoriteNodes(state.favoriteNodes);
-  fullMap.setFavoriteNodes(state.favoriteNodes);
+  if (dashMap._map) dashMap.setFavoriteNodes(state.favoriteNodes);
+  if (fullMap._map) fullMap.setFavoriteNodes(state.favoriteNodes);
 }
 
 // ============================================================================
@@ -1912,8 +1918,8 @@ async function refreshFavorites() {
       renderNodesGrid(state.nodes);
     }
     // Update map instances with favorite nodes data
-    dashMap.setFavoriteNodes(state.favoriteNodes);
-    fullMap.setFavoriteNodes(state.favoriteNodes);
+    if (dashMap._map) dashMap.setFavoriteNodes(state.favoriteNodes);
+    if (fullMap._map) fullMap.setFavoriteNodes(state.favoriteNodes);
   } catch (err) {
     // Non-fatal — keep whatever localStorage has as a fallback.
     console.warn('Favorites fetch failed:', err);
