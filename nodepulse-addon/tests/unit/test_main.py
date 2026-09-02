@@ -60,6 +60,7 @@ class TestOnStartup:
         }
         mock_app["connection"].monitor_connection = AsyncMock()
         mock_app["connection"].run_channel_refresh_loop = AsyncMock()
+        mock_app["connection"].run_favorite_sync_loop = AsyncMock()
         mock_app["connection"].expire_pending_acks = AsyncMock()
         mock_app["connection"]._process_scheduled_messages = Mock(return_value=[])
         mock_app["connection"].send_message = AsyncMock()
