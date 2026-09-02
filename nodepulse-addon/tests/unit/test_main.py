@@ -47,7 +47,7 @@ class TestOnStartup:
         mock_app["mqtt_bridge"].start = AsyncMock()
         mock_app["telegram_bot"].start = AsyncMock()
         
-        with patch("app.main.asyncio.create_task") as mock_create_task:
+        with patch("app.main.asyncio.create_task"):
             await main._on_startup(mock_app)
             mock_app["mqtt_bridge"].start.assert_called_once()
 
