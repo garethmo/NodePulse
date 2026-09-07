@@ -2,6 +2,17 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.25.0] - 2026-09-07
+### Fixed
+- **Telegram concurrency bug** — `_handle_command` and `_send_text` now receive `chat_id` as an explicit parameter instead of reading it from the mutable `_current_chat_id` instance variable. The previous approach caused replies to be sent to the wrong chat when two authorized users issued commands concurrently (the `await` boundary between setting and reading the variable allowed another coroutine to overwrite it).
+- **Favorites bidirectional sync** — `_sync_favorites_from_device` now reads `isFavorite` / `is_favorite` from each node in `iface.nodes` instead of only looking at the legacy `localNode.favorites` list. Nodes explicitly marked *not* favorite on the device are now removed from the local favorites set; offline nodes absent from the device RAM DB are preserved.
+- **Auto-responder rate limiting** — Auto-responder messages are now capped at 3 nodes per discovery cycle to prevent TX queue overflow when many nodes are discovered simultaneously.
+- **Scheduled message rate limiting** — The scheduled-message dispatcher now sends at most 3 messages per second and defers any excess messages to the next scheduler tick (1 second later) rather than firing all of them at once.
+- **Device tracker / geo_location initial state** — `NodeTracker` and `NodeGeoLocation` entities now initialize `_attr_latitude` and `_attr_longitude` from the coordinator snapshot at construction time, so HA shows valid GPS state before the first `_handle_coordinator_update` callback fires.
+
+### Removed
+- Deleted stale scratch/dev test scripts (`dump_html.py`, `test_node.py`, `test_nodeinfo.py`, `test_tr.py`, `test_tracker.py`, `test_tracker_logic.py`) from the addon and repository roots.
+
 ## [1.24.0] - 2026-09-01
 ### Added
 - **Mesh Discovery** — New feature in the Packets view (Stats panel) that analyzes captured packets to discover and display active mesh nodes. Shows node names, last seen time, packet count, average SNR/RSSI, channels used, portnums, average hop limit, and Direct RF vs MQTT badges. Configurable time window (1 min to 1 hour) and result limit.

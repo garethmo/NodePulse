@@ -107,6 +107,15 @@ class NodeTracker(CoordinatorEntity, TrackerEntity):
             "via_device": (DOMAIN, entry.entry_id),
         }
 
+        # Initialize coordinates from coordinator snapshot on creation so HA
+        # has valid state before the first update callback fires.
+        if node:
+            self._attr_latitude = node.get("latitude")
+            self._attr_longitude = node.get("longitude")
+        else:
+            self._attr_latitude = None
+            self._attr_longitude = None
+
     def _get_node(self) -> Optional[Dict[str, Any]]:
         return self.coordinator.get_node(self._node_id)
 

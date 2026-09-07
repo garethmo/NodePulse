@@ -343,6 +343,9 @@ class MeshtasticConnection:
         # inbound POSITION_APP replies to the node we actually asked, so we don't
         # treat every broadcast position as a response to our request.
         self._pending_position_dests: set = set()
+        
+        # Rate limiting for position requests to avoid TX queue overflow
+        self._position_request_times: dict = {}  # destination -> last request timestamp
 
         # Timestamp (monotonic-ish, seconds) of the last traceroute persistence
         # flush, used to debounce _save_traceroutes. A pending debounced save is
@@ -668,6 +671,19 @@ class MeshtasticConnection:
 
     async def request_position(self, destination: str) -> bool:
         """Request a fresh GPS position from a specific destination node."""
+        # Rate limit: allow max 1 position request per 10 seconds per node to avoid TX queue overflow
+        with self._lock:
+            current_time = time.time()
+            last_request = self._position_request_times.get(destination, 0)
+            if current_time - last_request < 10.0:
+                logger.debug("Position request rate limited for %s: last request %.1fs ago", destination, current_time - last_request)
+                return False
+            self._position_request_times[destination] = current_time
+            # Clean up old entries to prevent memory leak
+            if len(self._position_request_times) > 100:
+                cutoff = current_time - 60.0
+                self._position_request_times = {k: v for k, v in self._position_request_times.items() if v > cutoff}
+        
         ok = await asyncio.to_thread(self._request_position_sync, destination)
         # Merge the node's reply position into our cache.
         await asyncio.to_thread(self._refresh_node_from_interface, destination)
@@ -1968,29 +1984,23 @@ class MeshtasticConnection:
             else:
                 n["direct_count"] += 1
 
-        # Try to resolve names from node DB
+        # Resolve names from our own thread-safe node cache rather than
+        # iterating iface.nodes directly (which is mutated by the Meshtastic
+        # receive thread and could raise RuntimeError: dictionary changed size during iteration).
         node_names = {}
-        with self._lock:
-            iface = self._interface
-            if iface is not None and iface.nodes:
-                for num, node in iface.nodes.items():
-                    # Normalize node ID number to integer (handles both int and str keys)
-                    try:
-                        nid_num = int(num) & 0xffffffff
-                    except (ValueError, TypeError):
-                        # If num is a hex string like "!abcd1234" or just "abcd1234"
-                        hex_str = num.lstrip('!') if isinstance(num, str) else ''
-                        try:
-                            nid_num = int(hex_str, 16) & 0xffffffff
-                        except (ValueError, TypeError):
-                            nid_num = 0
-                    nid = "!" + format(nid_num, "08x")
-                    user = node.get("user") or {}
-                    if user.get("shortName") or user.get("longName"):
-                        node_names[nid] = {
-                            "short_name": user.get("shortName", ""),
-                            "long_name": user.get("longName", ""),
-                        }
+        with self._nodes_lock:
+            nodes_cache_snapshot = list(self._nodes)
+        for cached_node in nodes_cache_snapshot:
+            nid = cached_node.get("id")
+            if not nid:
+                continue
+            short = cached_node.get("short_name", "")
+            long_n = cached_node.get("long_name", "")
+            if short or long_n:
+                node_names[nid] = {
+                    "short_name": short,
+                    "long_name": long_n,
+                }
 
         # Build result list
         result = []
@@ -2090,37 +2100,74 @@ class MeshtasticConnection:
         self._sync_favorites_from_device()
 
     def _sync_favorites_from_device(self) -> None:
-        """Sync favorites from the device's NodeDB to the local UI favorites."""
+        """Sync favorite status from the device's NodeDB into our local store.
+
+        In the Meshtastic Python API, node records in ``iface.nodes`` carry an
+        ``isFavorite`` / ``is_favorite`` boolean field set by the radio firmware.
+        We inspect this live state and update ``self._favorites`` accordingly:
+        - Nodes marked favorite on the device are added.
+        - Nodes present in the device NodeDB that are NOT marked favorite are removed
+          (ensuring that un-favoriting via the mobile app or UI is respected).
+        - Offline/evicted nodes not currently in the radio's bounded RAM NodeDB are
+          preserved in ``self._favorites``.
+        - Legacy/mock ``localNode.favorites`` is supported for backward compatibility.
+        """
         try:
-            # Get the device favorites list while holding the interface lock
-            # to prevent race conditions with disconnection
-            device_favorites = None
             with self._lock:
                 iface = self._interface
-                if iface is not None and iface.localNode is not None:
-                    device_favorites = getattr(iface.localNode, "favorites", None)
+                if iface is None:
+                    logger.debug("Interface unavailable — skipping favorite sync")
+                    return
 
-            if device_favorites is None:
-                logger.debug("Device does not expose favorites list or interface unavailable")
+                # Snapshot nodes from interface safely
+                if hasattr(iface, "nodes") and isinstance(iface.nodes, dict):
+                    nodes_snapshot = list(iface.nodes.values())
+                else:
+                    nodes_snapshot = []
+
+                local_node = getattr(iface, "localNode", None)
+                legacy_favorites = getattr(local_node, "favorites", None) if local_node is not None else None
+
+            device_favorites_present: set[str] = set()
+            device_non_favorites_present: set[str] = set()
+
+            for lib_node in nodes_snapshot:
+                if not isinstance(lib_node, dict):
+                    continue
+                num = lib_node.get("num")
+                if num is None:
+                    user = lib_node.get("user") or {}
+                    num = user.get("num")
+                if num is None:
+                    continue
+                nid = _node_id_from_num(num)
+                if not nid:
+                    continue
+                if lib_node.get("isFavorite") or lib_node.get("is_favorite"):
+                    device_favorites_present.add(nid)
+                else:
+                    device_non_favorites_present.add(nid)
+
+            if legacy_favorites is not None:
+                for fav in legacy_favorites:
+                    num = getattr(fav, "num", None)
+                    if num is not None:
+                        nid = _node_id_from_num(num)
+                        if nid:
+                            device_favorites_present.add(nid)
+
+            if not device_favorites_present and not device_non_favorites_present:
+                logger.debug("Device reported no nodes or favorites — skipping sync")
                 return
 
-            # Convert device favorites to our node ID format using the standard formatter
-            device_favorite_ids = set()
-            for fav in device_favorites:
-                if hasattr(fav, "num"):
-                    node_id = _node_id_from_num(fav.num)
-                    if node_id:
-                        device_favorite_ids.add(node_id)
-
             with self._favorites_lock:
-                # Merge device favorites with local favorites
-                merged = self._favorites.union(device_favorite_ids)
-                self._favorites = merged
+                self._favorites.update(device_favorites_present)
+                self._favorites.difference_update(device_non_favorites_present)
 
-            logger.debug("Synced %s favorites from device (total: %s)",
-                        len(device_favorite_ids), len(self._favorites))
-
-            # Save the merged list
+            logger.debug(
+                "Synced favorites from device (+%s, -%s, total: %s)",
+                len(device_favorites_present), len(device_non_favorites_present), len(self._favorites),
+            )
             self._save_favorites()
         except Exception as exc:  # noqa: BLE001
             logger.debug("Could not sync favorites from device (ignored): %s", exc)
@@ -3488,14 +3535,13 @@ class MeshtasticConnection:
             self_num = getattr(getattr(_iface_snap, "myInfo", None), "my_node_num", None) if _iface_snap else None
             self_id = ("!" + format(self_num, "08x")) if self_num is not None else None
 
-            for node_id in newly_discovered:
-                if node_id == self_id:
-                    continue
-
-                # Auto Responder Logic
-                if self._config and getattr(self._config, "auto_responder_enabled", False):
-                    msg = getattr(self._config, "auto_responder_message", "")
-                    if msg:
+            # Auto Responder Logic - rate limited to avoid TX queue overflow
+            if self._config and getattr(self._config, "auto_responder_enabled", False):
+                msg = getattr(self._config, "auto_responder_message", "")
+                if msg and newly_discovered:
+                    # Only auto-respond to first 3 nodes per discovery cycle to prevent flooding
+                    auto_respond_nodes = [n for n in newly_discovered if n != self_id][:3]
+                    for node_id in auto_respond_nodes:
                         logger.info("Auto-responder triggered: Discovered new node %s", node_id)
                         import threading
                         t = threading.Thread(
@@ -3505,6 +3551,12 @@ class MeshtasticConnection:
                             daemon=True,
                         )
                         t.start()
+                    if len(newly_discovered) > 3:
+                        logger.debug("Auto-responder rate limit: skipped %s additional nodes", len(newly_discovered) - 3)
+
+            for node_id in newly_discovered:
+                if node_id == self_id:
+                    continue
 
                 # Auto Traceroute Logic
                 if self._config and getattr(self._config, "auto_traceroute_enabled", False):

@@ -174,7 +174,7 @@ class TestTelegramBotHandleMessage:
         bot = TelegramBot(mock_config, Mock(), Mock(), Mock(), Mock())
         bot._handle_command = AsyncMock()
         await bot._handle_message({"chat": {"id": 12345, "type": "private"}, "text": "/status"})
-        bot._handle_command.assert_called_once_with("/status")
+        bot._handle_command.assert_called_once_with("/status", chat_id="12345")
 
     @pytest.mark.asyncio
     @pytest.mark.asyncio
@@ -183,7 +183,7 @@ class TestTelegramBotHandleMessage:
         bot = TelegramBot(mock_config, Mock(), Mock(), Mock(), Mock())
         bot._send_text = AsyncMock()
         await bot._handle_message({"chat": {"id": 12345, "type": "private"}, "text": "/status"})
-        bot._send_text.assert_called_once_with("Commands are disabled in config.")
+        bot._send_text.assert_called_once_with("Commands are disabled in config.", chat_id="12345")
 
     @pytest.mark.asyncio
     @pytest.mark.asyncio
@@ -199,7 +199,7 @@ class TestTelegramBotHandleMessage:
             "reply_to_message": {"message_id": 123}
         })
         bot.send_message_callback.assert_called_once_with("reply text", destination="!abcdef")
-        bot._send_text.assert_called_with("✅ Reply sent as DM to !abcdef.")
+        bot._send_text.assert_called_with("✅ Reply sent as DM to !abcdef.", chat_id="12345")
 
     @pytest.mark.asyncio
     @pytest.mark.asyncio
@@ -215,7 +215,7 @@ class TestTelegramBotHandleMessage:
             "reply_to_message": {"message_id": 456}
         })
         bot.send_message_callback.assert_called_once_with("reply text", channel=1)
-        bot._send_text.assert_called_with("✅ Reply sent to Channel 1.")
+        bot._send_text.assert_called_with("✅ Reply sent to Channel 1.", chat_id="12345")
 
     @pytest.mark.asyncio
     @pytest.mark.asyncio
@@ -230,7 +230,7 @@ class TestTelegramBotHandleMessage:
             "from": {"first_name": "Alice"}
         })
         bot.send_message_callback.assert_called_once_with("[Alice] hello mesh", channel=0)
-        bot._send_text.assert_called_with("✅ Message sent to mesh.")
+        bot._send_text.assert_called_with("✅ Message sent to mesh.", chat_id="12345")
 
 
 class TestTelegramBotHandleCommand:
@@ -292,7 +292,7 @@ class TestTelegramBotHandleCommand:
         bot.send_message_callback = AsyncMock(return_value=True)
         await bot._handle_command("/send #1 hello world")
         bot.send_message_callback.assert_called_once_with("hello world", channel=1)
-        bot._send_text.assert_called_with("✅ Message sent to Channel 1.")
+        bot._send_text.assert_called_with("✅ Message sent to Channel 1.", chat_id="12345")
 
     @pytest.mark.asyncio
     @pytest.mark.asyncio
@@ -301,7 +301,7 @@ class TestTelegramBotHandleCommand:
         bot = TelegramBot(mock_config, Mock(), Mock(), Mock(), Mock())
         bot._send_text = AsyncMock()
         await bot._handle_command("/send #20 hello")
-        bot._send_text.assert_called_with("❌ Invalid channel 20. Use 0-15.")
+        bot._send_text.assert_called_with("❌ Invalid channel 20. Use 0-15.", chat_id="12345")
 
     @pytest.mark.asyncio
     @pytest.mark.asyncio
@@ -312,7 +312,7 @@ class TestTelegramBotHandleCommand:
         bot.send_message_callback = AsyncMock(return_value=True)
         await bot._handle_command("/dm !abcdef hello")
         bot.send_message_callback.assert_called_once_with("hello", destination="!abcdef")
-        bot._send_text.assert_called_with("✅ DM sent to !abcdef.")
+        bot._send_text.assert_called_with("✅ DM sent to !abcdef.", chat_id="12345")
 
     @pytest.mark.asyncio
     @pytest.mark.asyncio
@@ -337,7 +337,7 @@ class TestTelegramBotHandleCommand:
         bot = TelegramBot(mock_config, Mock(), Mock(), Mock(), Mock())
         bot._send_text = AsyncMock()
         await bot._handle_command("/unknown")
-        bot._send_text.assert_called_with("Unknown command. Type /help.")
+        bot._send_text.assert_called_with("Unknown command. Type /help.", chat_id="12345")
 
 
 class TestTelegramBotSendText:
@@ -346,9 +346,8 @@ class TestTelegramBotSendText:
     async def test_send_text_uses_current_chat(self):
         mock_config = make_mock_config(telegram_authorized_chat_ids=["12345", "67890"])
         bot = TelegramBot(mock_config, Mock(), Mock(), Mock(), Mock())
-        bot._current_chat_id = "67890"
         bot._api_call = AsyncMock(return_value={"ok": True, "result": {"message_id": 123}})
-        result = await bot._send_text("test message")
+        result = await bot._send_text("test message", chat_id="67890")
         assert result == 123
         bot._api_call.assert_called_once_with("sendMessage", {
             "chat_id": "67890",
@@ -655,14 +654,15 @@ class TestTelegramBotMeshCommands:
     @pytest.mark.asyncio
     async def test_reboot_self(self):
         conn = Mock()
-        conn.remote_admin_action = AsyncMock(return_value={"ok": True})
+        conn._interface = Mock()
+        conn._interface.localNode = Mock()
         bot = self._bot(
             conn=conn,
             status=AsyncMock(return_value={"my_info": {"node_id": "!self123"}}),
         )
         await bot._handle_command("/reboot")
-        conn.remote_admin_action.assert_called_once()
-        assert conn.remote_admin_action.call_args[0][0] == "!self123"
+        conn._interface.localNode.reboot.assert_called_once_with(10)
+        conn.remote_admin_action.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_reboot_remote(self):

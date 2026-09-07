@@ -132,21 +132,40 @@ async def _on_startup(app: web.Application) -> None:
             try:
                 current_time = time.time()
                 to_send = conn._process_scheduled_messages(current_time)
-                for msg in to_send:
+                # Rate limit: send at most 3 messages per second to avoid TX queue overflow
+                max_messages_per_second = 3
+                send_batch = to_send[:max_messages_per_second]
+                deferred_messages = to_send[max_messages_per_second:]
+                if deferred_messages:
+                    logger.debug(
+                        "Rate limit reached: deferring %s remaining scheduled messages to next cycle",
+                        len(deferred_messages),
+                    )
+                    # Put remaining messages back in the queue for next cycle
+                    for deferred_msg in deferred_messages:
+                        dest = deferred_msg.get("to_id", "")
+                        conn.schedule_message(
+                            current_time + 1.0,
+                            dest or "",
+                            deferred_msg.get("text", ""),
+                            deferred_msg.get("channel", 0),
+                        )
+
+                for msg in send_batch:
                     # Message payload: (destination, text, channel)
                     dest = msg.get("to_id")
                     if dest == "":
                         dest = None
                     logger.debug(
                         "Sending scheduled message: text='%s' destination=%s channel=%s",
-                        msg["text"][:30] if msg.get("text") else "",
+                        msg.get("text", "")[:30] if msg.get("text") else "",
                         dest or "broadcast",
-                        msg["channel"],
+                        msg.get("channel", 0),
                     )
                     await conn.send_message(
-                        text=msg["text"],
+                        text=msg.get("text", ""),
                         destination=dest,
-                        channel=msg["channel"]
+                        channel=msg.get("channel", 0),
                     )
                     await asyncio.sleep(0.1)
             except Exception as exc:  # defensive: never crash the task  # noqa: BLE001

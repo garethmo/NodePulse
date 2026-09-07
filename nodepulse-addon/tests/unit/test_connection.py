@@ -484,6 +484,43 @@ class TestFavoriteDeviceCommunication:
         with conn._favorites_lock:
             assert len(conn._favorites) == 0
 
+    def test_sync_favorites_from_iface_nodes_adds_and_removes(self):
+        """Test that iface.nodes favorites are synced and un-favoriting is reflected."""
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
+        )
+
+        mock_interface = Mock()
+        mock_interface.localNode = None
+        # Nodes on the device:
+        # node1 (0x11111111 -> !11111111): favorite on device
+        # node2 (0x22222222 -> !22222222): NOT favorite on device (e.g. un-favorited via app)
+        mock_interface.nodes = {
+            0x11111111: {"num": 0x11111111, "isFavorite": True},
+            0x22222222: {"num": 0x22222222, "isFavorite": False},
+        }
+        conn._interface = mock_interface
+
+        # Pre-populate local favorites:
+        # !22222222 was previously favorited, but device now says isFavorite=False
+        # !33333333 is an offline node not present in device RAM DB (should be preserved)
+        with conn._favorites_lock:
+            conn._favorites.add("!22222222")
+            conn._favorites.add("!33333333")
+
+        conn._sync_favorites_from_device()
+
+        with conn._favorites_lock:
+            # Newly favorited on device is added
+            assert "!11111111" in conn._favorites
+            # Un-favorited on device is removed from local favorites
+            assert "!22222222" not in conn._favorites
+            # Offline node not in device DB is preserved
+            assert "!33333333" in conn._favorites
+
+
 
 class TestTraceroutePathConstruction:
     """Tests for traceroute path construction logic"""
