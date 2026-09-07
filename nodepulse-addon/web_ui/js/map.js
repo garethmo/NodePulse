@@ -1080,7 +1080,7 @@ export class MapManager {
       if (route.from_id && !forward.includes(route.from_id)) {
         forward.push(route.from_id);
       }
-      segments.push({ path: forward, label: `Traceroute → ${id}` });
+      segments.push({ path: forward, label: `Traceroute → ${id}`, side: 1 });
 
       // Return path (if the device reported one).
       if (route.route_back && route.route_back.length) {
@@ -1092,10 +1092,10 @@ export class MapManager {
         if (!back.includes(this._selfId)) {
           back.push(this._selfId);
         }
-        segments.push({ path: back, label: `Traceroute ← ${id}` });
+        segments.push({ path: back, label: `Traceroute ← ${id}`, side: -1 });
       }
 
-      for (const { path, label } of segments) {
+      for (const { path, label, side } of segments) {
         // Resolve a coordinate for every hop in the path. Hops without a GPS
         // fix (very common for relay nodes) have no marker, so we estimate
         // their position by linear interpolation between the nearest GPS-fixed
@@ -1143,6 +1143,11 @@ export class MapManager {
           }
         }
 
+        // Forward path uses the traceroute blue; return path uses the trail
+        // deep-orange — the same two-colour convention as MeshMonitor so the
+        // direction is immediately obvious even without reading the tooltip.
+        const segColor = side >= 0 ? COLOR_TRACEROUTE : COLOR_TRAIL;
+
         // Draw one line per consecutive hop pair (node → next node) so every
         // known leg of the route is visible even when an intermediate hop has
         // no GPS fix.
@@ -1157,29 +1162,31 @@ export class MapManager {
             !Number.isFinite(b[0]) || !Number.isFinite(b[1])
           ) continue;
 
+          // Offset forward and return paths laterally by a fixed distance so
+          // they run as two visible parallel lines rather than overlapping.
+          // `side` is +1 for forward (offset right of travel) and -1 for
+          // return (offset left), giving ~20 m separation at street zoom.
+          const [aOff, bOff] = this._perpendicularOffset(a, b, side, 20);
+
           const key = `tr-${id}-${lineIndex++}`;
 
-          const line = L.polyline([a, b], {
-            color: COLOR_TRACEROUTE,
+          const line = L.polyline([aOff, bOff], {
+            color: segColor,
             weight: 2.5,
-            opacity: 0.8,
+            opacity: 0.85,
           }).bindTooltip(label, { sticky: true, className: 'link-label' });
 
           if (this._tracesVisible) line.addTo(this._map);
           this._routeLinks.set(key, line);
 
           // Direction arrow — a CSS-rotated triangle divIcon placed at the
-          // midpoint of the segment. Rotation matches the geographic bearing
-          // (degrees clockwise from north) so it always points the right way.
-          const midLat = (a[0] + b[0]) / 2;
-          const midLng = (a[1] + b[1]) / 2;
-          const bearing = this._bearingDeg(a, b);
+          // midpoint of the (offset) segment.
+          const midLat = (aOff[0] + bOff[0]) / 2;
+          const midLng = (aOff[1] + bOff[1]) / 2;
+          const bearing = this._bearingDeg(aOff, bOff);
           const arrowIcon = L.divIcon({
             className: '',
-            // A simple CSS triangle rotated to the segment bearing.
-            // The triangle naturally points upward (north), so we rotate
-            // by the bearing to orient it along the line direction.
-            html: `<div class="tr-arrow" style="transform:rotate(${bearing}deg)"></div>`,
+            html: `<div class="tr-arrow" style="transform:rotate(${bearing}deg);border-bottom-color:${segColor}"></div>`,
             iconSize: [12, 12],
             iconAnchor: [6, 6],
           });
@@ -1212,6 +1219,47 @@ export class MapManager {
     const x = Math.sin(dLng) * Math.cos(lat2);
     const y = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng);
     return (toDeg(Math.atan2(x, y)) + 360) % 360;
+  }
+
+  /**
+   * Shift both endpoints of a segment laterally by offsetM metres, perpendicular
+   * to the a→b bearing. Used to separate forward and return traceroute paths so
+   * they are visible as two distinct parallel lines instead of overlapping.
+   *
+   * `side` is +1 to offset right of travel direction, −1 to offset left.
+   *
+   * Uses the equirectangular approximation (accurate to <0.1% for offsets
+   * under 1 km, which is far larger than the ~20 m we apply here).
+   *
+   * @param {[number, number]} a - Start point [lat, lng]
+   * @param {[number, number]} b - End point [lat, lng]
+   * @param {number} side - +1 (right) or -1 (left)
+   * @param {number} offsetM - Lateral offset in metres
+   * @returns {[[number,number],[number,number]]} Offset [a', b'] pair
+   */
+  _perpendicularOffset(a, b, side, offsetM) {
+    const EARTH_R = 6371000; // metres
+    const toRad = (d) => (d * Math.PI) / 180;
+    // Bearing from a to b, then rotate 90° in the requested direction.
+    const bearing = this._bearingDeg(a, b);
+    const perpBearing = toRad((bearing + 90 * side + 360) % 360);
+    // Angular distance for offsetM metres on the sphere.
+    const angDist = offsetM / EARTH_R;
+    // Shift each point by angDist along perpBearing.
+    const shift = ([lat, lng]) => {
+      const latR = toRad(lat);
+      const lngR = toRad(lng);
+      const newLatR = Math.asin(
+        Math.sin(latR) * Math.cos(angDist) +
+        Math.cos(latR) * Math.sin(angDist) * Math.cos(perpBearing),
+      );
+      const newLngR = lngR + Math.atan2(
+        Math.sin(perpBearing) * Math.sin(angDist) * Math.cos(latR),
+        Math.cos(angDist) - Math.sin(latR) * Math.sin(newLatR),
+      );
+      return [newLatR * 180 / Math.PI, newLngR * 180 / Math.PI];
+    };
+    return [shift(a), shift(b)];
   }
 
   /**

@@ -2776,18 +2776,20 @@ body::before {
 /* A solid upward-pointing triangle rendered via the CSS border trick.         */
 /* JavaScript rotates the element to the segment's geographic bearing so the   */
 /* arrow always points in the direction the packet was traced.                 */
+/* Colour is set per-segment via inline style (blue for forward, orange-red    */
+/* for return) — this rule provides fallback geometry defaults only.           */
 /* -------------------------------------------------------------------------- */
 .tr-arrow {
   width: 0;
   height: 0;
-  /* Upward-pointing triangle: 6px wide base, 9px tall */
+  /* Upward-pointing triangle: 5px base, 10px tall */
   border-left: 5px solid transparent;
   border-right: 5px solid transparent;
-  border-bottom: 10px solid #4fc3f7; /* COLOR_TRACEROUTE */
+  border-bottom: 10px solid #4fc3f7; /* fallback — overridden per-segment */
   opacity: 0.9;
   /* Centre the rotation around the triangle's visual centre of mass */
   transform-origin: 50% 65%;
-  filter: drop-shadow(0 0 3px rgba(79, 195, 247, 0.7));
+  filter: drop-shadow(0 0 3px rgba(79, 195, 247, 0.5));
   pointer-events: none;
 }
 
