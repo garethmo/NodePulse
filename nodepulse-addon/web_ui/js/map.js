@@ -834,8 +834,12 @@ export class MapManager {
     // Load saved map type preference (dark, light, satellite, topographical)
     const savedMapType = localStorage.getItem('nodepulse-map-type') || DEFAULT_MAP_TYPE;
     this._map = createMap(this._elementId, savedMapType);
-    // Note: heatLayer is created lazily in updateTrails() because leaflet.heat
-    // is loaded with `defer` and may not yet be available at init() time.
+
+    // Recompute link lines and traceroute parallel offsets on zoom so screen pixel
+    // separation remains crisp and consistent at all zoom levels.
+    this._map.on('zoomend', () => {
+      this._updateLinks();
+    });
 
     // Event delegation for popup action buttons (traceroute, message)
     this._map.getContainer().addEventListener('click', (e) => {
@@ -1080,22 +1084,42 @@ export class MapManager {
       if (route.from_id && !forward.includes(route.from_id)) {
         forward.push(route.from_id);
       }
-      segments.push({ path: forward, label: `Traceroute → ${id}`, side: 1 });
 
-      // Return path (if the device reported one).
+      // Return path (if reported): target → intermediate hops → self
+      let back = null;
       if (route.route_back && route.route_back.length) {
-        const back = [...(route.route_back || []).map(toNodeId)];
-        // Build the return path: target → intermediate hops → self
+        back = [...route.route_back.map(toNodeId)];
         if (!back.includes(route.from_id)) {
           back.unshift(route.from_id);
         }
         if (!back.includes(this._selfId)) {
           back.push(this._selfId);
         }
-        segments.push({ path: back, label: `Traceroute ← ${id}`, side: -1 });
       }
 
-      for (const { path, label, side } of segments) {
+      // Build undirected edge sets for both directions so any hop traversed
+      // in both directions (whether identical reverse route or partially shared)
+      // is drawn as two separate, non-overlapping parallel lines similar to MeshMonitor.
+      const backEdges = new Set();
+      if (back) {
+        for (let j = 0; j < back.length - 1; j++) {
+          backEdges.add(`${back[j]}|${back[j + 1]}`);
+          backEdges.add(`${back[j + 1]}|${back[j]}`);
+        }
+      }
+
+      const forwardEdges = new Set();
+      for (let j = 0; j < forward.length - 1; j++) {
+        forwardEdges.add(`${forward[j]}|${forward[j + 1]}`);
+        forwardEdges.add(`${forward[j + 1]}|${forward[j]}`);
+      }
+
+      segments.push({ path: forward, label: `Traceroute → ${id}`, isReturn: false });
+      if (back) {
+        segments.push({ path: back, label: `Traceroute ← ${id}`, isReturn: true });
+      }
+
+      for (const { path, label, isReturn } of segments) {
         // Resolve a coordinate for every hop in the path. Hops without a GPS
         // fix (very common for relay nodes) have no marker, so we estimate
         // their position by linear interpolation between the nearest GPS-fixed
@@ -1143,10 +1167,9 @@ export class MapManager {
           }
         }
 
-        // Forward path uses the traceroute blue; return path uses the trail
-        // deep-orange — the same two-colour convention as MeshMonitor so the
-        // direction is immediately obvious even without reading the tooltip.
-        const segColor = side >= 0 ? COLOR_TRACEROUTE : COLOR_TRAIL;
+        // Forward path uses traceroute blue; return path uses trail deep-orange
+        // (same two-colour convention as MeshMonitor) so direction is obvious at a glance.
+        const segColor = isReturn ? COLOR_TRAIL : COLOR_TRACEROUTE;
 
         // Draw one line per consecutive hop pair (node → next node) so every
         // known leg of the route is visible even when an intermediate hop has
@@ -1162,11 +1185,17 @@ export class MapManager {
             !Number.isFinite(b[0]) || !Number.isFinite(b[1])
           ) continue;
 
-          // Offset forward and return paths laterally by a fixed distance so
-          // they run as two visible parallel lines rather than overlapping.
-          // `side` is +1 for forward (offset right of travel) and -1 for
-          // return (offset left), giving ~20 m separation at street zoom.
-          const [aOff, bOff] = this._perpendicularOffset(a, b, side, 20);
+          // When forward and return traverse the same physical link, separate
+          // them into 2 parallel lines: each side shifts 5px to the right of
+          // its own travel direction (10px total screen separation). If only
+          // one direction uses this link, draw directly between the nodes (side=0).
+          const u = path[i];
+          const v = path[i + 1];
+          const isShared = isReturn
+            ? forwardEdges.has(`${u}|${v}`)
+            : backEdges.has(`${u}|${v}`);
+          const side = isShared ? 1 : 0;
+          const [aOff, bOff] = this._perpendicularOffset(a, b, side, 5);
 
           const key = `tr-${id}-${lineIndex++}`;
 
@@ -1222,30 +1251,55 @@ export class MapManager {
   }
 
   /**
-   * Shift both endpoints of a segment laterally by offsetM metres, perpendicular
-   * to the a→b bearing. Used to separate forward and return traceroute paths so
-   * they are visible as two distinct parallel lines instead of overlapping.
+   * Shift both endpoints of a segment laterally by offsetPx pixels perpendicular
+   * to the a→b travel direction, so forward and return traceroutes sit side-by-side
+   * as 2 separate lines similar to MeshMonitor.
    *
-   * `side` is +1 to offset right of travel direction, −1 to offset left.
+   * `side` is +1 to offset right of travel direction, or 0 for no offset.
    *
-   * Uses the equirectangular approximation (accurate to <0.1% for offsets
-   * under 1 km, which is far larger than the ~20 m we apply here).
+   * Converts to screen layer pixels using Leaflet's projection, so separation
+   * remains crisp and consistent across all map zoom levels.
    *
    * @param {[number, number]} a - Start point [lat, lng]
    * @param {[number, number]} b - End point [lat, lng]
-   * @param {number} side - +1 (right) or -1 (left)
-   * @param {number} offsetM - Lateral offset in metres
+   * @param {number} side - +1 (right) or 0 (no offset)
+   * @param {number} offsetPx - Lateral screen offset in pixels
    * @returns {[[number,number],[number,number]]} Offset [a', b'] pair
    */
-  _perpendicularOffset(a, b, side, offsetM) {
-    const EARTH_R = 6371000; // metres
+  _perpendicularOffset(a, b, side, offsetPx = 5) {
+    if (!side || !Number.isFinite(side)) {
+      return [a, b];
+    }
+    // Pixel-accurate offset in screen layer coordinates so line separation
+    // remains constant and crisp regardless of zoom level.
+    if (this._map && typeof this._map.latLngToLayerPoint === 'function' && this._mapHasSize()) {
+      try {
+        const pA = this._map.latLngToLayerPoint(a);
+        const pB = this._map.latLngToLayerPoint(b);
+        const dx = pB.x - pA.x;
+        const dy = pB.y - pA.y;
+        const len = Math.hypot(dx, dy);
+        if (len >= 1e-6) {
+          // Normal vector pointing to the right of travel direction
+          // In screen coords (+x right, +y down), normal to the right of (dx, dy) is (-dy/len, dx/len)
+          const nx = (-dy / len) * offsetPx * side;
+          const ny = (dx / len) * offsetPx * side;
+          const newA = this._map.layerPointToLatLng(L.point(pA.x + nx, pA.y + ny));
+          const newB = this._map.layerPointToLatLng(L.point(pB.x + nx, pB.y + ny));
+          return [
+            [newA.lat, newA.lng],
+            [newB.lat, newB.lng],
+          ];
+        }
+      } catch (_) {}
+    }
+
+    // Fallback: geographic spherical offset if map container is not yet laid out
+    const EARTH_R = 6371000;
     const toRad = (d) => (d * Math.PI) / 180;
-    // Bearing from a to b, then rotate 90° in the requested direction.
     const bearing = this._bearingDeg(a, b);
     const perpBearing = toRad((bearing + 90 * side + 360) % 360);
-    // Angular distance for offsetM metres on the sphere.
-    const angDist = offsetM / EARTH_R;
-    // Shift each point by angDist along perpBearing.
+    const angDist = 25 / EARTH_R;
     const shift = ([lat, lng]) => {
       const latR = toRad(lat);
       const lngR = toRad(lng);

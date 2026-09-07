@@ -2789,7 +2789,7 @@ body::before {
   opacity: 0.9;
   /* Centre the rotation around the triangle's visual centre of mass */
   transform-origin: 50% 65%;
-  filter: drop-shadow(0 0 3px rgba(79, 195, 247, 0.5));
+  filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.8));
   pointer-events: none;
 }
 
