@@ -382,6 +382,8 @@ export class MapManager {
     // Map<nodeId, L.Polyline> — multi-hop traceroute route paths discovered
     // between nodes (blue).
     this._routeLinks = new Map();
+    // Map<key, L.Marker> — midpoint direction-arrow markers for each traceroute segment.
+    this._routeArrows = new Map();
     // Map<nodeId, L.Polyline> — position history trail for each node (deep orange).
     this._trailLines = new Map();
     // Map<waypointId, L.Marker> — waypoint markers (amber pin with emoji).
@@ -498,6 +500,10 @@ export class MapManager {
     for (const line of this._routeLinks.values()) {
       if (this._tracesVisible) line.addTo(this._map);
       else this._map.removeLayer(line);
+    }
+    for (const arrow of this._routeArrows.values()) {
+      if (this._tracesVisible) arrow.addTo(this._map);
+      else this._map.removeLayer(arrow);
     }
     return this._tracesVisible;
   }
@@ -971,9 +977,11 @@ export class MapManager {
     this._selfLinks.forEach(l => { try { l.remove(); } catch (_) {} });
     this._peerLinks.forEach(l => { try { l.remove(); } catch (_) {} });
     this._routeLinks.forEach(l => { try { l.remove(); } catch (_) {} });
+    this._routeArrows.forEach(a => { try { a.remove(); } catch (_) {} });
     this._selfLinks.clear();
     this._peerLinks.clear();
     this._routeLinks.clear();
+    this._routeArrows.clear();
 
     // Collect GPS-fixed markers (exclude the self node from the pairing set).
     const gpsMarkers = [];
@@ -1149,6 +1157,8 @@ export class MapManager {
             !Number.isFinite(b[0]) || !Number.isFinite(b[1])
           ) continue;
 
+          const key = `tr-${id}-${lineIndex++}`;
+
           const line = L.polyline([a, b], {
             color: COLOR_TRACEROUTE,
             weight: 2.5,
@@ -1156,10 +1166,52 @@ export class MapManager {
           }).bindTooltip(label, { sticky: true, className: 'link-label' });
 
           if (this._tracesVisible) line.addTo(this._map);
-          this._routeLinks.set(`tr-${id}-${lineIndex++}`, line);
+          this._routeLinks.set(key, line);
+
+          // Direction arrow — a CSS-rotated triangle divIcon placed at the
+          // midpoint of the segment. Rotation matches the geographic bearing
+          // (degrees clockwise from north) so it always points the right way.
+          const midLat = (a[0] + b[0]) / 2;
+          const midLng = (a[1] + b[1]) / 2;
+          const bearing = this._bearingDeg(a, b);
+          const arrowIcon = L.divIcon({
+            className: '',
+            // A simple CSS triangle rotated to the segment bearing.
+            // The triangle naturally points upward (north), so we rotate
+            // by the bearing to orient it along the line direction.
+            html: `<div class="tr-arrow" style="transform:rotate(${bearing}deg)"></div>`,
+            iconSize: [12, 12],
+            iconAnchor: [6, 6],
+          });
+          const arrowMarker = L.marker([midLat, midLng], {
+            icon: arrowIcon,
+            interactive: false, // arrows are decorative — don't intercept clicks
+            keyboard: false,
+          });
+          if (this._tracesVisible) arrowMarker.addTo(this._map);
+          this._routeArrows.set(key, arrowMarker);
         }
       }
     }
+  }
+
+  /**
+   * Compute the geographic bearing in degrees (clockwise from north) from
+   * point a to point b, where each is a [lat, lng] pair.
+   *
+   * @param {[number, number]} a - Source [lat, lng]
+   * @param {[number, number]} b - Destination [lat, lng]
+   * @returns {number} Bearing in degrees [0, 360)
+   */
+  _bearingDeg(a, b) {
+    const toRad = (d) => (d * Math.PI) / 180;
+    const toDeg = (r) => (r * 180) / Math.PI;
+    const lat1 = toRad(a[0]);
+    const lat2 = toRad(b[0]);
+    const dLng = toRad(b[1] - a[1]);
+    const x = Math.sin(dLng) * Math.cos(lat2);
+    const y = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng);
+    return (toDeg(Math.atan2(x, y)) + 360) % 360;
   }
 
   /**
