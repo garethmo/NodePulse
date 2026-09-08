@@ -123,19 +123,55 @@ _SNR_FAIR = -10.0
 # Below _SNR_FAIR → "poor"
 
 
+def normalize_node_id(raw: Any) -> str | None:
+    """Normalize any Meshtastic node ID representation to canonical '!xxxxxxxx' lowercase hex.
+
+    Handles:
+      - None / empty -> None
+      - int (e.g. 287484603) -> '!1122aabb'
+      - string with '!' (e.g. '!1122AABB', '!1122aabb') -> '!1122aabb'
+      - 8-char hex string without '!' (e.g. '1122aabb') -> '!1122aabb'
+      - decimal node num string (e.g. '287484603') -> '!1122aabb'
+      - strings with whitespace -> stripped and normalized
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, int):
+        return "!" + format(raw & 0xFFFFFFFF, "08x")
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s:
+            return None
+        if s.startswith("!"):
+            try:
+                val = int(s[1:], 16)
+                return "!" + format(val & 0xFFFFFFFF, "08x")
+            except ValueError:
+                return None
+        if len(s) == 8:
+            try:
+                val = int(s, 16)
+                return "!" + format(val & 0xFFFFFFFF, "08x")
+            except ValueError:
+                pass
+        if s.isdigit():
+            try:
+                val = int(s, 10)
+                return "!" + format(val & 0xFFFFFFFF, "08x")
+            except ValueError:
+                pass
+        return None
+    return None
+
+
 def _node_id_from_num(num: Any) -> str | None:
-    """Format a Meshtastic node number as a canonical "!hex" ID.
+    """Format a Meshtastic node number as a canonical '!hex' ID.
 
     Used everywhere we turn a raw packet ``from``/``to`` integer into the
     "!xxxxxxxx" form that the Web UI and our caches key on, so the formatting
     logic lives in exactly one place.
     """
-    if num is None:
-        return None
-    try:
-        return "!" + format(int(num) & 0xFFFFFFFF, "08x")
-    except (TypeError, ValueError):
-        return None
+    return normalize_node_id(num)
 
 
 def _channel_role_name(value: int) -> str:
@@ -2845,9 +2881,17 @@ class MeshtasticConnection:
                     data = json.load(fh)
             if isinstance(data, list):
                 with self._nodes_lock:
+                    seen = set()
+                    # Called once at startup — safe to reset any in-memory state
+                    # that may have accumulated before the file was loaded.
+                    self._nodes = []
                     for n in data:
-                        if isinstance(n, dict) and n.get("id"):
-                            self._nodes.append(n)
+                        if isinstance(n, dict):
+                            nid = normalize_node_id(n.get("id"))
+                            if nid and nid not in seen:
+                                seen.add(nid)
+                                n["id"] = nid
+                                self._nodes.append(n)
                 logger.debug(
                     "Restored %s persisted nodes from %s",
                     len(self._nodes), _NODES_FILE,
@@ -3411,7 +3455,13 @@ class MeshtasticConnection:
                 # keep showing nodes rather than going blank; these are the
                 # persisted nodes restored at startup.
                 with self._nodes_lock:
-                    nodes = list(self._nodes)
+                    deduped = {}
+                    for n in self._nodes:
+                        nid = normalize_node_id(n.get("id"))
+                        if nid and nid not in deduped:
+                            n["id"] = nid
+                            deduped[nid] = n
+                    nodes = list(deduped.values())
                 # Attach any persisted traceroutes so the topology page can
                 # keep drawing links even while the radio is offline, and
                 # re-inject nodes that exist only in the traceroute store
@@ -3421,7 +3471,8 @@ class MeshtasticConnection:
                 if traceroutes_snapshot:
                     known = {n.get("id") for n in nodes}
                     for tid, rec in traceroutes_snapshot.items():
-                        if not rec:
+                        tid = normalize_node_id(tid)
+                        if not tid or not rec:
                             continue
                         if tid in known:
                             for n in nodes:
@@ -3436,6 +3487,7 @@ class MeshtasticConnection:
                                 "long_name": "",
                                 "short_name": "",
                             })
+                            known.add(tid)
                 return nodes
         # _lock is now released — proceed with the merge.
         nodes_raw = dict(self._interface.nodes or {})
@@ -3448,22 +3500,6 @@ class MeshtasticConnection:
         # stale re-injection loop below can correctly identify which persisted
         # nodes are absent from the current poll and need restoring.
         result_ids: set[str] = set()
-
-        # Normalize a node identity (int or "!hex" string) to the canonical
-        # "!xxxxxxxx" form used everywhere in the Web UI and our caches. The
-        # meshtastic library has historically keyed interface.nodes by either
-        # an integer node number or a "!hex" string depending on version, so
-        # we normalise up front to keep traceroute/position merges working.
-        def _norm_id(raw: Any) -> str | None:
-            if raw is None:
-                return None
-            if isinstance(raw, str):
-                s = raw.strip().lower()
-                return s if s.startswith("!") else ("!" + s)
-            try:
-                return "!" + format(int(raw) & 0xFFFFFFFF, "08x")
-            except Exception:  # noqa: BLE001
-                return None
 
         # Merge the interface's latest node data into our persistent cache.
         # This keeps late-arriving traceroute/position updates visible on the
@@ -3478,13 +3514,13 @@ class MeshtasticConnection:
         with self._nodes_lock:
             cached = {}
             for n in self._nodes:
-                nid = _norm_id(n.get("id"))
+                nid = normalize_node_id(n.get("id"))
                 if nid:
                     n["id"] = nid
                     cached[nid] = n
-            for node_id, node_data in nodes_raw.items():
-                node_id = _norm_id(node_id)
-                if not node_id:
+            for raw_id, node_data in nodes_raw.items():
+                node_id = normalize_node_id(raw_id)
+                if not node_id or node_id in result_ids:
                     continue
                 # Extract the nested sub-objects safely — the meshtastic
                 # library returns protobuf-derived dicts whose keys may be
@@ -3630,26 +3666,28 @@ class MeshtasticConnection:
             # persisted node was already in `cached` from the snapshot at the top
             # of this block.
             for node in list(self._nodes):
-                nid = _norm_id(node.get("id"))
+                nid = normalize_node_id(node.get("id"))
                 if not nid or nid in result_ids:
                     # Already emitted from live radio data — skip.
                     continue
                 # Evicted / absent from radio this cycle: restore from store.
                 restored = dict(node)
+                restored["id"] = nid
                 restored["stale"] = True
                 cached[nid] = restored
                 result.append(restored)
+                result_ids.add(nid)
 
             # Merge persisted traceroute results back onto their nodes so a
             # previously-discovered route is shown even before (or without)
             # a fresh traceroute request this session.
             for tid, rec in traceroutes_snapshot.items():
-                tid = _norm_id(tid)
+                tid = normalize_node_id(tid)
                 if not tid or not rec:
                     continue
                 if tid in cached:
                     cached[tid]["traceroute"] = rec
-                else:
+                elif tid not in result_ids:
                     synthetic = {
                         "id": tid,
                         "long_name": tid,
@@ -3667,6 +3705,7 @@ class MeshtasticConnection:
                     }
                     cached[tid] = synthetic
                     result.append(synthetic)
+                    result_ids.add(tid)
 
             self._nodes = list(cached.values())
 
@@ -4101,7 +4140,13 @@ class MeshtasticConnection:
         """
         if self._interface is None or not node_id:
             return
-        lib_node = self._interface.nodes.get(node_id)
+        canon_id = normalize_node_id(node_id)
+        if not canon_id:
+            return
+        lib_node = (
+            self._interface.nodes.get(node_id)
+            or self._interface.nodes.get(canon_id)
+        )
         if lib_node is None:
             return
 
@@ -4151,9 +4196,10 @@ class MeshtasticConnection:
 
         with self._nodes_lock:
             existing = next(
-                (n for n in self._nodes if n.get("id") == node_id), None
+                (n for n in self._nodes if normalize_node_id(n.get("id")) == canon_id), None
             )
             if existing is not None:
+                existing["id"] = canon_id
                 # Snapshot all prev values BEFORE update() so we can
                 # fall back to them for any field the library omitted.
                 prev_traceroute = existing.get("traceroute")
@@ -4218,7 +4264,7 @@ class MeshtasticConnection:
                     existing["altitude"] = prev_alt
             else:
                 entry = dict(patch)
-                entry["id"] = node_id
+                entry["id"] = canon_id
                 if patch.get("latitude") is not None or patch.get("longitude") is not None:
                     entry["last_position_fix"] = int(time.time())
                 self._nodes.append(entry)

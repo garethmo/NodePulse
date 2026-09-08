@@ -82,10 +82,68 @@ const TRACKER_ICON = L.divIcon({
   popupAnchor: [0, -8],
 });
 
-function getNodeIcon(role) {
-  if (role === 'ROUTER' || role === 'REPEATER') return ROUTER_ICON;
-  if (role === 'TRACKER') return TRACKER_ICON;
-  return CLIENT_ICON;
+// Cache for offset icons keyed by "role|isSelf|yOffset" — prevents Leaflet
+// recreating DOM elements on every poll cycle for co-located markers.
+const _offsetIconCache = new Map();
+
+function getNodeIcon(role, isSelf = false, yOffset = 0) {
+  // Zero-offset path: return the pre-allocated static icon constants.
+  if (!yOffset) {
+    if (isSelf) return SELF_ICON;
+    if (role === 'ROUTER' || role === 'REPEATER') return ROUTER_ICON;
+    if (role === 'TRACKER') return TRACKER_ICON;
+    return CLIENT_ICON;
+  }
+
+  // Non-zero offset: build once per (role, isSelf, yOffset) combination and
+  // cache the result so repeated polls don't trigger Leaflet DOM re-renders.
+  const cacheKey = `${role}|${isSelf}|${yOffset}`;
+  if (_offsetIconCache.has(cacheKey)) {
+    return _offsetIconCache.get(cacheKey);
+  }
+
+  let icon;
+  if (isSelf) {
+    icon = L.divIcon({
+      className: '',
+      html: `
+        <div style="
+          width:16px; height:16px; border-radius:50%;
+          background:#4fc3f7; border:3px solid rgba(79,195,247,0.5);
+          box-shadow:0 0 16px rgba(79,195,247,0.8);
+        "></div>`,
+      iconSize: [16, 16],
+      iconAnchor: [8, 8 - yOffset],
+      popupAnchor: [0, -10 + yOffset],
+    });
+  } else if (role === 'ROUTER' || role === 'REPEATER') {
+    icon = L.divIcon({
+      className: '',
+      html: `<div class="map-marker-router"></div>`,
+      iconSize: [18, 18],
+      iconAnchor: [9, 9 - yOffset],
+      popupAnchor: [0, -12 + yOffset],
+    });
+  } else if (role === 'TRACKER') {
+    icon = L.divIcon({
+      className: '',
+      html: `<div class="map-marker-tracker"></div>`,
+      iconSize: [10, 10],
+      iconAnchor: [5, 5 - yOffset],
+      popupAnchor: [0, -8 + yOffset],
+    });
+  } else {
+    icon = L.divIcon({
+      className: '',
+      html: `<div class="map-marker-client"></div>`,
+      iconSize: [14, 14],
+      iconAnchor: [7, 7 - yOffset],
+      popupAnchor: [0, -10 + yOffset],
+    });
+  }
+
+  _offsetIconCache.set(cacheKey, icon);
+  return icon;
 }
 
 const SELF_ICON = L.divIcon({
@@ -895,8 +953,9 @@ export class MapManager {
     const offsets = new Map();
     const clusters = [];
 
+    // Caller (updateNodes) guarantees no duplicate IDs — iterate directly.
     // Group co-located nodes (exact coordinate match or within 25 meters)
-    for (const node of gpsNodes) {
+    for (const node of (gpsNodes || [])) {
       let cluster = clusters.find((c) => {
         const rep = c[0];
         if (node.latitude === rep.latitude && node.longitude === rep.longitude) {
@@ -999,8 +1058,20 @@ export class MapManager {
     if (!this._map) return;
 
     // Cache the full (unfiltered) list so filter changes can re-render without
-    // waiting for the next poll.
-    this._allNodes = nodes || [];
+    // waiting for the next poll. Deduplicate defensively by canonical ID.
+    const rawNodes = nodes || [];
+    const seenNids = new Set();
+    const uniqueNodes = [];
+    for (const n of rawNodes) {
+      if (!n || !n.id) continue;
+      // IDs from the backend are already '!hex' — just lowercase for safety.
+      const canonicalId = n.id.toLowerCase();
+      if (seenNids.has(canonicalId)) continue;
+      seenNids.add(canonicalId);
+      // Spread to avoid mutating the original object passed by the caller.
+      uniqueNodes.push({ ...n, id: canonicalId });
+    }
+    this._allNodes = uniqueNodes;
 
     // Only draw markers for nodes that pass the active filter.
     const filtered = this._filterNodes(this._allNodes);
@@ -1025,8 +1096,9 @@ export class MapManager {
       const latLng = [latitude, longitude];
 
       const isSelf = id === this._selfId;
-      const icon = isSelf ? SELF_ICON : getNodeIcon(node.role);
       const offset = labelOffsets.get(id) || [10, 0];
+      const yOffset = offset[1] || 0;
+      const icon = getNodeIcon(node.role, isSelf, yOffset);
 
       let marker = this._markers.get(id);
       if (marker) {

@@ -85,6 +85,11 @@ If the user selected "15+ days" but all nodes were recently heard, the handler s
 `test_handle_clear_stale_nodes_with_query_param` embedded `?days=30` in the path string, but `make_request()` never parses the path — it reads `request.query` from a separate dict. The handler never saw `days`, omitted it from the response, and the assertion failed.  
 **Fix:** test now passes `query={"days": "30"}` to `make_request()`.
 
+#### 5. Duplicate Nodes & Co-located Marker Overlap
+- **Backend deduplication & ID canonicalization**: In `_get_nodes_sync` in `connection.py`, when `nodes_raw` contained both integer and string keys for the same node, both were appended to `result` because `if node_id in result_ids: continue` was missing. Furthermore, the stale re-injection loop did not call `result_ids.add(nid)`, causing duplicate stale nodes. Also, unnormalized IDs (e.g. `"12345678"` vs `"!12345678"`, uppercase hex, or decimal strings) resulted in multiple representations of the same physical node. Added `normalize_node_id`, enforced deduplication on load (`_load_nodes`), connected merge, disconnected fallback, and interface refresh.
+- **Frontend deduplication**: `pollData()` in `app.js` and `updateNodes()` in `map.js` now defensively canonicalize IDs and deduplicate incoming node lists.
+- **Co-located marker icon separation**: Co-located nodes (exact coordinates or within 25m) previously rendered all marker icons directly on top of each other, completely hiding all but the top icon. Now, `getNodeIcon(role, isSelf, yOffset)` applies matching `iconAnchor: [baseX, baseY - yOffset]` and `popupAnchor: [0, basePopupY + yOffset]` corresponding to the vertical label offset (`LABEL_STEP_Y = 22`). Every co-located node (Gateway, Router, Client, Tracker) displays its own distinct icon aligned horizontally beside its label, and is directly clickable on the map.
+
 ### Test results (all passing)
 ```
 tests/e2e/test_api.py::test_clear_stale_nodes                              PASSED

@@ -1953,7 +1953,21 @@ async function pollData() {
   }
 
   if (nodesResult.status === 'fulfilled') {
-    state.nodes = nodesResult.value;
+    const rawNodes = nodesResult.value || [];
+    const seenNids = new Set();
+    const uniqueNodes = [];
+    for (const n of rawNodes) {
+      if (!n || !n.id) continue;
+      // IDs from the backend are already '!hex', but normalise defensively.
+      // Use .toLowerCase() only — the backend guarantees !hex format, so we
+      // avoid the decimal-string ambiguity of blindly prepending '!'.
+      const canonicalId = n.id.toLowerCase();
+      if (seenNids.has(canonicalId)) continue;
+      seenNids.add(canonicalId);
+      // Spread to avoid mutating the original API response object.
+      uniqueNodes.push({ ...n, id: canonicalId });
+    }
+    state.nodes = uniqueNodes;
 
     // Determine the self/local node ID from the status so the map can draw
     // distance-labelled links from it, and highlight it as the hub.

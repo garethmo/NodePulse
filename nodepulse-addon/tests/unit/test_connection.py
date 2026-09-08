@@ -2012,5 +2012,82 @@ class TestStabilityRemediations:
         evicted = next(n for n in nodes if n["id"] == "!22222222")
         assert evicted.get("stale") is True
 
+    def test_normalize_node_id(self):
+        from app.connection import normalize_node_id
+        assert normalize_node_id(None) is None
+        assert normalize_node_id("") is None
+        assert normalize_node_id("   ") is None
+        assert normalize_node_id(0x1122aabb) == "!1122aabb"
+        assert normalize_node_id("!1122aabb") == "!1122aabb"
+        assert normalize_node_id("!1122AABB") == "!1122aabb"
+        assert normalize_node_id("1122aabb") == "!1122aabb"
+        assert normalize_node_id(287484603) == "!1122aabb"
+        assert normalize_node_id("287484603") == "!1122aabb"
+        assert normalize_node_id("  !1122aabb  ") == "!1122aabb"
+
+    def test_get_nodes_sync_deduplicates_live_radio_keys(self):
+        conn = self._conn()
+        conn._interface.myInfo.my_node_num = 12345
+        # interface.nodes contains both hex string and int num for the same node
+        conn._interface.nodes = {
+            "!11111111": {"user": {"longName": "Node1"}, "position": {"latitude": 10, "longitude": 20}},
+            286331153: {"user": {"longName": "Node1"}, "position": {"latitude": 10, "longitude": 20}},
+        }
+        with patch("app.remote_cache.load_remote_cache", return_value={}):
+            nodes = conn._get_nodes_sync()
+        assert len(nodes) == 1
+        assert nodes[0]["id"] == "!11111111"
+
+    def test_get_nodes_sync_deduplicates_stale_nodes(self):
+        conn = self._conn()
+        conn._interface.myInfo.my_node_num = 12345
+        conn._interface.nodes = {}
+        conn._nodes = [
+            {"id": "!22222222", "long_name": "Stale Node", "latitude": 15, "longitude": 25},
+            {"id": "!22222222", "long_name": "Stale Node", "latitude": 15, "longitude": 25},
+            {"id": "22222222", "long_name": "Stale Node", "latitude": 15, "longitude": 25},
+        ]
+        with patch("app.remote_cache.load_remote_cache", return_value={}):
+            nodes = conn._get_nodes_sync()
+        assert len(nodes) == 1
+        assert nodes[0]["id"] == "!22222222"
+
+    def test_get_nodes_sync_deduplicates_disconnected(self):
+        conn = self._conn()
+        conn._interface = None
+        conn._connected = False
+        conn._nodes = [
+            {"id": "!33333333", "long_name": "Offline Node", "latitude": 15, "longitude": 25},
+            {"id": "33333333", "long_name": "Offline Node", "latitude": 15, "longitude": 25},
+        ]
+        nodes = conn._get_nodes_sync()
+        assert len(nodes) == 1
+        assert nodes[0]["id"] == "!33333333"
+
+    def test_load_nodes_deduplicates_and_normalizes(self):
+        import json
+        import tempfile
+        conn = self._conn()
+        raw_data = [
+            {"id": "!44444444", "long_name": "Node 4"},
+            {"id": "44444444", "long_name": "Node 4"},
+            {"id": "!44444444", "long_name": "Node 4"},
+            {"id": "!55555555", "long_name": "Node 5"},
+        ]
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            json.dump(raw_data, f)
+            f.flush()
+            temp_path = f.name
+        try:
+            with patch.object(connection, "_NODES_FILE", temp_path):
+                conn._load_nodes()
+            assert len(conn._nodes) == 2
+            ids = {n["id"] for n in conn._nodes}
+            assert ids == {"!44444444", "!55555555"}
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
+
 
 
