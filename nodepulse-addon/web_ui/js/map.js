@@ -941,6 +941,54 @@ export class MapManager {
   }
 
   /**
+   * Bind click event on the marker's permanent tooltip so clicking the label
+   * reliably opens the node's popup dialogue.
+   *
+   * Disables Leaflet click propagation on the tooltip container so Leaflet's
+   * map click handler does not auto-close the popup on the same click tick.
+   *
+   * @param {L.Marker} marker
+   */
+  _bindTooltipClick(marker) {
+    const attach = () => {
+      const tip = marker.getTooltip();
+      if (!tip) return;
+
+      tip.options.interactive = true;
+
+      const el = tip.getElement ? tip.getElement() : tip._container;
+      if (!el) return;
+
+      L.DomUtil.addClass(el, 'leaflet-interactive');
+
+      if (el._npClickBound) return;
+      el._npClickBound = true;
+
+      // Stop clicks on the label from propagating to the map, preventing map._onMapClick from closing popup
+      L.DomEvent.disableClickPropagation(el);
+      if (typeof L.DomEvent.disableScrollPropagation === 'function') {
+        L.DomEvent.disableScrollPropagation(el);
+      }
+
+      const onClick = (e) => {
+        if (e) {
+          L.DomEvent.stop(e);
+        }
+        // Small delay decouples openPopup from any pending map-click lifecycle
+        setTimeout(() => {
+          marker.openPopup();
+        }, 10);
+      };
+
+      L.DomEvent.on(el, 'click', onClick);
+      el.addEventListener('click', onClick);
+    };
+
+    marker.on('tooltipopen', attach);
+    attach();
+  }
+
+  /**
    * Update markers from the current node list.
    * Nodes without lat/lon coordinates are skipped — they still appear in
    * the node list panel but cannot be shown on the map.
@@ -1007,18 +1055,10 @@ export class MapManager {
 
       // Make clicking the label open the node's popup directly (especially helpful
       // when multiple nodes share the same location and marker icons overlap).
+      this._bindTooltipClick(marker);
+
       const tip = marker.getTooltip();
       if (tip) {
-        if (!tip._hasNpClick) {
-          tip._hasNpClick = true;
-          tip.on('click', (e) => {
-            if (e && e.originalEvent) {
-              L.DomEvent.stopPropagation(e.originalEvent);
-            }
-            marker.openPopup();
-          });
-        }
-
         // Update tooltip offset and refresh position so existing markers adapt when
         // other co-located nodes are added, removed, or filtered.
         tip.options.offset = L.point(offset[0], offset[1]);

@@ -1920,15 +1920,18 @@ body::before {
   border-radius: 4px;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
   white-space: nowrap;
-  cursor: pointer;
-  pointer-events: auto;
+  cursor: pointer !important;
+  pointer-events: auto !important;
   user-select: none;
-  transition: background 0.15s ease, border-color 0.15s ease;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
 }
 .node-label:hover {
   background: rgba(22, 30, 48, 0.96);
   border-color: var(--color-teal, #00d4aa);
   z-index: 1000 !important;
+}
+.node-label:active {
+  transform: scale(0.96);
 }
 .node-label::before { display: none; } /* hide default Leaflet arrow */
 
