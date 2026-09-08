@@ -1191,6 +1191,125 @@ class TestDeleteNode:
             result = await conn.delete_node("!12345678")
             assert result is True
 
+    def test_delete_node_in_store_and_on_device(self):
+        """Test deleting a node that exists in both store and on device removes from both."""
+        conn = create_conn()
+        mock_iface = Mock()
+        mock_iface.myInfo.my_node_num = 0x99999999
+        mock_iface.nodes = {"!12345678": {"num": 0x12345678}}
+        mock_iface.nodesByNum = {0x12345678: {"num": 0x12345678}}
+        mock_iface.localNode = Mock()
+        conn._interface = mock_iface
+
+        conn._nodes = [{"id": "!12345678", "num": 0x12345678, "short_name": "Test"}]
+
+        with patch.object(conn, "_save_nodes") as mock_save:
+            result = conn._delete_node_sync("!12345678")
+            assert result is True
+            mock_save.assert_called_once()
+
+        # Verify removed from local store
+        assert len(conn._nodes) == 0
+        # Verify removeNode called on local radio
+        mock_iface.localNode.removeNode.assert_called_once_with(0x12345678)
+        # Verify evicted from interface caches
+        assert "!12345678" not in mock_iface.nodes
+        assert 0x12345678 not in mock_iface.nodesByNum
+
+    def test_delete_node_in_store_only_not_on_device(self):
+        """Test deleting a node that exists only in store and not on device."""
+        conn = create_conn()
+        mock_iface = Mock()
+        mock_iface.myInfo.my_node_num = 0x99999999
+        mock_iface.nodes = {}
+        mock_iface.nodesByNum = {}
+        mock_iface.localNode = Mock()
+        conn._interface = mock_iface
+
+        conn._nodes = [{"id": "!12345678", "num": 0x12345678}]
+
+        with patch.object(conn, "_save_nodes") as mock_save:
+            result = conn._delete_node_sync("!12345678")
+            assert result is True
+            mock_save.assert_called_once()
+
+        assert len(conn._nodes) == 0
+        # removeNode should NOT be called since node is not on device
+        mock_iface.localNode.removeNode.assert_not_called()
+
+    def test_delete_node_on_device_only_not_in_store(self):
+        """Test deleting a node that is on device but not in store."""
+        conn = create_conn()
+        mock_iface = Mock()
+        mock_iface.myInfo.my_node_num = 0x99999999
+        mock_iface.nodes = {"!12345678": {"num": 0x12345678}}
+        mock_iface.nodesByNum = {0x12345678: {}}
+        mock_iface.localNode = Mock()
+        conn._interface = mock_iface
+        conn._nodes = []
+
+        result = conn._delete_node_sync("!12345678")
+        assert result is True
+        mock_iface.localNode.removeNode.assert_called_once_with(0x12345678)
+        assert "!12345678" not in mock_iface.nodes
+        assert 0x12345678 not in mock_iface.nodesByNum
+
+    def test_delete_node_neither_store_nor_device(self):
+        """Test deleting a node that is neither in store nor on device returns False."""
+        conn = create_conn()
+        mock_iface = Mock()
+        mock_iface.myInfo.my_node_num = 0x99999999
+        mock_iface.nodes = {}
+        mock_iface.nodesByNum = {}
+        conn._interface = mock_iface
+        conn._nodes = []
+
+        result = conn._delete_node_sync("!12345678")
+        assert result is False
+
+    def test_delete_node_cleans_up_related_records(self):
+        """Test deleting a node removes its favorites, tags, traceroutes, and position history."""
+        conn = create_conn()
+        conn._interface = None
+        conn._nodes = [{"id": "!12345678"}]
+        conn._favorites = {"!12345678", "!87654321"}
+        conn._tags = {"!12345678": ["alpha"], "!87654321": ["beta"]}
+        conn._traceroutes = {"!12345678": {"route": [1, 2]}}
+        conn._pos_history = {"!12345678": [{"lat": 1.0, "lng": 2.0}]}
+
+        with patch.object(conn, "_save_nodes"), \
+             patch.object(conn, "_save_favorites") as mock_fav, \
+             patch.object(conn, "_save_tags") as mock_tags, \
+             patch.object(conn, "_save_traceroutes") as mock_tr, \
+             patch.object(conn, "_save_position_history") as mock_pos:
+            result = conn._delete_node_sync("!12345678")
+            assert result is True
+            mock_fav.assert_called_once()
+            mock_tags.assert_called_once()
+            mock_tr.assert_called_once()
+            mock_pos.assert_called_once()
+
+        assert "!12345678" not in conn._favorites
+        assert "!87654321" in conn._favorites
+        assert "!12345678" not in conn._tags
+        assert "!12345678" not in conn._traceroutes
+        assert "!12345678" not in conn._pos_history
+
+    def test_delete_node_refuses_local_gateway_node(self):
+        """Test that attempting to delete the local gateway node is refused."""
+        conn = create_conn()
+        mock_iface = Mock()
+        mock_iface.myInfo.my_node_num = 0x12345678
+        mock_iface.nodes = {"!12345678": {"num": 0x12345678}}
+        mock_iface.localNode = Mock()
+        conn._interface = mock_iface
+        conn._nodes = [{"id": "!12345678", "num": 0x12345678}]
+
+        result = conn._delete_node_sync("!12345678")
+        assert result is False
+        mock_iface.localNode.removeNode.assert_not_called()
+        assert len(conn._nodes) == 1
+
 
 class TestSyncCoverage:
     @pytest.mark.asyncio

@@ -589,7 +589,7 @@ function renderNodesGrid(nodes) {
           <input type="checkbox" data-action="notify" data-node="${escapeHtml(node.id)}" ${state.notifyNodes.has(node.id) ? 'checked' : ''} />
           <span>Notify</span>
         </label>
-        <button class="action-btn action-btn-danger" data-action="delete" data-node="${escapeHtml(node.id)}" title="Remove this node from the store">Delete</button>
+        <button class="action-btn action-btn-danger" data-action="delete" data-node="${escapeHtml(node.id)}" title="Delete this node (also removes from radio if present)">Delete</button>
       </div>`;
 
     grid.appendChild(card);
@@ -686,7 +686,7 @@ async function handleNodeCardAction(event) {
   } else if (action === 'favorite') {
     await toggleFavorite(nodeId, btn);
   } else if (action === 'delete') {
-    if (!confirm(`Remove node ${nodeId} from the store?`)) return;
+    if (!confirm(`Delete node ${nodeId}? If present on the device, it will also be removed from the radio.`)) return;
     try {
       await deleteNode(nodeId);
       state.nodes = state.nodes.filter(n => n.id !== nodeId);

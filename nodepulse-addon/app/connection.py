@@ -459,38 +459,142 @@ class MeshtasticConnection:
         return await asyncio.to_thread(self._delete_node_sync, node_id)
 
     def _delete_node_sync(self, node_id: str) -> bool:
+        if not node_id:
+            return False
+
+        # Parse node number (integer) from hex string (e.g. "!12345678" or "12345678") or int
+        node_num: int | None = None
+        canonical_id: str | None = None
+        if isinstance(node_id, str):
+            clean = node_id.strip()
+            if clean.startswith("!"):
+                with contextlib.suppress(ValueError):
+                    node_num = int(clean[1:], 16)
+            else:
+                try:
+                    node_num = int(clean, 16)
+                except ValueError:
+                    with contextlib.suppress(ValueError):
+                        node_num = int(clean)
+        elif isinstance(node_id, int):
+            node_num = node_id
+            node_id = _node_id_from_num(node_num) or str(node_num)
+
+        if node_num is not None:
+            canonical_id = _node_id_from_num(node_num)
+
+        # 1. Check whether the node is on the connected device and if so, remove it from the radio
+        device_removed = False
+        with self._lock:
+            iface = self._interface
+            if iface is not None:
+                # Prevent accidentally deleting the local gateway node from its own radio
+                my_info = getattr(iface, "myInfo", None)
+                my_num = getattr(my_info, "my_node_num", None) if my_info is not None else None
+                if my_num is not None and node_num == my_num:
+                    logger.warning("Refusing to delete local gateway node %s", node_id)
+                    return False
+
+                # Check whether node is present on the device
+                node_on_device = False
+
+                if node_num is not None and self._lookup_node(iface, node_num):
+                    node_on_device = True
+
+                nodes_dict = getattr(iface, "nodes", None)
+                if not node_on_device and isinstance(nodes_dict, dict):
+                    candidates = [node_id]
+                    if canonical_id:
+                        candidates.append(canonical_id)
+                    if node_num is not None:
+                        candidates.extend([node_num, str(node_num)])
+                    if any(k in nodes_dict for k in candidates):
+                        node_on_device = True
+
+                nodes_by_num = getattr(iface, "nodesByNum", None)
+                if not node_on_device and isinstance(nodes_by_num, dict) and node_num is not None:
+                    if node_num in nodes_by_num:
+                        node_on_device = True
+
+                # If present on the device, remove it from the radio NodeDB
+                if node_on_device:
+                    logger.info("Node %s (%s) is present on device; removing from radio NodeDB", node_id, node_num)
+                    local_node = getattr(iface, "localNode", None)
+                    if local_node is not None:
+                        remove_method = getattr(local_node, "removeNode", None)
+                        if callable(remove_method):
+                            try:
+                                remove_arg = node_num if node_num is not None else node_id
+                                remove_method(remove_arg)
+                                logger.debug("Sent removeNode admin command to radio for node %s", node_id)
+                            except Exception as exc:  # noqa: BLE001
+                                logger.warning("Could not send removeNode to radio for %s: %s", node_id, exc)
+                    device_removed = True
+
+                    # Evict from library cache so it doesn't instantly reappear on subsequent polls
+                    if isinstance(nodes_dict, dict):
+                        for k in [node_id, canonical_id, node_num, str(node_num) if node_num is not None else None]:
+                            if k is not None:
+                                nodes_dict.pop(k, None)
+                    if isinstance(nodes_by_num, dict) and node_num is not None:
+                        nodes_by_num.pop(node_num, None)
+                else:
+                    logger.debug("Node %s is not present on device NodeDB (store only)", node_id)
+
+        # 2. Remove from persistent in-memory store
         with self._nodes_lock:
             before = len(self._nodes)
-            self._nodes = [n for n in self._nodes if n.get("id") != node_id]
+            self._nodes = [
+                n for n in self._nodes
+                if n.get("id") != node_id
+                and (canonical_id is None or n.get("id") != canonical_id)
+                and (node_num is None or n.get("num") != node_num)
+            ]
             removed = before - len(self._nodes)
-        
-        # Evict from the python library's cache so it doesn't instantly reappear on the next poll
-        node_num = None
-        with contextlib.suppress(ValueError):
-            node_num = int(node_id.lstrip("!"), 16)
 
-        with self._lock:
-            if hasattr(self, "interface") and self.interface:
-                if hasattr(self.interface, "nodes"):
-                    self.interface.nodes.pop(node_id, None)
-                    if node_num is not None:
-                        self.interface.nodes.pop(node_num, None)
-                        self.interface.nodes.pop(str(node_num), None)
-                
-                # Try to tell the physical radio to remove it from its NodeDB as well
-                if node_num is not None and getattr(self.interface, "localNode", None) is not None:
-                    try:
-                        remove_method = getattr(self.interface.localNode, "removeNode", None)
-                        if callable(remove_method):
-                            remove_method(node_num)
-                            logger.debug("Sent removeNode(%s) admin command to local radio", node_num)
-                    except Exception as e:  # noqa: BLE001 - never crash on node removal
-                        logger.debug("Could not send removeNode to local radio: %s", e)
+        # 3. Clean up related node records (favorites, tags, traceroutes, position history)
+        ids_to_clean = {node_id}
+        if canonical_id:
+            ids_to_clean.add(canonical_id)
+
+        fav_cleaned = False
+        with self._favorites_lock:
+            for cid in ids_to_clean:
+                if cid in self._favorites:
+                    self._favorites.discard(cid)
+                    fav_cleaned = True
+        if fav_cleaned:
+            self._save_favorites()
+
+        tags_cleaned = False
+        with self._tags_lock:
+            for cid in ids_to_clean:
+                if self._tags.pop(cid, None) is not None:
+                    tags_cleaned = True
+        if tags_cleaned:
+            self._save_tags()
+
+        tr_cleaned = False
+        with self._persist_lock:
+            for cid in ids_to_clean:
+                if self._traceroutes.pop(cid, None) is not None:
+                    tr_cleaned = True
+        if tr_cleaned:
+            self._save_traceroutes()
+
+        pos_cleaned = False
+        with self._pos_hist_lock:
+            for cid in ids_to_clean:
+                if self._pos_history.pop(cid, None) is not None:
+                    pos_cleaned = True
+        if pos_cleaned:
+            self._save_position_history()
 
         if removed:
             self._save_nodes()
-            logger.debug("Removed node %s from the store", node_id)
-        return removed > 0
+            logger.info("Removed node %s from the store", node_id)
+
+        return (removed > 0) or device_removed
 
     async def get_channels(self) -> list[dict[str, Any]]:
         """Return the channel configuration from the connected node."""
