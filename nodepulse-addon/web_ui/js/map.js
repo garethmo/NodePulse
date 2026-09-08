@@ -565,8 +565,14 @@ export class MapManager {
     for (const marker of this._markers.values()) {
       const tip = marker.getTooltip();
       if (!tip) continue;
-      if (this._namesVisible) marker.openTooltip();
-      else marker.closeTooltip();
+      if (this._namesVisible) {
+        marker.openTooltip();
+        if (typeof tip._updatePosition === 'function') {
+          tip._updatePosition();
+        }
+      } else {
+        marker.closeTooltip();
+      }
     }
     return this._namesVisible;
   }
@@ -878,6 +884,63 @@ export class MapManager {
   }
 
   /**
+   * Calculate non-overlapping tooltip offsets for nodes sharing the same location.
+   * Nodes with identical coordinates or within 25 meters of each other are
+   * clustered and their permanent labels are stacked vertically to remain legible.
+   *
+   * @param {Array} gpsNodes - Filtered nodes with valid GPS coordinates.
+   * @returns {Map<string, [number, number]>} Map from nodeId to [offsetX, offsetY]
+   */
+  _computeLabelOffsets(gpsNodes) {
+    const offsets = new Map();
+    const clusters = [];
+
+    // Group co-located nodes (exact coordinate match or within 25 meters)
+    for (const node of gpsNodes) {
+      let cluster = clusters.find((c) => {
+        const rep = c[0];
+        if (node.latitude === rep.latitude && node.longitude === rep.longitude) {
+          return true;
+        }
+        return haversineKm(node.latitude, node.longitude, rep.latitude, rep.longitude) <= 0.025;
+      });
+      if (cluster) {
+        cluster.push(node);
+      } else {
+        clusters.push([node]);
+      }
+    }
+
+    const LABEL_STEP_Y = 22; // px vertical step between stacked labels (~18px height + 4px gap)
+
+    for (const cluster of clusters) {
+      if (cluster.length === 1) {
+        offsets.set(cluster[0].id, [10, 0]);
+        continue;
+      }
+
+      // Sort deterministically so label order remains stable across poll cycles:
+      // local/self gateway node first, then alphabetical by long_name or id.
+      cluster.sort((a, b) => {
+        if (a.id === this._selfId) return -1;
+        if (b.id === this._selfId) return 1;
+        const nameA = (a.long_name || a.id || '').toLowerCase();
+        const nameB = (b.long_name || b.id || '').toLowerCase();
+        return nameA.localeCompare(nameB);
+      });
+
+      const count = cluster.length;
+      for (let i = 0; i < count; i++) {
+        // Distribute labels vertically centered around the marker icon
+        const yOffset = Math.round((i - (count - 1) / 2) * LABEL_STEP_Y);
+        offsets.set(cluster[i].id, [10, yOffset]);
+      }
+    }
+
+    return offsets;
+  }
+
+  /**
    * Update markers from the current node list.
    * Nodes without lat/lon coordinates are skipped — they still appear in
    * the node list panel but cannot be shown on the map.
@@ -894,49 +957,83 @@ export class MapManager {
     // Only draw markers for nodes that pass the active filter.
     const filtered = this._filterNodes(this._allNodes);
 
-    const seenIds = new Set();
-
+    // Collect all nodes passing the filter that have valid GPS fixes.
+    const gpsNodes = [];
     for (const node of filtered) {
-      const { id, latitude, longitude } = node;
-
-      // Skip nodes that have no GPS fix yet.
+      const { latitude, longitude } = node;
       if (latitude == null || longitude == null) continue;
       if (latitude === 0 && longitude === 0) continue;
+      gpsNodes.push(node);
+    }
 
+    // Compute non-overlapping label offsets for nodes sharing the same location.
+    const labelOffsets = this._computeLabelOffsets(gpsNodes);
+
+    const seenIds = new Set();
+
+    for (const node of gpsNodes) {
+      const { id, latitude, longitude } = node;
       seenIds.add(id);
       const latLng = [latitude, longitude];
 
       const isSelf = id === this._selfId;
       const icon = isSelf ? SELF_ICON : getNodeIcon(node.role);
+      const offset = labelOffsets.get(id) || [10, 0];
 
-      if (this._markers.has(id)) {
+      let marker = this._markers.get(id);
+      if (marker) {
         // Update existing marker position without recreating it.
-        const marker = this._markers.get(id);
         marker.setLatLng(latLng);
       } else {
         // Create a new marker with a popup and a permanent name label.
-        const marker = L.marker(latLng, { icon })
+        marker = L.marker(latLng, { icon })
           .bindPopup(this._buildPopupHtml(node))
           .bindTooltip(escapeHtml(node.long_name || node.id), {
             permanent: true,
             direction: 'right',
-            offset: [10, 0],
+            offset: offset,
             className: 'node-label',
+            interactive: true,
           })
           .addTo(this._map);
+
         this._markers.set(id, marker);
       }
 
       // Always refresh popup content and the name label in case metrics changed.
-      const existing = this._markers.get(id);
-      existing._nodeData = node; // stash raw data so link drawing can read routes
-      existing.setPopupContent(this._buildPopupHtml(node));
-      existing.setTooltipContent(escapeHtml(node.long_name || node.id));
-      // Respect the current name-label visibility toggle.
-      if (this._namesVisible) existing.openTooltip();
-      else existing.closeTooltip();
+      marker._nodeData = node; // stash raw data so link drawing can read routes
+      marker.setPopupContent(this._buildPopupHtml(node));
+      marker.setTooltipContent(escapeHtml(node.long_name || node.id));
+
+      // Make clicking the label open the node's popup directly (especially helpful
+      // when multiple nodes share the same location and marker icons overlap).
+      const tip = marker.getTooltip();
+      if (tip) {
+        if (!tip._hasNpClick) {
+          tip._hasNpClick = true;
+          tip.on('click', (e) => {
+            if (e && e.originalEvent) {
+              L.DomEvent.stopPropagation(e.originalEvent);
+            }
+            marker.openPopup();
+          });
+        }
+
+        // Update tooltip offset and refresh position so existing markers adapt when
+        // other co-located nodes are added, removed, or filtered.
+        tip.options.offset = L.point(offset[0], offset[1]);
+        if (this._namesVisible) {
+          marker.openTooltip();
+          if (typeof tip._updatePosition === 'function') {
+            tip._updatePosition();
+          }
+        } else {
+          marker.closeTooltip();
+        }
+      }
+
       // Ensure the icon matches current self/node status (e.g. self ID changed).
-      existing.setIcon(icon);
+      marker.setIcon(icon);
     }
 
     // Remove markers for nodes no longer in the list.

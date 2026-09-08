@@ -4,6 +4,7 @@ All notable changes to NodePulse are documented here.
 
 ## [1.26.0] - 2026-09-08
 ### Added
+- **Non-overlapping co-located node labels** — Nodes that share the exact same location or are co-located within 25 meters now stack their permanent map labels vertically instead of colliding at the same pixel offset. Label ordering is deterministic (gateway first, then alphabetical). Labels are now also interactive, allowing users to click any stacked label to open that specific node's popup.
 - **Bulk remove stale nodes** — New "Bulk remove stale…" dropdown in the Nodes toolbar lets you remove all nodes last heard more than 15, 30, or 60 days ago in a single action. Nodes present on the physical radio are also evicted from its NodeDB. Shows a preview count in the confirm dialog; bails early with an info toast if no nodes match the threshold.
 
 ### Fixed

@@ -35,32 +35,20 @@ python3 -m pytest tests/ -v
 ## Current Git State (as of handoff)
 
 ```
-HEAD (main, not yet pushed):  0560373  feature: Check and remove node from radio device when deleting
-origin/main:                  cd9f32d  feature: Pixel-accurate parallel traceroute separation for shared routes
+HEAD (main):  69a6442  feature: Bulk remove stale nodes & bump version to 1.26.0
 ```
 
-**The local `main` is 1 commit ahead of `origin/main` — not yet pushed.**
+### Recent Features Implemented
 
-### Uncommitted working-tree changes (NOT yet committed)
+1. **Non-overlapping Co-located Node Labels**:
+   - Nodes sharing the same location (identical coordinates or within 25m) are clustered in `_computeLabelOffsets`.
+   - Permanent labels are stacked vertically (`offset: [10, yOffset]`, 22px step) centered around the marker icon.
+   - Ordering is deterministic: local gateway node first, then alphabetical by name or ID.
+   - Tooltips are interactive (`interactive: true`) with pointer cursor and hover highlight, so clicking any stacked label directly opens that node's popup.
+   - Modifies `nodepulse-addon/web_ui/js/map.js` and `nodepulse-addon/web_ui/css/main.css`.
 
-These changes are complete and tested. They should be committed next:
-
-| File | What changed |
-|---|---|
-| `nodepulse-addon/config.json` | Version bump to 1.26.0 |
-| `custom_components/nodepulse/manifest.json` | Version bump to 1.26.0 |
-| `CHANGELOG.md` | Release notes for 1.26.0 |
-| `nodepulse-addon/CHANGELOG.md` | Release notes for 1.26.0 and 1.25.0 |
-| `nodepulse-addon/app/connection.py` | Stale node clearing / delete fixes |
-| `nodepulse-addon/app/routes.py` | Stale node clearing route support |
-| `nodepulse-addon/tests/conftest.py` | Updated mock signature for clear_stale_nodes |
-| `nodepulse-addon/tests/unit/test_connection.py` | New stale/delete tests |
-| `nodepulse-addon/tests/unit/test_routes.py` | Fixed query-param test |
-| `nodepulse-addon/web_ui/css/main.css` | `node-toolbar-select` CSS class |
-| `nodepulse-addon/web_ui/index.html` | Added `bulk-remove-stale` dropdown + refactored signal filter to use CSS class |
-| `nodepulse-addon/web_ui/js/api.js` | Fixed orphaned JSDoc; added correct doc to `clearStaleNodes` |
-| `nodepulse-addon/web_ui/js/app.js` | Fixed bulk-remove handler (preview count, early return, pollData refresh) |
-| `.agent/HANDOFF.md` | Agent handoff documentation |
+2. **Bulk Remove Stale Nodes & Device Eviction** (v1.26.0)
+3. **Check and Remove Node from Radio Device when Deleting**
 
 ---
 

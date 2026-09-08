@@ -85,8 +85,13 @@ body.light-theme .leaflet-popup-content-wrapper {
   background: var(--bg-card) !important;
 }
 body.light-theme .node-label {
-  background: rgba(255, 255, 255, 0.9);
+  background: rgba(255, 255, 255, 0.92);
   color: var(--text-primary);
+  border-color: #cbd5e1;
+}
+body.light-theme .node-label:hover {
+  background: rgba(241, 245, 249, 0.98);
+  border-color: var(--color-teal, #00d4aa);
 }
 
 /* --- Reset & Base --------------------------------------------------------- */
@@ -1905,7 +1910,7 @@ body::before {
 /* --- Map Labels ----------------------------------------------------------- */
 /* Permanent node-name labels and link distance labels on the Leaflet maps. */
 .node-label {
-  background: rgba(13, 17, 28, 0.82);
+  background: rgba(13, 17, 28, 0.88);
   border: 1px solid var(--border-subtle, #2a3346);
   color: var(--text-primary, #e6ebf2);
   font-family: Inter, system-ui, sans-serif;
@@ -1915,6 +1920,15 @@ body::before {
   border-radius: 4px;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
   white-space: nowrap;
+  cursor: pointer;
+  pointer-events: auto;
+  user-select: none;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.node-label:hover {
+  background: rgba(22, 30, 48, 0.96);
+  border-color: var(--color-teal, #00d4aa);
+  z-index: 1000 !important;
 }
 .node-label::before { display: none; } /* hide default Leaflet arrow */
 
