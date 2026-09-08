@@ -260,13 +260,19 @@
             aria-label="Filter nodes"
             style="min-width:160px;max-width:260px;flex:1"
           />
-          <select id="node-signal-filter" aria-label="Filter by signal strength" style="font-size:12px;padding:6px 8px;border:1px solid var(--border-subtle);border-radius:var(--radius-sm);background:var(--card-bg);color:var(--text-primary);cursor:pointer">
+          <select id="node-signal-filter" class="node-toolbar-select" aria-label="Filter by signal strength">
             <option value="">Any signal</option>
             <option value="excellent">Excellent ≥10 dB</option>
             <option value="good">Good ≥5 dB</option>
             <option value="fair">Fair ≥0 dB</option>
             <option value="poor">Poor &lt;0 dB</option>
             <option value="none">No signal</option>
+          </select>
+          <select id="bulk-remove-stale" class="node-toolbar-select" aria-label="Bulk remove stale nodes" title="Bulk remove stale nodes last heard past a threshold">
+            <option value="" disabled selected>Bulk remove stale…</option>
+            <option value="15">15+ days last heard</option>
+            <option value="30">30+ days last heard</option>
+            <option value="60">60+ days last heard</option>
           </select>
         </div>
         <div id="nodes-grid"></div>

@@ -2487,6 +2487,61 @@ async function init() {
     });
   }
 
+  const bulkRemoveStale = document.getElementById('bulk-remove-stale');
+  if (bulkRemoveStale) {
+    bulkRemoveStale.addEventListener('change', async (e) => {
+      const days = parseInt(e.target.value, 10);
+      if (isNaN(days) || days <= 0) {
+        e.target.value = '';
+        return;
+      }
+
+      // Preview how many nodes match the threshold in the already-loaded state.
+      // The backend applies the same logic, so this count is used purely to
+      // give the user an informative confirm prompt — not as a gate.
+      const nowSec = Date.now() / 1000;
+      const thresholdSec = days * 86400;
+      const matchingNodes = state.nodes.filter(n => {
+        if (n.id === state.selfNodeId) return false;
+        const lh = n.last_heard;
+        if (lh != null && lh > 0) {
+          return (nowSec - lh) >= thresholdSec;
+        }
+        // Nodes with no last_heard that are flagged stale also qualify.
+        return Boolean(n.stale);
+      });
+
+      // If no nodes match the threshold locally, tell the user up front so
+      // they aren't surprised by a "Removed 0 stale nodes" toast.
+      if (matchingNodes.length === 0) {
+        showToast(`No nodes last heard ${days}+ days ago — nothing to remove.`, 'info');
+        e.target.value = '';
+        return;
+      }
+
+      const confirmed = confirm(
+        `Remove ${matchingNodes.length} node(s) last heard ${days}+ days ago?\n` +
+        `Nodes present on the radio will also be removed from its NodeDB.`
+      );
+      if (!confirmed) {
+        e.target.value = '';
+        return;
+      }
+
+      try {
+        const res = await clearStaleNodes(days);
+        const count = res?.removed ?? 0;
+        showToast(`Removed ${count} stale node(s) (${days}+ days).`, 'success');
+        // pollData refreshes the node list, grid, AND map markers in one pass.
+        await pollData();
+      } catch (err) {
+        showToast(`Failed to remove stale nodes: ${err.message}`, 'error');
+      } finally {
+        e.target.value = '';
+      }
+    });
+  }
+
   // Map overlay toggles: control buttons on each Leaflet map dispatch custom
   // events; the "L"/"T"/"N" keys are keyboard shortcuts for the same actions.
   // `after(visible)` is an optional callback fired after a toggle, useful for

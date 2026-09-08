@@ -256,6 +256,22 @@ class TestHandleClearStaleNodes:
         mock_conn.clear_stale_nodes.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_handle_clear_stale_nodes_with_query_param(self):
+        mock_conn = AsyncMock()
+        mock_conn.clear_stale_nodes.return_value = 3
+        request = make_request(
+            app_dict={"connection": mock_conn},
+            method="POST",
+            path="/api/nodes/clear-stale",
+            query={"days": "30"},
+        )
+        resp = await routes.handle_clear_stale_nodes(request)
+        assert resp.status == 200
+        body = json.loads(resp.body)
+        assert body == {"removed": 3, "days": 30}
+        mock_conn.clear_stale_nodes.assert_called_once_with(days=30)
+
+    @pytest.mark.asyncio
     async def test_handle_clear_stale_nodes_error(self):
         mock_conn = AsyncMock()
         mock_conn.clear_stale_nodes.side_effect = Exception("DB error")

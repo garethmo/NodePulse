@@ -2,6 +2,26 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.26.0] - 2026-09-08
+### Added
+- **Bulk remove stale nodes** — New "Bulk remove stale…" dropdown in the Nodes toolbar lets you remove all nodes last heard more than 15, 30, or 60 days ago in a single action. Nodes present on the physical radio are also evicted from its NodeDB. Shows a preview count in the confirm dialog; bails early with an info toast if no nodes match the threshold.
+
+### Fixed
+- **Node deletion radio eviction** — `_delete_node_sync` now correctly checks `self._interface` (was previously checking `self.interface`, always `None`), allowing deleted nodes to be removed from the radio's NodeDB when present. Also guards against accidentally deleting the local gateway node.
+- **Map markers after bulk remove** — The bulk-remove dropdown handler now calls `pollData()` after deletion so removed nodes disappear from both map instances immediately, not just from the node list and grid.
+- **Route test query parameter** — `test_handle_clear_stale_nodes_with_query_param` was embedding `?days=30` in the path string; `make_request()` only reads from the `query` dict. Fixed to pass `query={"days": "30"}` so the handler correctly receives and returns the `days` field.
+
+## [1.25.0] - 2026-09-07
+### Fixed
+- **Telegram concurrency bug** — `_handle_command` and `_send_text` now receive `chat_id` as an explicit parameter instead of reading it from the mutable `_current_chat_id` instance variable. The previous approach caused replies to be sent to the wrong chat when two authorized users issued commands concurrently.
+- **Favorites bidirectional sync** — `_sync_favorites_from_device` now reads `isFavorite` / `is_favorite` from each node in `iface.nodes` instead of only looking at the legacy `localNode.favorites` list. Nodes explicitly marked *not* favorite on the device are now removed from the local favorites set; offline nodes absent from the device RAM DB are preserved.
+- **Auto-responder rate limiting** — Auto-responder messages are now capped at 3 nodes per discovery cycle to prevent TX queue overflow when many nodes are discovered simultaneously.
+- **Scheduled message rate limiting** — The scheduled-message dispatcher now sends at most 3 messages per second and defers any excess messages to the next scheduler tick (1 second later) rather than firing all of them at once.
+- **Device tracker / geo_location initial state** — `NodeTracker` and `NodeGeoLocation` entities now initialize `_attr_latitude` and `_attr_longitude` from the coordinator snapshot at construction time, so HA shows valid GPS state before the first `_handle_coordinator_update` callback fires.
+
+### Removed
+- Deleted stale scratch/dev test scripts from the addon and repository roots.
+
 ## [1.24.0] - 2026-09-01
 ### Added
 - **Mesh Discovery** — New feature in the Packets view (Stats panel) that analyzes captured packets to discover and display active mesh nodes. Shows node names, last seen time, packet count, average SNR/RSSI, channels used, portnums, average hop limit, and Direct RF vs MQTT badges. Configurable time window (1 min to 1 hour) and result limit.

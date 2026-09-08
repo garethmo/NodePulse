@@ -10,6 +10,7 @@ All responses use JSON. Error responses always include a human-readable
 "error" key so clients can display a meaningful message.
 """
 import asyncio
+import contextlib
 import datetime
 import itertools
 import json
@@ -422,17 +423,31 @@ async def handle_nodes(request: web.Request) -> web.Response:
 
 async def handle_clear_stale_nodes(request: web.Request) -> web.Response:
     """
-    Remove every node flagged ``stale`` (not currently heard by the radio).
+    Remove nodes flagged ``stale`` or older than specified days.
 
     The persistent store keeps radio-evicted nodes visible; this endpoint
-    lets the user purge that history on demand so only live-heard nodes
-    remain. Returns the count removed.
+    lets the user purge that history on demand so only active nodes
+    remain. Optional ?days= query param or {"days": N} body filters by
+    last heard time. Returns the count removed.
     """
     conn: MeshtasticConnection = request.app["connection"]
     _apply_access_key(request)
     try:
-        removed = await conn.clear_stale_nodes()
-        return _json_response({"removed": removed})
+        days: int | None = None
+        if "days" in request.query:
+            with contextlib.suppress(ValueError):
+                days = int(request.query["days"])
+        elif request.can_read_body:
+            with contextlib.suppress(Exception):
+                body = await request.json()
+                if isinstance(body, dict) and "days" in body:
+                    days = int(body["days"])
+
+        removed = await conn.clear_stale_nodes(days=days)
+        resp_data: dict[str, Any] = {"removed": removed}
+        if days is not None:
+            resp_data["days"] = days
+        return _json_response(resp_data)
     except Exception as exc:  # noqa: BLE001
         logger.error("Error clearing stale nodes: %s", exc)
         return _error_response("Failed to clear stale nodes")

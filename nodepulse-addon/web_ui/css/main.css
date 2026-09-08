@@ -1152,6 +1152,21 @@ body::before {
   border-color: var(--border-accent);
 }
 
+.node-toolbar-select {
+  font-family: inherit;
+  font-size: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input, var(--card-bg));
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.node-toolbar-select:focus {
+  outline: none;
+  border-color: var(--border-accent);
+}
+
 /* --- Map View ------------------------------------------------------------- */
 #view-map { padding: var(--space-md); display: none; }
 #view-map.active { display: flex; flex-direction: column; }

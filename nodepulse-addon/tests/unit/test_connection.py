@@ -1177,8 +1177,62 @@ class TestClearStaleNodes:
         conn._connected = True
         with patch.object(conn, "_clear_stale_nodes_sync") as mock_clear_sync:
             mock_clear_sync.return_value = 5
-            result = await conn.clear_stale_nodes()
+            result = await conn.clear_stale_nodes(days=15)
             assert result == 5
+            mock_clear_sync.assert_called_once_with(15)
+
+    def test_clear_stale_nodes_sync_all_legacy(self):
+        """When days is None, only nodes with stale: True are removed."""
+        conn = create_conn()
+        conn._nodes = [
+            {"id": "!11111111", "stale": True},
+            {"id": "!22222222", "stale": False},
+            {"id": "!33333333"},
+        ]
+        with patch.object(conn, "_delete_node_sync", return_value=True) as mock_del:
+            removed = conn._clear_stale_nodes_sync(days=None)
+            assert removed == 1
+            mock_del.assert_called_once_with("!11111111")
+
+    def test_clear_stale_nodes_sync_with_days_filter(self):
+        """When days=15 is provided, nodes last heard >= 15 days ago are removed."""
+        conn = create_conn()
+        now = time.time()
+        conn._nodes = [
+            # 20 days ago (older than 15 days) -> remove
+            {"id": "!11111111", "last_heard": int(now - 20 * 86400), "stale": True},
+            # 5 days ago (newer than 15 days) -> keep
+            {"id": "!22222222", "last_heard": int(now - 5 * 86400), "stale": True},
+            # 25 days ago (older than 15 days) -> remove
+            {"id": "!33333333", "last_heard": int(now - 25 * 86400), "stale": False},
+            # 2 days ago (newer than 15 days) -> keep
+            {"id": "!44444444", "last_heard": int(now - 2 * 86400), "stale": False},
+            # Stale with no last_heard -> remove
+            {"id": "!55555555", "last_heard": None, "stale": True},
+        ]
+        with patch.object(conn, "_delete_node_sync", return_value=True) as mock_del:
+            removed = conn._clear_stale_nodes_sync(days=15)
+            assert removed == 3
+            called_ids = [call.args[0] for call in mock_del.call_args_list]
+            assert "!11111111" in called_ids
+            assert "!33333333" in called_ids
+            assert "!55555555" in called_ids
+            assert "!22222222" not in called_ids
+            assert "!44444444" not in called_ids
+
+    def test_clear_stale_nodes_sync_protects_gateway_node(self):
+        """The local gateway node is never removed even if last heard is ancient."""
+        conn = create_conn()
+        mock_iface = Mock()
+        mock_iface.myInfo.my_node_num = 0x12345678
+        conn._interface = mock_iface
+        conn._nodes = [
+            {"id": "!12345678", "last_heard": 100, "stale": True},
+        ]
+        with patch.object(conn, "_delete_node_sync") as mock_del:
+            removed = conn._clear_stale_nodes_sync(days=15)
+            assert removed == 0
+            mock_del.assert_not_called()
 
 
 class TestDeleteNode:

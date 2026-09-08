@@ -131,7 +131,7 @@ def mock_connection():
                 return True
         return False
 
-    async def _clear_stale_nodes():
+    async def _clear_stale_nodes(days=None):
         return 0
 
     async def _request_traceroute(destination):

@@ -124,10 +124,6 @@ export async function trackNode(nodeId, enabled) {
 }
 
 /**
- * Remove every node flagged "stale" (not currently heard by the radio) from
- * the persistent store. Returns { removed: <count> }.
- */
-/**
  * Fetch position history for all nodes, or for a specific node.
  * Returns { node_id: [{ lat, lng, alt?, timestamp }, ...], ... }.
  */
@@ -136,11 +132,20 @@ export async function fetchPositionHistory(nodeId) {
   return _apiFetch(path);
 }
 
-export async function clearStaleNodes() {
-  return _apiFetch('/nodes/clear-stale', {
+/**
+ * Remove nodes from the persistent store that are either flagged "stale"
+ * or (when `days` is provided) were last heard more than `days` days ago.
+ * Nodes present on the physical radio are also evicted from its NodeDB.
+ * Returns { removed: <count>, days?: <days> }.
+ * @param {number|null} days - Age threshold in days, or null to remove only
+ *   nodes already flagged stale regardless of last-heard time.
+ */
+export async function clearStaleNodes(days = null) {
+  const query = days != null ? `?days=${encodeURIComponent(days)}` : '';
+  return _apiFetch(`/nodes/clear-stale${query}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({}),
+    body: JSON.stringify(days != null ? { days } : {}),
   });
 }
 

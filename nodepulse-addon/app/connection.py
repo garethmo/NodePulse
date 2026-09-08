@@ -434,25 +434,61 @@ class MeshtasticConnection:
         """Return the full list of nodes the local node is aware of."""
         return await asyncio.to_thread(self._get_nodes_sync)
 
-    async def clear_stale_nodes(self) -> int:
-        """Drop every node flagged ``stale`` (not currently heard by the radio).
+    async def clear_stale_nodes(self, days: int | float | None = None) -> int:
+        """Drop nodes flagged ``stale`` or not heard within the specified days.
 
         The persistent node store keeps nodes that the radio's bounded DB has
         evicted so they remain visible. This lets the user purge that history
-        on demand — e.g. after a mesh reshuffle — so only live-heard nodes
-        remain. Returns the number of nodes removed.
+        on demand (e.g. 15, 30, 60+ days) so only active nodes remain.
+        Also checks whether each node is present on the physical radio device
+        and removes it from there too. Returns the number of nodes removed.
         """
-        return await asyncio.to_thread(self._clear_stale_nodes_sync)
+        return await asyncio.to_thread(self._clear_stale_nodes_sync, days)
 
-    def _clear_stale_nodes_sync(self) -> int:
+    def _clear_stale_nodes_sync(self, days: int | float | None = None) -> int:
+        now = time.time()
+        threshold_seconds = (float(days) * 86400.0) if days is not None else None
+
+        with self._lock:
+            _iface_snap = self._interface
+            self_num = getattr(getattr(_iface_snap, "myInfo", None), "my_node_num", None) if _iface_snap else None
+            self_id = ("!" + format(self_num, "08x")) if self_num is not None else None
+
         with self._nodes_lock:
-            before = len(self._nodes)
-            self._nodes = [n for n in self._nodes if not n.get("stale")]
-            removed = before - len(self._nodes)
-        if removed:
-            self._save_nodes()
-            logger.debug("Cleared %s stale (cached) nodes from the store", removed)
-        return removed
+            nodes_to_remove: list[str] = []
+            for n in self._nodes:
+                nid = n.get("id")
+                if not nid or nid == self_id:
+                    continue
+
+                lh = n.get("last_heard")
+                is_flagged_stale = bool(n.get("stale"))
+
+                if threshold_seconds is not None:
+                    if lh is not None and lh > 0:
+                        age = now - lh
+                        if age < threshold_seconds:
+                            continue
+                    elif not is_flagged_stale:
+                        continue
+                else:
+                    if not is_flagged_stale:
+                        continue
+
+                nodes_to_remove.append(nid)
+
+        if not nodes_to_remove:
+            logger.debug("No stale nodes matching criteria to clear (days=%s)", days)
+            return 0
+
+        logger.info("Bulk removing %s stale nodes (days=%s)", len(nodes_to_remove), days)
+
+        removed_count = 0
+        for nid in nodes_to_remove:
+            if self._delete_node_sync(nid):
+                removed_count += 1
+
+        return removed_count
 
     async def delete_node(self, node_id: str) -> bool:
         """Remove a single node from the store by ID. Returns True if found and removed."""
@@ -512,9 +548,13 @@ class MeshtasticConnection:
                         node_on_device = True
 
                 nodes_by_num = getattr(iface, "nodesByNum", None)
-                if not node_on_device and isinstance(nodes_by_num, dict) and node_num is not None:
-                    if node_num in nodes_by_num:
-                        node_on_device = True
+                if (
+                    not node_on_device
+                    and isinstance(nodes_by_num, dict)
+                    and node_num is not None
+                    and node_num in nodes_by_num
+                ):
+                    node_on_device = True
 
                 # If present on the device, remove it from the radio NodeDB
                 if node_on_device:
