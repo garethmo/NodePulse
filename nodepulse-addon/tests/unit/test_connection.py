@@ -297,124 +297,124 @@ class TestTracerouteDataPreservation:
 
 class TestFavoriteDeviceCommunication:
     """Tests for favorite node device communication"""
-    
-    def test_set_favorite_calls_device_method(self):
-        """Test that set_favorite calls device setFavorite method"""
+
+    def setup_method(self):
+        # Patch the favorites file path to a non-existent location so that
+        # _load_favorites() is always a no-op during construction, regardless
+        # of leftover state in /tmp from previous test runs or other tests.
+        self._favorites_patcher = patch.object(
+            connection, "_FAVORITES_FILE", "/nonexistent/path/favorites.json"
+        )
+        self._favorites_patcher.start()
+
+    def teardown_method(self):
+        self._favorites_patcher.stop()
+
+    def _make_conn(self):
+        """Return a freshly constructed, file-isolated MeshtasticConnection."""
         mock_config = Mock()
         mock_config.mqtt_enabled = False
-        conn = MeshtasticConnection(
+        return MeshtasticConnection(
             host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
         )
-        
+
+    def test_set_favorite_calls_device_method(self):
+        """Test that set_favorite calls device setFavorite method"""
+        conn = self._make_conn()
+
         # Mock interface and localNode
         mock_interface = Mock()
         mock_local_node = Mock()
         mock_interface.localNode = mock_local_node
         conn._interface = mock_interface
-        
+
         # Call set_favorite
         node_id = "!00003039"
         result = conn._set_favorite_sync(node_id, favorited=True)
-        
+
         # Verify device method was called
         mock_local_node.setFavorite.assert_called_once_with(node_id)
         assert node_id in result
-        
+
     def test_remove_favorite_calls_device_method(self):
         """Test that set_favorite with favorited=False calls device removeFavorite method"""
-        mock_config = Mock()
-        mock_config.mqtt_enabled = False
-        conn = MeshtasticConnection(
-            host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
-        )
-        
+        conn = self._make_conn()
+
         # Mock interface and localNode
         mock_interface = Mock()
         mock_local_node = Mock()
         mock_interface.localNode = mock_local_node
         conn._interface = mock_interface
-        
+
         # Add node to favorites first
         with conn._favorites_lock:
             conn._favorites.add("!00003039")
-        
+
         # Call set_favorite with favorited=False
         node_id = "!00003039"
         result = conn._set_favorite_sync(node_id, favorited=False)
-        
+
         # Verify device method was called
         mock_local_node.removeFavorite.assert_called_once_with(node_id)
         assert node_id not in result
-        
+
     def test_set_favorite_handles_device_error(self):
         """Test that set_favorite handles device communication errors gracefully"""
-        mock_config = Mock()
-        mock_config.mqtt_enabled = False
-        conn = MeshtasticConnection(
-            host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
-        )
-        
+        conn = self._make_conn()
+
         # Mock interface that raises error
         mock_interface = Mock()
         mock_local_node = Mock()
         mock_local_node.setFavorite.side_effect = Exception("Device error")
         mock_interface.localNode = mock_local_node
         conn._interface = mock_interface
-        
+
         # Call set_favorite - should not raise, should still update local favorites
         node_id = "!00003039"
         result = conn._set_favorite_sync(node_id, favorited=True)
-        
+
         # Verify local favorites were still updated despite device error
         assert node_id in result
-        
+
     def test_set_favorite_without_interface(self):
         """Test that set_favorite works when interface is not available"""
-        mock_config = Mock()
-        mock_config.mqtt_enabled = False
-        conn = MeshtasticConnection(
-            host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
-        )
-        
+        conn = self._make_conn()
+
         # No interface
         conn._interface = None
-        
+
         # Call set_favorite - should still update local favorites
         node_id = "!00003039"
         result = conn._set_favorite_sync(node_id, favorited=True)
-        
+
         # Verify local favorites were updated
         assert node_id in result
 
     def test_sync_favorites_from_device(self):
         """Test that favorites are synced from device to local UI"""
-        mock_config = Mock()
-        mock_config.mqtt_enabled = False
-        conn = MeshtasticConnection(
-            host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
-        )
-        
+        conn = self._make_conn()
+
         # Mock interface with device favorites
         mock_interface = Mock()
         mock_local_node = Mock()
-        
+
         # Create mock favorite nodes with proper node numbers
         mock_fav1 = Mock()
         mock_fav1.num = 0x12345678  # Will be converted to !12345678
         mock_fav2 = Mock()
         mock_fav2.num = 0xABCDEF01  # Will be converted to !abcdef01
-        
+
         mock_local_node.favorites = [mock_fav1, mock_fav2]
         mock_interface.localNode = mock_local_node
         conn._interface = mock_interface
-        
+
         # Set some initial local favorites
         with conn._favorites_lock:
             conn._favorites.add("!deadbeef")
-        
+
         # Sync from device
         conn._sync_favorites_from_device()
-        
+
         # Verify device favorites were merged with local favorites
         with conn._favorites_lock:
             assert "!12345678" in conn._favorites
@@ -423,22 +423,18 @@ class TestFavoriteDeviceCommunication:
 
     def test_sync_favorites_from_device_race_condition(self):
         """Test that sync handles race conditions with interface changes"""
-        mock_config = Mock()
-        mock_config.mqtt_enabled = False
-        conn = MeshtasticConnection(
-            host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
-        )
-        
+        conn = self._make_conn()
+
         # Start with no interface
         conn._interface = None
-        
+
         # Set initial favorites
         with conn._favorites_lock:
             conn._favorites.add("!deadbeef")
-        
+
         # Sync should handle missing interface gracefully
         conn._sync_favorites_from_device()
-        
+
         # Verify existing favorites are preserved
         with conn._favorites_lock:
             assert "!deadbeef" in conn._favorites
@@ -446,51 +442,39 @@ class TestFavoriteDeviceCommunication:
 
     def test_sync_favorites_without_interface(self):
         """Test that sync works gracefully when interface is not available"""
-        mock_config = Mock()
-        mock_config.mqtt_enabled = False
-        conn = MeshtasticConnection(
-            host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
-        )
-        
+        conn = self._make_conn()
+
         # No interface
         conn._interface = None
-        
+
         # Should not raise
         conn._sync_favorites_from_device()
-        
+
         # Local favorites should remain unchanged
         with conn._favorites_lock:
             assert len(conn._favorites) == 0
 
     def test_sync_favorites_without_device_favorites(self):
         """Test that sync works when device doesn't expose favorites"""
-        mock_config = Mock()
-        mock_config.mqtt_enabled = False
-        conn = MeshtasticConnection(
-            host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
-        )
-        
+        conn = self._make_conn()
+
         # Mock interface without favorites attribute
         mock_interface = Mock()
         mock_local_node = Mock()
         del mock_local_node.favorites  # Remove favorites attribute
         mock_interface.localNode = mock_local_node
         conn._interface = mock_interface
-        
+
         # Should not raise
         conn._sync_favorites_from_device()
-        
+
         # Local favorites should remain unchanged
         with conn._favorites_lock:
             assert len(conn._favorites) == 0
 
     def test_sync_favorites_from_iface_nodes_adds_and_removes(self):
         """Test that iface.nodes favorites are synced and un-favoriting is reflected."""
-        mock_config = Mock()
-        mock_config.mqtt_enabled = False
-        conn = MeshtasticConnection(
-            host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
-        )
+        conn = self._make_conn()
 
         mock_interface = Mock()
         mock_interface.localNode = None
@@ -519,6 +503,7 @@ class TestFavoriteDeviceCommunication:
             assert "!22222222" not in conn._favorites
             # Offline node not in device DB is preserved
             assert "!33333333" in conn._favorites
+
 
 
 
@@ -2087,6 +2072,44 @@ class TestStabilityRemediations:
         finally:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
+
+    def test_get_nodes_sync_skips_stale_duplicate_of_live_node(self):
+        conn = self._conn()
+        conn._interface.myInfo.my_node_num = 12345
+        # Live radio returns node !11111111 named "Home Radio" at (10, 20)
+        conn._interface.nodes = {
+            "!11111111": {
+                "user": {"longName": "Home Radio", "shortName": "HR"},
+                "position": {"latitude": 10.0, "longitude": 20.0},
+            }
+        }
+        # conn._nodes has stale node with an old ID !99999999 but same name and location
+        conn._nodes = [
+            {"id": "!11111111", "long_name": "Home Radio", "short_name": "HR", "latitude": 10.0, "longitude": 20.0},
+            {"id": "!99999999", "long_name": "Home Radio", "short_name": "HR", "latitude": 10.0, "longitude": 20.0, "stale": True},
+        ]
+        with patch("app.remote_cache.load_remote_cache", return_value={}):
+            nodes = conn._get_nodes_sync()
+
+        # Should only return 1 node (the live active one, not the stale duplicate)
+        assert len(nodes) == 1
+        assert nodes[0]["id"] == "!11111111"
+
+    def test_get_nodes_sync_deduplicates_colocated_same_name(self):
+        conn = self._conn()
+        conn._interface.myInfo.my_node_num = 12345
+        conn._interface.nodes = {}
+        # Two nodes with same name and location
+        conn._nodes = [
+            {"id": "!11111111", "long_name": "Repeater", "latitude": 30.0, "longitude": 40.0, "last_heard": 100},
+            {"id": "!22222222", "long_name": "Repeater", "latitude": 30.0, "longitude": 40.0, "last_heard": 200},
+        ]
+        with patch("app.remote_cache.load_remote_cache", return_value={}):
+            nodes = conn._get_nodes_sync()
+
+        assert len(nodes) == 1
+        # The one with the newer last_heard or first accepted should be kept
+        assert nodes[0]["long_name"] == "Repeater"
 
 
 

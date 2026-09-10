@@ -940,6 +940,115 @@
           </div>
         </div>
 
+        <!-- ── Data Stores ── -->
+        <div class="settings-group">
+          <div class="settings-group-title">Data Stores</div>
+          <div class="settings-row">
+            <span class="settings-row-label">
+              nodes.json
+              <span class="settings-row-hint">Cached node data with GPS positions and metrics</span>
+            </span>
+            <div class="settings-row-value-group">
+              <span class="settings-row-value" id="data-nodes">—</span>
+              <button class="action-btn action-btn-small" data-action="download" data-file="nodes.json">Download</button>
+            </div>
+          </div>
+          <div class="settings-row">
+            <span class="settings-row-label">
+              messages.json
+              <span class="settings-row-hint">Recent message history (max 1000 messages)</span>
+            </span>
+            <div class="settings-row-value-group">
+              <span class="settings-row-value" id="data-messages">—</span>
+              <button class="action-btn action-btn-small" data-action="download" data-file="messages.json">Download</button>
+            </div>
+          </div>
+          <div class="settings-row">
+            <span class="settings-row-label">
+              traceroutes.json
+              <span class="settings-row-hint">Discovered network routes and traceroute data</span>
+            </span>
+            <div class="settings-row-value-group">
+              <span class="settings-row-value" id="data-traceroutes">—</span>
+              <button class="action-btn action-btn-small" data-action="download" data-file="traceroutes.json">Download</button>
+            </div>
+          </div>
+          <div class="settings-row">
+            <span class="settings-row-label">
+              position_history.json
+              <span class="settings-row-hint">GPS position trails for map display</span>
+            </span>
+            <div class="settings-row-value-group">
+              <span class="settings-row-value" id="data-position-history">—</span>
+              <button class="action-btn action-btn-small" data-action="download" data-file="position_history.json">Download</button>
+            </div>
+          </div>
+          <div class="settings-row">
+            <span class="settings-row-label">
+              waypoints.json
+              <span class="settings-row-hint">Mesh-broadcast and local waypoints</span>
+            </span>
+            <div class="settings-row-value-group">
+              <span class="settings-row-value" id="data-waypoints">—</span>
+              <button class="action-btn action-btn-small" data-action="download" data-file="waypoints.json">Download</button>
+            </div>
+          </div>
+          <div class="settings-row">
+            <span class="settings-row-label">
+              favorites.json
+              <span class="settings-row-hint">Favorited node IDs</span>
+            </span>
+            <div class="settings-row-value-group">
+              <span class="settings-row-value" id="data-favorites">—</span>
+              <button class="action-btn action-btn-small" data-action="download" data-file="favorites.json">Download</button>
+            </div>
+          </div>
+          <div class="settings-row">
+            <span class="settings-row-label">
+              tags.json
+              <span class="settings-row-hint">User-defined node tags</span>
+            </span>
+            <div class="settings-row-value-group">
+              <span class="settings-row-value" id="data-tags">—</span>
+              <button class="action-btn action-btn-small" data-action="download" data-file="tags.json">Download</button>
+            </div>
+          </div>
+          <div class="settings-row">
+            <span class="settings-row-label">
+              channels.json
+              <span class="settings-row-hint">Mesh channel configuration</span>
+            </span>
+            <div class="settings-row-value-group">
+              <span class="settings-row-value" id="data-channels">—</span>
+              <button class="action-btn action-btn-small" data-action="download" data-file="channels.json">Download</button>
+            </div>
+          </div>
+          <div class="settings-row">
+            <span class="settings-row-label">
+              scheduled_messages.json
+              <span class="settings-row-hint">Scheduled message queue</span>
+            </span>
+            <div class="settings-row-value-group">
+              <span class="settings-row-value" id="data-scheduled-messages">—</span>
+              <button class="action-btn action-btn-small" data-action="download" data-file="scheduled_messages.json">Download</button>
+            </div>
+          </div>
+          <div class="settings-row">
+            <span class="settings-row-label">
+              messages_archive/
+              <span class="settings-row-hint">Archived message history files</span>
+            </span>
+            <span class="settings-row-value" id="data-messages-archive">—</span>
+          </div>
+          <div class="settings-row settings-row-action">
+            <span class="settings-row-label">
+              Refresh Data Stores
+              <span class="settings-row-hint">Reload data store information</span>
+            </span>
+            <button class="action-btn" id="btn-refresh-data" data-action="refresh-data">Refresh</button>
+          </div>
+        </div>
+
         <!-- ── About ── -->
         <div class="settings-group">
           <div class="settings-group-title">About</div>

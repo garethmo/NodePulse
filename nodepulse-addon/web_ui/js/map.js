@@ -1073,21 +1073,80 @@ export class MapManager {
     }
     this._allNodes = uniqueNodes;
 
+    // Build a set of ALL known IDs this poll (regardless of GPS). Used by the
+    // cleanup pass to remove ghost markers for nodes that have been deleted or
+    // that no longer appear in the API response at all.
+    const allKnownIds = new Set(uniqueNodes.map((n) => n.id));
+
     // Only draw markers for nodes that pass the active filter.
     const filtered = this._filterNodes(this._allNodes);
 
     // Collect all nodes passing the filter that have valid GPS fixes.
-    const gpsNodes = [];
+    const rawGpsNodes = [];
     for (const node of filtered) {
       const { latitude, longitude } = node;
       if (latitude == null || longitude == null) continue;
       if (latitude === 0 && longitude === 0) continue;
-      gpsNodes.push(node);
+      rawGpsNodes.push(node);
+    }
+
+    // Deduplicate GPS nodes so that multiple instances of the same node at the same
+    // location are collapsed into a single marker and location.
+    const gpsNodes = [];
+    for (const node of rawGpsNodes) {
+      const isSelf = node.id === this._selfId;
+      const nodeName = (node.long_name || node.short_name || '').trim().toLowerCase();
+
+      const dupIndex = gpsNodes.findIndex((existing) => {
+        const sameLoc = (node.latitude === existing.latitude && node.longitude === existing.longitude) ||
+          haversineKm(node.latitude, node.longitude, existing.latitude, existing.longitude) <= 0.025;
+        if (!sameLoc) return false;
+
+        const existingIsSelf = existing.id === this._selfId;
+        const existingName = (existing.long_name || existing.short_name || '').trim().toLowerCase();
+
+        // If one is the gateway self-node and another node shares the location:
+        // they represent the same physical gateway location.
+        if (isSelf || existingIsSelf) {
+          return true;
+        }
+
+        // If they have identical names at the same location, they are duplicates:
+        if (nodeName && existingName && nodeName === existingName) {
+          return true;
+        }
+
+        return false;
+      });
+
+      if (dupIndex === -1) {
+        gpsNodes.push(node);
+      } else {
+        const existing = gpsNodes[dupIndex];
+        const existingIsSelf = existing.id === this._selfId;
+
+        // Prefer self node, then active over stale, then newer last_heard
+        let replace = false;
+        if (isSelf && !existingIsSelf) {
+          replace = true;
+        } else if (!isSelf && !existingIsSelf) {
+          if (existing.stale && !node.stale) {
+            replace = true;
+          } else if (existing.stale === node.stale && (node.last_heard || 0) > (existing.last_heard || 0)) {
+            replace = true;
+          }
+        }
+
+        if (replace) {
+          gpsNodes[dupIndex] = node;
+        }
+      }
     }
 
     // Compute non-overlapping label offsets for nodes sharing the same location.
     const labelOffsets = this._computeLabelOffsets(gpsNodes);
 
+    // Tracks which GPS-having nodes were rendered this cycle.
     const seenIds = new Set();
 
     for (const node of gpsNodes) {
@@ -1148,7 +1207,13 @@ export class MapManager {
       marker.setIcon(icon);
     }
 
-    // Remove markers for nodes no longer in the list.
+    // Remove markers for nodes that either:
+    //   (a) are completely absent from the current API response, or
+    //   (b) are known but currently have no valid GPS fix.
+    // Using `seenIds` (GPS-having nodes rendered this cycle) as the positive
+    // list means both conditions are satisfied by a single check — if a node
+    // had GPS last cycle but lost it this cycle it won't be in seenIds, so
+    // its marker is removed rather than left as an orphan on the map.
     for (const [id, marker] of this._markers) {
       if (!seenIds.has(id)) {
         marker.remove();

@@ -19,6 +19,7 @@ import collections
 import contextlib
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -172,6 +173,28 @@ def _node_id_from_num(num: Any) -> str | None:
     logic lives in exactly one place.
     """
     return normalize_node_id(num)
+
+
+def _is_co_located(lat1: Any, lon1: Any, lat2: Any, lon2: Any, threshold_km: float = 0.025) -> bool:
+    """Check if two GPS coordinates represent the same physical location (within threshold_km)."""
+    if lat1 is None or lon1 is None or lat2 is None or lon2 is None:
+        return False
+    if lat1 == lat2 and lon1 == lon2:
+        return True
+    try:
+        r = 6371.0
+        d_lat = math.radians(float(lat2) - float(lat1))
+        d_lon = math.radians(float(lon2) - float(lon1))
+        a = (
+            math.sin(d_lat / 2.0) ** 2
+            + math.cos(math.radians(float(lat1)))
+            * math.cos(math.radians(float(lat2)))
+            * math.sin(d_lon / 2.0) ** 2
+        )
+        c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
+        return (r * c) <= threshold_km
+    except (TypeError, ValueError):
+        return False
 
 
 def _channel_role_name(value: int) -> str:
@@ -2881,16 +2904,29 @@ class MeshtasticConnection:
                     data = json.load(fh)
             if isinstance(data, list):
                 with self._nodes_lock:
-                    seen = set()
-                    # Called once at startup — safe to reset any in-memory state
-                    # that may have accumulated before the file was loaded.
                     self._nodes = []
+                    seen: set[str] = set()
                     for n in data:
                         if isinstance(n, dict):
                             nid = normalize_node_id(n.get("id"))
-                            if nid and nid not in seen:
+                            if not nid or nid in seen:
+                                continue
+                            n["id"] = nid
+
+                            node_name = (n.get("long_name") or n.get("short_name") or "").strip().lower()
+                            lat = n.get("latitude")
+                            lng = n.get("longitude")
+                            is_dup = False
+                            if node_name and lat is not None and lng is not None:
+                                for existing in self._nodes:
+                                    ex_name = (existing.get("long_name") or existing.get("short_name") or "").strip().lower()
+                                    ex_lat = existing.get("latitude")
+                                    ex_lng = existing.get("longitude")
+                                    if ex_name == node_name and _is_co_located(lat, lng, ex_lat, ex_lng):
+                                        is_dup = True
+                                        break
+                            if not is_dup:
                                 seen.add(nid)
-                                n["id"] = nid
                                 self._nodes.append(n)
                 logger.debug(
                     "Restored %s persisted nodes from %s",
@@ -3125,7 +3161,7 @@ class MeshtasticConnection:
 
             with self._nodes_lock:
                 node = next(
-                    (n for n in self._nodes if n.get("id") == from_id), None
+                    (n for n in self._nodes if normalize_node_id(n.get("id")) == from_id), None
                 )
                 if node is not None:
                     if lat is not None:
@@ -3624,19 +3660,21 @@ class MeshtasticConnection:
                     # Priority: freshly-captured POSITION_APP reply (written
                     # directly into self._nodes by _capture_position) > raw
                     # library fix this cycle > previously retained last-known fix.
-                    if entry["latitude"] is not None:
-                        # Fresh fix arrived — update the timestamp.
-                        cached[node_id]["last_position_fix"] = int(time.time())
-                    elif prev_lat is not None:
-                        # No new fix — restore the last known good coordinates.
+                    # IMPORTANT: Only restore coordinates when we have a complete
+                    # pair from previous data. Never restore partial coordinates.
+                    
+                    needs_restore = (entry["latitude"] is None and entry["longitude"] is None and 
+                                    prev_lat is not None and prev_lng is not None)
+                    
+                    if needs_restore:
+                        # Restore complete coordinate pair from previous good data
                         cached[node_id]["latitude"] = prev_lat
-                        cached[node_id]["last_position_fix"] = prev_fix
-
-                    if entry["longitude"] is not None:
-                        cached[node_id]["last_position_fix"] = int(time.time())
-                    elif prev_lng is not None:
                         cached[node_id]["longitude"] = prev_lng
+                        # Use the previous timestamp since we're restoring old data
                         cached[node_id]["last_position_fix"] = prev_fix
+                    elif entry["latitude"] is not None and entry["longitude"] is not None:
+                        # Fresh complete fix arrived — update the timestamp
+                        cached[node_id]["last_position_fix"] = int(time.time())
 
                     if entry["altitude"] is None and prev_alt is not None:
                         cached[node_id]["altitude"] = prev_alt
@@ -3665,11 +3703,50 @@ class MeshtasticConnection:
             # previous guard (`nid not in cached`) was always False because every
             # persisted node was already in `cached` from the snapshot at the top
             # of this block.
+            # Determine local self_id to prevent re-injecting duplicate ghosts of the gateway node
+            with self._lock:
+                _iface_snap_tmp = self._interface
+            self_num_tmp = getattr(getattr(_iface_snap_tmp, "myInfo", None), "my_node_num", None) if _iface_snap_tmp else None
+            gateway_id = normalize_node_id(self_num_tmp)
+
             for node in list(self._nodes):
                 nid = normalize_node_id(node.get("id"))
                 if not nid or nid in result_ids:
                     # Already emitted from live radio data — skip.
                     continue
+
+                stale_name = (node.get("long_name") or node.get("short_name") or "").strip().lower()
+                stale_lat = node.get("latitude")
+                stale_lng = node.get("longitude")
+
+                # Check if this stale node is an old duplicate ghost of an already-emitted live node
+                # or an old duplicate record of the local gateway node.
+                is_ghost = False
+                for live in result:
+                    live_name = (live.get("long_name") or live.get("short_name") or "").strip().lower()
+                    live_lat = live.get("latitude")
+                    live_lng = live.get("longitude")
+
+                    # 1. Stale duplicate with matching name and matching location
+                    if stale_name and live_name and stale_name == live_name:
+                        if _is_co_located(stale_lat, stale_lng, live_lat, live_lng):
+                            is_ghost = True
+                            break
+                        if (stale_lat is None or live_lat is None):
+                            is_ghost = True
+                            break
+
+                    # 2. Co-located with the live local gateway node
+                    if gateway_id and live.get("id") == gateway_id:
+                        if _is_co_located(stale_lat, stale_lng, live_lat, live_lng):
+                            is_ghost = True
+                            break
+
+                if is_ghost:
+                    logger.debug("Skipping stale duplicate ghost of live node: %s (%s)", nid, stale_name)
+                    cached.pop(nid, None)
+                    continue
+
                 # Evicted / absent from radio this cycle: restore from store.
                 restored = dict(node)
                 restored["id"] = nid
@@ -3716,7 +3793,7 @@ class MeshtasticConnection:
             with self._lock:
                 _iface_snap = self._interface
             self_num = getattr(getattr(_iface_snap, "myInfo", None), "my_node_num", None) if _iface_snap else None
-            self_id = ("!" + format(self_num, "08x")) if self_num is not None else None
+            self_id = normalize_node_id(self_num)
 
             # Auto Responder Logic - rate limited to avoid TX queue overflow
             if self._config and getattr(self._config, "auto_responder_enabled", False):
@@ -3795,7 +3872,47 @@ class MeshtasticConnection:
         # next reconnect. Best-effort and debounced/off-thread.
         self._save_nodes()
 
-        return result
+        # Final deduplication safety net:
+        # 1. Deduplicate by canonical ID
+        # 2. Deduplicate co-located duplicate nodes sharing the same name at the same location
+        seen_final: set[str] = set()
+        deduped_result: list[dict[str, Any]] = []
+        for node in result:
+            nid = normalize_node_id(node.get("id"))
+            if not nid or nid in seen_final:
+                if nid:
+                    logger.warning("Duplicate node ID removed before API response: %s", nid)
+                continue
+
+            node_name = (node.get("long_name") or node.get("short_name") or "").strip().lower()
+            lat = node.get("latitude")
+            lng = node.get("longitude")
+
+            # Check if an equivalent node was already accepted at this exact location
+            is_dup = False
+            if node_name and lat is not None and lng is not None:
+                for idx, accepted in enumerate(deduped_result):
+                    acc_name = (accepted.get("long_name") or accepted.get("short_name") or "").strip().lower()
+                    acc_lat = accepted.get("latitude")
+                    acc_lng = accepted.get("longitude")
+                    if acc_name and acc_name == node_name and _is_co_located(lat, lng, acc_lat, acc_lng):
+                        is_dup = True
+                        # If the incoming node is active and the existing one was stale, swap them
+                        if accepted.get("stale") and not node.get("stale"):
+                            deduped_result[idx] = node
+                            seen_final.discard(accepted.get("id"))
+                            seen_final.add(nid)
+                            logger.info("Replaced stale duplicate with active node %s (%s)", nid, node_name)
+                        else:
+                            logger.info("Deduplicated co-located node with identical name %s: kept %s, dropped %s",
+                                        node_name, accepted.get("id"), nid)
+                        break
+
+            if not is_dup:
+                seen_final.add(nid)
+                deduped_result.append(node)
+
+        return deduped_result
 
     def _read_channels_from_interface(self, interface: Any | None = None) -> list[dict[str, Any]]:
         """Read the channel list straight from the connected node.
@@ -4163,12 +4280,22 @@ class MeshtasticConnection:
         # The library's _fixupPosition converts latitudeI/longitudeI → latitude/longitude
         # when a position packet arrives, but the initial node list sync may not have
         # triggered it yet. Fall back to manual conversion so we always get a coordinate.
+        # IMPORTANT: Only use coordinates when we have both lat/lng or both latI/lngI
+        # to avoid partial coordinate pairs that can cause nodes to share incorrect positions.
         lat = position.get("latitude")
         lng = position.get("longitude")
-        if lat is None and position.get("latitudeI"):
-            lat = position["latitudeI"] * 1e-7
-        if lng is None and position.get("longitudeI"):
-            lng = position["longitudeI"] * 1e-7
+        lat_i = position.get("latitudeI")
+        lng_i = position.get("longitudeI")
+        
+        # Use integer microdegrees if available, but only if we have both
+        if lat is None and lng is None and lat_i is not None and lng_i is not None:
+            lat = lat_i * 1e-7
+            lng = lng_i * 1e-7
+        
+        # If we still don't have a complete coordinate pair, set both to None
+        if lat is None or lng is None:
+            lat = None
+            lng = None
 
         patch = {
             "long_name": long_name,
@@ -4248,23 +4375,26 @@ class MeshtasticConnection:
 
                 # Position: use fresh fix if radio reported one, otherwise
                 # retain the last known good coordinates.
-                if patch["latitude"] is not None:
-                    existing["last_position_fix"] = int(time.time())
-                elif prev_lat is not None:
+                # IMPORTANT: Only restore when we have a complete coordinate pair
+                needs_restore = (patch["latitude"] is None and patch["longitude"] is None and 
+                                prev_lat is not None and prev_lng is not None)
+                
+                if needs_restore:
+                    # Restore complete coordinate pair from previous good data
                     existing["latitude"] = prev_lat
-                    existing["last_position_fix"] = prev_fix
-
-                if patch["longitude"] is not None:
-                    existing["last_position_fix"] = int(time.time())
-                elif prev_lng is not None:
                     existing["longitude"] = prev_lng
+                    # Use the previous timestamp since we're restoring old data
                     existing["last_position_fix"] = prev_fix
+                elif patch["latitude"] is not None and patch["longitude"] is not None:
+                    # Fresh complete fix arrived — update the timestamp
+                    existing["last_position_fix"] = int(time.time())
 
                 if patch["altitude"] is None and prev_alt is not None:
                     existing["altitude"] = prev_alt
             else:
                 entry = dict(patch)
                 entry["id"] = canon_id
-                if patch.get("latitude") is not None or patch.get("longitude") is not None:
+                # Only set position fix timestamp if we have complete coordinates
+                if patch.get("latitude") is not None and patch.get("longitude") is not None:
                     entry["last_position_fix"] = int(time.time())
                 self._nodes.append(entry)

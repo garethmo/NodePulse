@@ -149,6 +149,28 @@ export async function clearStaleNodes(days = null) {
   });
 }
 
+/** Fetch information about all local data stores. */
+export async function fetchDataStores() {
+  return _apiFetch('/data-stores');
+}
+
+/** Download a specific data file. */
+export async function downloadDataFile(filename) {
+  const response = await fetch(`/api/data-stores/${filename}`);
+  if (!response.ok) {
+    throw new Error(`Failed to download ${filename}: ${response.statusText}`);
+  }
+  const blob = await response.blob();
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  window.URL.revokeObjectURL(url);
+  document.body.removeChild(a);
+}
+
 /** Fetch all user-defined node tags: { node_id: [tag, ...], ... }. */
 export async function fetchTags() {
   return _apiFetch('/tags');

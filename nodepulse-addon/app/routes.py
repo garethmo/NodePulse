@@ -454,6 +454,157 @@ async def handle_clear_stale_nodes(request: web.Request) -> web.Response:
 
 
 # ---------------------------------------------------------------------------
+# Route: GET /api/data-stores
+# ---------------------------------------------------------------------------
+
+async def handle_data_stores(request: web.Request) -> web.Response:
+    """
+    Return information about all local data stores including file sizes,
+    entry counts, and last modified times.
+    """
+    try:
+        import os
+        from pathlib import Path
+        
+        data_dir = os.environ.get("NODEPULSE_DATA_DIR", "/data")
+        stores = {}
+        
+        # Define the data files we want to track
+        data_files = {
+            "nodes.json": "Cached node data with GPS positions and metrics",
+            "messages.json": "Recent message history (max 1000 messages)",
+            "traceroutes.json": "Discovered network routes and traceroute data",
+            "position_history.json": "GPS position trails for map display",
+            "waypoints.json": "Mesh-broadcast and local waypoints",
+            "favorites.json": "Favorited node IDs",
+            "tags.json": "User-defined node tags",
+            "channels.json": "Mesh channel configuration",
+            "scheduled_messages.json": "Scheduled message queue",
+        }
+        
+        for filename, description in data_files.items():
+            filepath = os.path.join(data_dir, filename)
+            if os.path.exists(filepath):
+                stat = os.stat(filepath)
+                size_bytes = stat.st_size
+                size_kb = round(size_bytes / 1024, 2)
+                modified = stat.st_mtime
+                
+                # Try to load and count entries
+                entry_count = None
+                try:
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                        if isinstance(data, list):
+                            entry_count = len(data)
+                        elif isinstance(data, dict):
+                            entry_count = len(data)
+                except (json.JSONDecodeError, IOError):
+                    entry_count = "Error reading"
+                
+                stores[filename] = {
+                    "description": description,
+                    "size_bytes": size_bytes,
+                    "size_kb": size_kb,
+                    "entry_count": entry_count,
+                    "last_modified": modified,
+                    "exists": True
+                }
+            else:
+                stores[filename] = {
+                    "description": description,
+                    "size_bytes": 0,
+                    "size_kb": 0,
+                    "entry_count": 0,
+                    "last_modified": None,
+                    "exists": False
+                }
+        
+        # Check messages archive directory
+        archive_dir = os.path.join(data_dir, "messages_archive")
+        archive_count = 0
+        archive_size = 0
+        if os.path.exists(archive_dir):
+            for entry in os.scandir(archive_dir):
+                if entry.is_file() and entry.name.endswith('.json'):
+                    archive_count += 1
+                    archive_size += entry.stat().st_size
+        
+        stores["messages_archive"] = {
+            "description": "Archived message history files",
+            "size_bytes": archive_size,
+            "size_kb": round(archive_size / 1024, 2),
+            "entry_count": archive_count,
+            "last_modified": None,
+            "exists": os.path.exists(archive_dir)
+        }
+        
+        return _json_response({"stores": stores})
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Error getting data stores info: %s", exc)
+        return _error_response("Failed to get data stores information")
+
+
+# ---------------------------------------------------------------------------
+# Route: GET /api/data-stores/{filename}
+# ---------------------------------------------------------------------------
+
+async def handle_download_data_file(request: web.Request) -> web.Response:
+    """
+    Download a specific data file from the addon's data directory.
+    
+    Returns the file content as JSON with appropriate Content-Disposition header
+    for browser download. Only allows downloading whitelisted files for security.
+    """
+    try:
+        import os
+        from pathlib import Path
+        
+        filename = request.match_info.get("filename", "").strip()
+        
+        # Security: whitelist of allowed files
+        allowed_files = {
+            "nodes.json",
+            "messages.json", 
+            "traceroutes.json",
+            "position_history.json",
+            "waypoints.json",
+            "favorites.json",
+            "tags.json",
+            "channels.json",
+            "scheduled_messages.json"
+        }
+        
+        if filename not in allowed_files:
+            return _error_response(f"File '{filename}' is not allowed for download", status=403)
+        
+        data_dir = os.environ.get("NODEPULSE_DATA_DIR", "/data")
+        filepath = os.path.join(data_dir, filename)
+        
+        if not os.path.exists(filepath):
+            return _error_response(f"File '{filename}' not found", status=404)
+        
+        if not os.path.isfile(filepath):
+            return _error_response(f"'{filename}' is not a file", status=400)
+        
+        # Read the file content
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        # Return as JSON with download headers
+        return web.Response(
+            text=content,
+            content_type='application/json',
+            headers={
+                'Content-Disposition': f'attachment; filename="{filename}"'
+            }
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Error downloading data file %s: %s", filename, exc)
+        return _error_response("Failed to download file")
+
+
+# ---------------------------------------------------------------------------
 # Route: GET /api/node/{node_id}/signal
 # ---------------------------------------------------------------------------
 

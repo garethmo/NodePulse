@@ -13,7 +13,7 @@
  * is easy to trace top-to-bottom.
  */
 
-import { fetchStatus, fetchNodes, fetchChannels, fetchMessages, sendMessage, requestTraceRoute, requestPosition, fetchTrackedNodes, trackNode, clearStaleNodes, fetchTags, setTags, fetchFavorites, setFavorite, fetchPositionHistory, fetchPackets, fetchSnifferStats, fetchWaypoints, addWaypoint, updateWaypoint, deleteWaypoint, deleteNode, fetchSecurityScan, fetchNodeSignal, fetchNodeGpx, fetchHops, fetchBeacon } from './api.js';
+import { fetchStatus, fetchNodes, fetchChannels, fetchMessages, sendMessage, requestTraceRoute, requestPosition, fetchTrackedNodes, trackNode, clearStaleNodes, fetchDataStores, downloadDataFile, fetchTags, setTags, fetchFavorites, setFavorite, fetchPositionHistory, fetchPackets, fetchSnifferStats, fetchWaypoints, addWaypoint, updateWaypoint, deleteWaypoint, deleteNode, fetchSecurityScan, fetchNodeSignal, fetchNodeGpx, fetchHops, fetchBeacon } from './api.js';
 import { MapManager } from './map.js';
 import { ChartManager } from './charts.js';
 import { TopologyManager } from './topology.js';
@@ -1852,12 +1852,94 @@ async function renderSettings() {
     // About
     _setEl('settings-version', status.addon_version || '—');
 
+    // Update data stores display
+    await updateDataStoresDisplay();
+
   } catch (err) {
     // Surface the failure instead of hiding it behind "—" placeholders so the
     // cause (e.g. an unreachable addon API under ingress) is visible.
     const msg = (err && err.message) ? err.message : String(err);
     _setEl('settings-conn', `⚠ Error: ${msg}`);
     console.error('renderSettings failed:', err);
+  }
+}
+
+/**
+ * Update the data stores display in Settings view.
+ */
+async function updateDataStoresDisplay() {
+  try {
+    const data = await fetchDataStores();
+    const stores = data.stores || {};
+    
+    // Helper function to format file size
+    const formatSize = (kb) => {
+      if (kb < 1) return '0 KB';
+      if (kb < 1024) return `${kb.toFixed(2)} KB`;
+      return `${(kb / 1024).toFixed(2)} MB`;
+    };
+    
+    // Helper function to format entry count
+    const formatCount = (count) => {
+      if (count === null || count === undefined) return '—';
+      if (typeof count === 'string') return count;
+      return count.toLocaleString();
+    };
+    
+    // Update each data store display
+    const storeDisplayMap = {
+      'nodes.json': 'data-nodes',
+      'messages.json': 'data-messages',
+      'traceroutes.json': 'data-traceroutes',
+      'position_history.json': 'data-position-history',
+      'waypoints.json': 'data-waypoints',
+      'favorites.json': 'data-favorites',
+      'tags.json': 'data-tags',
+      'channels.json': 'data-channels',
+      'scheduled_messages.json': 'data-scheduled-messages',
+      'messages_archive': 'data-messages-archive'
+    };
+    
+    for (const [filename, elementId] of Object.entries(storeDisplayMap)) {
+      const store = stores[filename];
+      if (!store) continue;
+      
+      const element = document.getElementById(elementId);
+      if (!element) continue;
+      
+      if (!store.exists) {
+        element.textContent = 'Not found';
+        element.style.color = 'var(--text-muted)';
+      } else {
+        const sizeText = formatSize(store.size_kb);
+        const countText = formatCount(store.entry_count);
+        element.textContent = `${sizeText} • ${countText} entries`;
+        element.style.color = 'var(--text-normal)';
+      }
+      
+      // Enable/disable download button based on file existence
+      const downloadBtn = document.querySelector(`[data-file="${filename}"]`);
+      if (downloadBtn) {
+        downloadBtn.disabled = !store.exists;
+        if (!store.exists) {
+          downloadBtn.style.display = 'none';
+        } else {
+          downloadBtn.style.display = 'inline-block';
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Failed to update data stores display:', err);
+    // Set error state for each element
+    const elementIds = ['data-nodes', 'data-messages', 'data-traceroutes', 'data-position-history', 
+                       'data-waypoints', 'data-favorites', 'data-tags', 'data-channels'];
+    for (const elementId of elementIds) {
+      const element = document.getElementById(elementId);
+      if (element) {
+        element.textContent = 'Error loading';
+        element.style.color = 'var(--text-error)';
+      }
+    }
   }
 }
 
@@ -1953,28 +2035,46 @@ async function pollData() {
   }
 
   if (nodesResult.status === 'fulfilled') {
-    const rawNodes = nodesResult.value || [];
-    const seenNids = new Set();
-    const uniqueNodes = [];
-    for (const n of rawNodes) {
-      if (!n || !n.id) continue;
-      // IDs from the backend are already '!hex', but normalise defensively.
-      // Use .toLowerCase() only — the backend guarantees !hex format, so we
-      // avoid the decimal-string ambiguity of blindly prepending '!'.
-      const canonicalId = n.id.toLowerCase();
-      if (seenNids.has(canonicalId)) continue;
-      seenNids.add(canonicalId);
-      // Spread to avoid mutating the original API response object.
-      uniqueNodes.push({ ...n, id: canonicalId });
-    }
-    state.nodes = uniqueNodes;
-
     // Determine the self/local node ID from the status so the map can draw
     // distance-labelled links from it, and highlight it as the hub.
     const selfNum = state.status?.my_info?.my_node_num;
     const selfId = selfNum != null
       ? '!' + (selfNum >>> 0).toString(16).padStart(8, '0')
       : null;
+
+    const rawNodes = nodesResult.value || [];
+    const seenNids = new Set();
+    const uniqueNodes = [];
+    for (const n of rawNodes) {
+      if (!n || !n.id) continue;
+      // IDs from the backend are already '!hex' — just lowercase for safety.
+      const canonicalId = n.id.toLowerCase();
+      if (seenNids.has(canonicalId)) continue;
+      seenNids.add(canonicalId);
+      // Spread to avoid mutating the original API response object.
+      uniqueNodes.push({ ...n, id: canonicalId });
+    }
+
+    // Deduplicate any stale ghost nodes that share the same name and location with an active node
+    const deduplicatedNodes = [];
+    for (const n of uniqueNodes) {
+      const name = (n.long_name || n.short_name || '').trim().toLowerCase();
+      if (n.stale && name && n.latitude != null && n.longitude != null) {
+        const hasActiveTwin = uniqueNodes.some(other =>
+          !other.stale &&
+          other.id !== n.id &&
+          (other.long_name || other.short_name || '').trim().toLowerCase() === name &&
+          other.latitude != null &&
+          other.longitude != null &&
+          ((other.latitude === n.latitude && other.longitude === n.longitude) ||
+           haversineKm(n.latitude, n.longitude, other.latitude, other.longitude) <= 0.025)
+        );
+        if (hasActiveTwin) continue;
+      }
+      deduplicatedNodes.push(n);
+    }
+    state.nodes = deduplicatedNodes;
+
     dashMap.setSelfNode(selfId);
     fullMap.setSelfNode(selfId);
     state.selfId = selfId;
@@ -2361,6 +2461,48 @@ async function init() {
       }
     });
   }
+
+  // Refresh data stores button (Settings view)
+  const btnRefreshData = document.getElementById('btn-refresh-data');
+  if (btnRefreshData) {
+    btnRefreshData.addEventListener('click', async () => {
+      const originalText = btnRefreshData.textContent;
+      btnRefreshData.disabled = true;
+      btnRefreshData.textContent = 'Refreshing...';
+      try {
+        await updateDataStoresDisplay();
+        showToast('Data stores information refreshed.', 'success');
+      } catch (err) {
+        showToast(`Failed to refresh data stores: ${err.message}`, 'error');
+      } finally {
+        btnRefreshData.disabled = false;
+        btnRefreshData.textContent = originalText;
+      }
+    });
+  }
+
+  // Data store download buttons (Settings view)
+  const downloadButtons = document.querySelectorAll('[data-action="download"]');
+  downloadButtons.forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const filename = btn.getAttribute('data-file');
+      if (!filename) return;
+      
+      const originalText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Downloading...';
+      
+      try {
+        await downloadDataFile(filename);
+        showToast(`Downloaded ${filename}`, 'success');
+      } catch (err) {
+        showToast(`Failed to download ${filename}: ${err.message}`, 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+      }
+    });
+  });
 
   // ---- Full-screen Messages View event wiring ----------------------------
 

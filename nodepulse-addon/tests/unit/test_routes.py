@@ -634,6 +634,33 @@ class TestHandleFavorites:
 
 
 # ----------------------------------------------------------------------
+# Data stores endpoint tests
+# ----------------------------------------------------------------------
+class TestDataStores:
+    """Verify the data stores endpoint returns information about local data files."""
+
+    @pytest.mark.asyncio
+    async def test_handle_data_stores_success(self):
+        """Test that data stores endpoint returns file information."""
+        request = make_request(app_dict={}, method="GET", path="/api/data-stores")
+        resp = await routes.handle_data_stores(request)
+        assert resp.status == 200
+        body = json.loads(resp.body)
+        assert "stores" in body
+        # Check that some expected files are in the response
+        assert "nodes.json" in body["stores"]
+        assert "messages.json" in body["stores"]
+        # Verify structure of a store entry
+        nodes_store = body["stores"]["nodes.json"]
+        assert "description" in nodes_store
+        assert "size_bytes" in nodes_store
+        assert "size_kb" in nodes_store
+        assert "entry_count" in nodes_store
+        assert "exists" in nodes_store
+
+
+
+# ----------------------------------------------------------------------
 # _relay_to_integration token-selection tests
 # ----------------------------------------------------------------------
 class TestRelayTokenSelection:

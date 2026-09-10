@@ -125,6 +125,10 @@ Selection persists in `localStorage` across sessions.
 
 **Export**: KML and GPX download of visible GPS-fixed nodes.
 
+**Node popups**: Click any node marker to see a popup with node details and quick actions including:
+- **Favorite button** (⭐) — Mark/unmark the node as a favorite, with state synchronized across the UI and device NodeDB
+- Traceroute, Message, Diagnostics, GPX download actions
+
 **Terrain tools** (in the map filter bar):
 - **⛰ Terrain** — Opens a link-analysis panel. Pick two nodes, set frequency (required) and optional TX/RX parameters (power, gains, sensitivity, antenna height), and click **Analyze**. The backend fetches a real elevation profile (DEM, default OpenTopoData SRTM30m, configurable via `terrain_dem_url`), then reports path distance, earth-bulge-corrected LOS clearance vs the first Fresnel zone, free-space path loss, effective received signal, and verdicts (LOS clear / Fresnel margin / blocked). A canvas profile chart draws the terrain cross-section, LOS beam, and Fresnel band.
 - **🏔 3D** — Switches the map to a 3D terrain view (MapLibre GL, loaded on demand from CDN) over AWS Terrain Tiles (terrarium encoding) with hillshading and extruded node markers. Toggle again or leave the Map view to return to the 2D Leaflet map.
@@ -161,6 +165,8 @@ Click the "📏 Ruler" button to enter measurement mode. The map filter bar coll
 ### Web UI — Settings View
 
 Read-only display of runtime configuration: connection type, host/port, node count, ignored nodes, HA base URL, access key status, scan interval, log level, addon version. "Clear stale nodes" action button.
+
+**Data Stores** section displays information about all local data files (nodes.json, messages.json, traceroutes.json, position_history.json, waypoints.json, favorites.json, tags.json, channels.json, scheduled_messages.json, and messages_archive/) including file sizes, entry counts, and last modified times. Helps users monitor storage usage and identify large or problematic data files. Each data file has a download button for export/backup.
 
 ### Web UI — Configuration View (Device Configuration)
 

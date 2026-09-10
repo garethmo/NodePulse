@@ -2,6 +2,40 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.28.0] - 2026-09-08
+### Added
+- **Map Favorite Button** — Added "⭐ Favorite" button to map node popups, allowing users to quickly mark nodes as favorites directly from the map view. The button shows the current favorite state (⭐ Favorite vs ★ Favorited) and integrates with the existing favorite sync system.
+- **Data Stores Section in Settings** — Added a new "Data Stores" section in the Settings view that displays information about all local data files (nodes.json, messages.json, traceroutes.json, etc.) including file sizes, entry counts, and last modified times. Helps users monitor storage usage and identify large or problematic data files.
+- **Data File Downloads** — Added download buttons for each data file in the Settings view, allowing users to export nodes.json, messages.json, traceroutes.json, and other data files directly from the UI for backup or analysis.
+
+### Fixed
+- **Node Position Retention Bug** — Fixed critical bug where nodes could appear at the same location on the map. The position retention logic was incorrectly restoring coordinates when only one coordinate (latitude or longitude) was None, or when using partial data from latitudeI/longitudeI fields. Now coordinates are only used when both lat/lng or both latI/lngI are available as complete pairs, preventing nodes from sharing incorrect positions from partial data.
+- **TX Queue Spam** — Fixed excessive "Waiting for free space in TX Queue" debug log spam by implementing rate limiting:
+  - Scheduled messages limited to 3 per second with automatic deferral of excess messages
+  - Auto-responder limited to 3 responses per discovery cycle
+  - Position requests limited to 1 per 10 seconds per node
+  - Added proper cleanup of rate limiting state to prevent memory leaks
+
+### Changed
+- **Rate Limiting Architecture** — Implemented comprehensive rate limiting across all message-sending functions to prevent radio TX queue overflow and improve network stability.
+
+## [1.27.0] - 2026-09-08
+### Added
+- **Map Favorite Button** — Added "⭐ Favorite" button to map node popups, allowing users to quickly mark nodes as favorites directly from the map view. The button shows the current favorite state (⭐ Favorite vs ★ Favorited) and integrates with the existing favorite sync system.
+- **Data Stores Section in Settings** — Added a new "Data Stores" section in the Settings view that displays information about all local data files (nodes.json, messages.json, traceroutes.json, etc.) including file sizes, entry counts, and last modified times. Helps users monitor storage usage and identify large or problematic data files.
+- **Data File Downloads** — Added download buttons for each data file in the Settings view, allowing users to export nodes.json, messages.json, traceroutes.json, and other data files directly from the UI for backup or analysis.
+
+### Fixed
+- **Node Position Retention Bug** — Fixed critical bug where nodes could appear at the same location on the map. The position retention logic was incorrectly restoring coordinates when only one coordinate (latitude or longitude) was None, or when using partial data from latitudeI/longitudeI fields. Now coordinates are only used when both lat/lng or both latI/lngI are available as complete pairs, preventing nodes from sharing incorrect positions from partial data.
+- **TX Queue Spam** — Fixed excessive "Waiting for free space in TX Queue" debug log spam by implementing rate limiting:
+  - Scheduled messages limited to 3 per second with automatic deferral of excess messages
+  - Auto-responder limited to 3 responses per discovery cycle
+  - Position requests limited to 1 per 10 seconds per node
+  - Added proper cleanup of rate limiting state to prevent memory leaks
+
+### Changed
+- **Rate Limiting Architecture** — Implemented comprehensive rate limiting across all message-sending functions to prevent radio TX queue overflow and improve network stability.
+
 ## [1.26.0] - 2026-09-08
 ### Added
 - **Non-overlapping co-located node labels** — Nodes that share the exact same location or are co-located within 25 meters now stack their permanent map labels vertically instead of colliding at the same pixel offset. Label ordering is deterministic (gateway first, then alphabetical). Labels are now also interactive, allowing users to click any stacked label to open that specific node's popup.

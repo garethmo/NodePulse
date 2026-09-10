@@ -33,6 +33,8 @@ from .routes import (
     handle_beacon,
     handle_channels,
     handle_clear_stale_nodes,
+    handle_data_stores,
+    handle_download_data_file,
     handle_delete_node,
     handle_delete_waypoint,
     handle_export_messages,
@@ -311,6 +313,8 @@ def build_app(config) -> web.Application:
     app.router.add_get("/api/status", handle_status)
     app.router.add_get("/api/nodes", handle_nodes)
     app.router.add_post("/api/nodes/clear-stale", handle_clear_stale_nodes)
+    app.router.add_get("/api/data-stores", handle_data_stores)
+    app.router.add_get("/api/data-stores/{filename}", handle_download_data_file)
     app.router.add_delete("/api/node/{node_id}", handle_delete_node)
     app.router.add_get("/api/channels", handle_channels)
     app.router.add_get("/api/messages", handle_messages)
