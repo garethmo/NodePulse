@@ -28,90 +28,70 @@ python3 -m pytest tests/ -v
 - [`nodepulse-addon/web_ui/js/api.js`](file:///home/garethmo/Documents/GitHub/NodePulse/nodepulse-addon/web_ui/js/api.js) — all HTTP calls to the backend (one function per endpoint)
 - [`nodepulse-addon/web_ui/js/app.js`](file:///home/garethmo/Documents/GitHub/NodePulse/nodepulse-addon/web_ui/js/app.js) — single-page app: state, rendering, event wiring
 - [`nodepulse-addon/web_ui/index.html`](file:///home/garethmo/Documents/GitHub/NodePulse/nodepulse-addon/web_ui/index.html) — single HTML shell
-- [`ROADMAP.md`](file:///home/garethmo/Documents/GitHub/NodePulse/ROADMAP.md) — planned features with ✅/🔜/💡 status
+- [`ROADMAP.md`](file:///home/garethmo/Documents/GitHub/NodePulse/ROADMAP.md) — planned features with checkmarks/status
 
 ---
 
 ## Current Git State (as of handoff)
 
 ```
-HEAD (main):  69a6442  feature: Bulk remove stale nodes & bump version to 1.26.0
+HEAD (main):  3565b0a  fix: node deduplication and co-located map marker separation
+origin/main:  8c486c2  feature: Ensure map node labels are clickable to open popup dialogue
 ```
+
+> Local `main` is **1 commit ahead** of `origin/main` (`3565b0a`). There are also **unstaged changes** from this session ready to commit (see Immediately Pending Actions).
 
 ### Recent Features Implemented
 
-1. **Non-overlapping Co-located Node Labels**:
-   - Nodes sharing the same location (identical coordinates or within 25m) are clustered in `_computeLabelOffsets`.
-   - Permanent labels are stacked vertically (`offset: [10, yOffset]`, 22px step) centered around the marker icon.
-   - Ordering is deterministic: local gateway node first, then alphabetical by name or ID.
-   - Tooltips are interactive (`interactive: true`) with pointer cursor and hover highlight, so clicking any stacked label directly opens that node's popup.
-   - Modifies `nodepulse-addon/web_ui/js/map.js` and `nodepulse-addon/web_ui/css/main.css`.
-
+1. **Non-overlapping Co-located Node Labels** — labels stack vertically for co-located nodes
 2. **Bulk Remove Stale Nodes & Device Eviction** (v1.26.0)
 3. **Check and Remove Node from Radio Device when Deleting**
+4. **Node deduplication & co-located map marker separation** (commit 3565b0a)
+5. **Duplicate same-node co-located map marker resolution** (unstaged — this session)
 
 ---
 
 ## Session Work Done (2026-09-08)
 
-### Feature audited: **Bulk Remove Stale Nodes** (dropdown in Nodes toolbar)
+### Bug fixed: Multiple of the same nodes appearing on the map in the same location
 
-The feature removes nodes from the persistent store (and optionally from the radio's NodeDB) that haven't been heard within a chosen time window (15 / 30 / 60+ days).
+**User report**: *"i see multiple of the same nodes on the map in the same location this shouldnt happen it should only show one node and its location fix this"*
 
-**End-to-end flow:**
-1. **UI**: `<select id="bulk-remove-stale">` dropdown in the Nodes toolbar (`index.html` line ~271)
-2. **JS handler**: `bulkRemoveStale` listener in `app.js` (~line 2490)
-3. **API client**: `clearStaleNodes(days)` in `api.js` → `POST /api/nodes/clear-stale?days=N`
-4. **Route**: `handle_clear_stale_nodes` in `routes.py` (line 424)
-5. **Backend**: `conn.clear_stale_nodes(days)` → `_clear_stale_nodes_sync` in `connection.py` (line 448)
-   - Iterates `self._nodes`, collects IDs where `age >= threshold` OR `stale=True` with no `last_heard`
-   - Skips the local gateway node
-   - Calls `_delete_node_sync` for each (which also evicts from the radio if present)
+**Root cause analysis**:
+1. When nodes had previously been saved to `/data/nodes.json` under an earlier ID, reflash, or unnormalized format, the stale re-injection loop in `_get_nodes_sync()` re-injected the stale record as a distinct node even when the active radio node (or local gateway node) was live with the exact same name and coordinates.
+2. The Leaflet map renderer (`map.js` `updateNodes`) clustered all nodes within 25m into vertical offset stacks. When duplicate records existed for the same physical node (or stale ghost + active node, or multiple entries for the gateway node), it fanned out multiple separate marker icons and labels for what is physically a single node at that location.
+3. Node IDs in `_load_nodes`, `_capture_position`, and frontend deduplication did not guard against co-located identical-name duplicate nodes.
 
-### Bugs fixed in this session
-
-#### 1. `api.js` — Orphaned JSDoc
-Old `clearStaleNodes` doc comment was accidentally left floating above `fetchPositionHistory` (not above the function). Both functions now have their own correct JSDoc.
-
-#### 2. `app.js` — Map markers not refreshed after bulk remove
-Handler called `fetchNodes()` + `renderNodesGrid()` + `renderNodeList()` but skipped `dashMap.updateNodes()` / `fullMap.updateNodes()`. Deleted nodes stayed as ghost markers on the map until the next poll.  
-**Fix:** replaced the manual calls with `await pollData()` — same as the Settings button does.
-
-#### 3. `app.js` — Misleading confirm when 0 nodes match
-If the user selected "15+ days" but all nodes were recently heard, the handler showed a vague `"Remove all stale nodes…"` confirm dialog.  
-**Fix:** now shows an `info` toast — `"No nodes last heard 15+ days ago — nothing to remove."` — and resets the dropdown without opening the confirm.
-
-#### 4. `test_routes.py` — Failing test (latent bug)
-`test_handle_clear_stale_nodes_with_query_param` embedded `?days=30` in the path string, but `make_request()` never parses the path — it reads `request.query` from a separate dict. The handler never saw `days`, omitted it from the response, and the assertion failed.  
-**Fix:** test now passes `query={"days": "30"}` to `make_request()`.
-
-#### 5. Duplicate Nodes & Co-located Marker Overlap
-- **Backend deduplication & ID canonicalization**: In `_get_nodes_sync` in `connection.py`, when `nodes_raw` contained both integer and string keys for the same node, both were appended to `result` because `if node_id in result_ids: continue` was missing. Furthermore, the stale re-injection loop did not call `result_ids.add(nid)`, causing duplicate stale nodes. Also, unnormalized IDs (e.g. `"12345678"` vs `"!12345678"`, uppercase hex, or decimal strings) resulted in multiple representations of the same physical node. Added `normalize_node_id`, enforced deduplication on load (`_load_nodes`), connected merge, disconnected fallback, and interface refresh.
-- **Frontend deduplication**: `pollData()` in `app.js` and `updateNodes()` in `map.js` now defensively canonicalize IDs and deduplicate incoming node lists.
-- **Co-located marker icon separation**: Co-located nodes (exact coordinates or within 25m) previously rendered all marker icons directly on top of each other, completely hiding all but the top icon. Now, `getNodeIcon(role, isSelf, yOffset)` applies matching `iconAnchor: [baseX, baseY - yOffset]` and `popupAnchor: [0, basePopupY + yOffset]` corresponding to the vertical label offset (`LABEL_STEP_Y = 22`). Every co-located node (Gateway, Router, Client, Tracker) displays its own distinct icon aligned horizontally beside its label, and is directly clickable on the map.
+**Fixes applied**:
+1. **`connection.py`**:
+   - Added `_is_co_located(lat1, lon1, lat2, lon2, threshold_km=0.025)` helper function.
+   - Updated `_load_nodes()` to collapse co-located entries with identical names upon startup loading.
+   - Updated `_capture_position()` to match destinations using `normalize_node_id`.
+   - In `_get_nodes_sync()`, the stale re-injection loop checks for live active nodes or the local gateway node sharing the same name and location, skipping and pruning stale duplicate ghosts.
+   - In `_get_nodes_sync()`, final pass deduplicates co-located nodes sharing identical names, keeping the active/newest node.
+2. **`app.js`**:
+   - Updated `pollData()` to filter out stale duplicate ghosts that share the same name and location with an active node.
+3. **`map.js`**:
+   - In `updateNodes()`, deduplicates `rawGpsNodes` into `gpsNodes` by collapsing any co-located nodes sharing the same location (within 25m) and identical names (or sharing the location with the gateway `_selfId`). Only one marker and location is retained.
+   - Marker cleanup removes any old markers from Leaflet when their node was deduplicated or removed.
+4. **`test_connection.py`**:
+   - Added unit tests: `test_get_nodes_sync_skips_stale_duplicate_of_live_node` and `test_get_nodes_sync_deduplicates_colocated_same_name`.
 
 ### Test results (all passing)
 ```
-tests/e2e/test_api.py::test_clear_stale_nodes                              PASSED
-tests/unit/test_connection.py::TestClearStaleNodes::test_clear_stale_nodes PASSED
-tests/unit/test_connection.py::TestClearStaleNodes::test_clear_stale_nodes_sync_all_legacy PASSED
-tests/unit/test_connection.py::TestClearStaleNodes::test_clear_stale_nodes_sync_with_days_filter PASSED
-tests/unit/test_connection.py::TestClearStaleNodes::test_clear_stale_nodes_sync_protects_gateway_node PASSED
-tests/unit/test_routes.py::TestHandleClearStaleNodes::test_handle_clear_stale_nodes_success PASSED
-tests/unit/test_routes.py::TestHandleClearStaleNodes::test_handle_clear_stale_nodes_with_query_param PASSED
-tests/unit/test_routes.py::TestHandleClearStaleNodes::test_handle_clear_stale_nodes_error PASSED
+539 passed, 14 skipped, 0 failed in 18.77s
 ```
 
 ---
 
 ## Immediately Pending Actions
 
-1. **Commit the working tree** — all changes above are tested and ready:
+1. **Commit the unstaged changes** from this session:
    ```bash
-   git add -A
-   git commit -m "feature: Bulk remove stale nodes — dropdown UI, route, backend, tests"
+   git add nodepulse-addon/app/connection.py nodepulse-addon/web_ui/js/map.js nodepulse-addon/web_ui/js/app.js nodepulse-addon/tests/unit/test_connection.py .agent/HANDOFF.md
+   git commit -m "fix: collapse duplicate same-node markers on map to a single node and location"
    ```
-2. **Push both commits** to origin:
+2. **Push all commits** to origin (2 local commits ahead after step 1):
    ```bash
    git push origin main
    ```
@@ -122,7 +102,7 @@ tests/unit/test_routes.py::TestHandleClearStaleNodes::test_handle_clear_stale_no
 
 These are the open items with the most value, in rough priority order:
 
-### 🔜 High confidence (scoped)
+### High confidence (scoped)
 
 | Feature | Where to build | Notes |
 |---|---|---|
@@ -130,11 +110,11 @@ These are the open items with the most value, in rough priority order:
 | **E2E test suite** | `nodepulse-addon/tests/e2e/` | pytest + Playwright. Some e2e API tests already exist in `tests/e2e/test_api.py` — extend them. |
 | **i18n / multi-language** | `web_ui/` | Localise all UI strings. No framework yet — a simple `t()` lookup dict approach would fit the codebase style. |
 
-### 💡 Good ideas (need design)
+### Good ideas (need design)
 
 | Feature | Notes |
 |---|---|
-| **Bulk remove mode (manual select)** | A *different* feature from the stale-by-age dropdown. Toggle button enters "selection mode" — checkboxes on each node card, floating "Delete N selected" action bar, then calls `DELETE /api/node/{id}` per selected node or a new `POST /api/nodes/delete-batch` endpoint. |
+| **Bulk remove mode (manual select)** | Toggle button enters "selection mode" — checkboxes on each node card, floating "Delete N selected" action bar, then calls `DELETE /api/node/{id}` per selected node or a new `POST /api/nodes/delete-batch` endpoint. |
 | **Remote channel administration** | View + manage channel config (names, keys, PSK) from the Web UI. Builds on the existing remote admin infrastructure in `remote_admin.py`. |
 | **Push notifications (Apprise)** | Email / Slack / Discord / Telegram alerts on mesh events. Python `apprise` library. |
 | **Reboot-pending auto-clear** | Detect node reboot from reconnect / uptime reset and auto-dismiss the "reboot required" banner. |
@@ -151,31 +131,3 @@ These are the open items with the most value, in rough priority order:
 - **Error handling**: always handle and log; routes return `_error_response(...)` on exception
 - **Tests**: run from `nodepulse-addon/` with `python3 -m pytest tests/ -v`
 - Verify locally before asking for review
-
----
-
-## Architecture Notes
-
-### Node deletion flow (important — recently changed)
-`_delete_node_sync(node_id)` in `connection.py`:
-1. Parses hex node ID → integer node_num
-2. Refuses if the target is the local gateway node
-3. Checks if node is on the physical radio (`iface.nodes`, `iface.nodesByNum`, `_lookup_node`)
-4. If on device: calls `iface.removeNode(node_num)` and evicts from in-memory dicts
-5. Removes from `self._nodes` (persistent store)
-6. Cleans up: favorites, tags, traceroutes, position history
-
-### `pollData()` is the canonical refresh
-Always call `await pollData()` after mutations that affect the node list. It refreshes:
-- Status bar
-- Node list sidebar
-- Nodes grid
-- **Both map instances** (`dashMap` and `fullMap`)
-- Topology graph (if visible)
-- Charts
-
-Do NOT call `fetchNodes()` + manual renders separately — you'll miss the maps.
-
-### Request mock pattern in tests
-`make_request()` in `tests/unit/test_routes.py` takes a `query` dict (not a path string).  
-Always pass query params like: `make_request(query={"days": "30"})` — never embed `?key=val` in `path`.
