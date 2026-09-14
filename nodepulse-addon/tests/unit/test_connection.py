@@ -2259,7 +2259,7 @@ class TestCoordinateValidation:
         """Test that _save_nodes filters out nodes without GPS coordinates."""
         mock_config = Mock()
         mock_config.mqtt_enabled = False
-        conn = MeshtasticConnection(
+        _ = MeshtasticConnection(
             host="localhost",
             port=4403,
             mode="tcp",

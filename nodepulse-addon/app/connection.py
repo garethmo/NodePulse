@@ -228,10 +228,10 @@ def _are_coordinates_suspicious(lat: Any, lon: Any) -> bool:
         lon_str = str(lon_f).rstrip('0').rstrip('.') if '.' in str(lon_f) else str(lon_f)
         
         # If coordinates have 4 or fewer significant digits, they might be placeholders
-        if len(lat_str.replace('.', '').replace('-', '')) <= 4 and len(lon_str.replace('.', '').replace('-', '')) <= 4:
-            return True
-        
-        return False
+        return (
+            len(lat_str.replace('.', '').replace('-', '')) <= 4
+            and len(lon_str.replace('.', '').replace('-', '')) <= 4
+        )
     except (TypeError, ValueError):
         return True
 
@@ -3064,9 +3064,11 @@ class MeshtasticConnection:
                                 for existing in self._nodes:
                                     ex_lat = existing.get("latitude")
                                     ex_lng = existing.get("longitude")
-                                    if ex_lat is not None and ex_lng is not None:
-                                        # Check for exact match or very close coordinates
-                                        if _is_co_located(lat, lng, ex_lat, ex_lng):
+                                    if (
+                                        ex_lat is not None
+                                        and ex_lng is not None
+                                        and _is_co_located(lat, lng, ex_lat, ex_lng)
+                                    ):
                                             # Additional check: if same name AND same location, definitely a duplicate
                                             ex_name = (existing.get("long_name") or existing.get("short_name") or "").strip().lower()
                                             if ex_name == node_name:
@@ -3940,10 +3942,13 @@ class MeshtasticConnection:
                             break
 
                     # 2. Co-located with the live local gateway node
-                    if gateway_id and live.get("id") == gateway_id:
-                        if _is_co_located(stale_lat, stale_lng, live_lat, live_lng):
-                            is_ghost = True
-                            break
+                    if (
+                        gateway_id
+                        and live.get("id") == gateway_id
+                        and _is_co_located(stale_lat, stale_lng, live_lat, live_lng)
+                    ):
+                        is_ghost = True
+                        break
 
                 if is_ghost:
                     logger.debug("Skipping stale duplicate ghost of live node: %s (%s)", nid, stale_name)
@@ -4149,7 +4154,7 @@ class MeshtasticConnection:
             if not any(fc > 0 for fc in fix_counts):
                 continue
 
-            for idx, fix_count in zip(indices, fix_counts):
+            for idx, fix_count in zip(indices, fix_counts, strict=True):
                 if fix_count > 0:
                     continue
                 node = deduped_result[idx]
@@ -4506,13 +4511,16 @@ class MeshtasticConnection:
         # Attempt to request position for nodes without GPS
         # We do this in a limited way to avoid overwhelming the network
         max_concurrent_requests = 3
-        for i, (node_id, node) in enumerate(nodes_without_gps[:max_concurrent_requests]):
+        for node_id, node in nodes_without_gps[:max_concurrent_requests]:
             try:
                 # Only request if we're connected and the node might be reachable
                 with self._lock:
                     if self._connected and self._interface is not None:
-                        logger.debug("Requesting position for node %s (%s) to get GPS data", 
-                                    node_id, node.get("long_name", node.get("short_name", "")))
+                        logger.debug(
+                            "Requesting position for node %s (%s) to get GPS data", 
+                            node_id,
+                            node.get("long_name", node.get("short_name", "")),
+                        )
                         # This will trigger an async position request
                         # The result will be captured via _capture_position
                         success = self._request_position_sync(node_id)
@@ -4520,7 +4528,7 @@ class MeshtasticConnection:
                             logger.debug("Position request sent for node %s", node_id)
                         else:
                             logger.debug("Failed to request position for node %s", node_id)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.debug("Error requesting position for node %s: %s", node_id, exc)
 
     def _apply_coordinate_offset(self, node: dict[str, Any], existing_nodes: list[dict[str, Any]]) -> dict[str, Any]:
@@ -4557,9 +4565,7 @@ class MeshtasticConnection:
             ex_lat = existing.get("latitude")
             ex_lng = existing.get("longitude")
             
-            if ex_lat is not None and ex_lng is not None:
-                # Check for EXACT coordinate match (not just close)
-                if lat == ex_lat and lng == ex_lng:
+            if ex_lat is not None and ex_lng is not None and lat == ex_lat and lng == ex_lng:
                     # Apply a small random offset (~1-2 meters)
                     # 1 degree of latitude ≈ 111,000 meters
                     # 1 degree of longitude ≈ 111,000 meters * cos(latitude)
@@ -4606,9 +4612,7 @@ class MeshtasticConnection:
             ex_lat = existing.get("latitude")
             ex_lng = existing.get("longitude")
             
-            if ex_lat is not None and ex_lng is not None:
-                # Check for exact match or very close coordinates
-                if _is_co_located(lat, lng, ex_lat, ex_lng):
+            if ex_lat is not None and ex_lng is not None and _is_co_located(lat, lng, ex_lat, ex_lng):
                     ex_name = (existing.get("long_name") or existing.get("short_name") or "").strip().lower()
                     
                     # Always consider exact coordinate matches as duplicates

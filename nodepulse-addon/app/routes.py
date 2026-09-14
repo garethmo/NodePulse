@@ -510,13 +510,11 @@ async def handle_data_stores(request: web.Request) -> web.Response:
                 # Try to load and count entries
                 entry_count = None
                 try:
-                    with open(filepath, 'r', encoding='utf-8') as f:
+                    with open(filepath, encoding="utf-8") as f:
                         data = json.load(f)
-                        if isinstance(data, list):
+                        if isinstance(data, (list, dict)):
                             entry_count = len(data)
-                        elif isinstance(data, dict):
-                            entry_count = len(data)
-                except (json.JSONDecodeError, IOError):
+                except (OSError, json.JSONDecodeError):
                     entry_count = "Error reading"
                 
                 stores[filename] = {
@@ -607,7 +605,7 @@ async def handle_download_data_file(request: web.Request) -> web.Response:
             return _error_response(f"'{filename}' is not a file", status=400)
         
         # Read the file content
-        with open(filepath, 'r', encoding='utf-8') as f:
+        with open(filepath, encoding="utf-8") as f:
             content = f.read()
         
         # Return as JSON with download headers
