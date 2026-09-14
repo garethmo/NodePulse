@@ -156,18 +156,19 @@ export async function fetchDataStores() {
 
 /** Download a specific data file. */
 export async function downloadDataFile(filename) {
-  const response = await fetch(`/api/data-stores/${filename}`);
+  const url = `${BASE_URL}/api/data-stores/${filename}`;
+  const response = await fetch(url);
   if (!response.ok) {
     throw new Error(`Failed to download ${filename}: ${response.statusText}`);
   }
   const blob = await response.blob();
-  const url = window.URL.createObjectURL(blob);
+  const downloadUrl = window.URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url;
+  a.href = downloadUrl;
   a.download = filename;
   document.body.appendChild(a);
   a.click();
-  window.URL.revokeObjectURL(url);
+  window.URL.revokeObjectURL(downloadUrl);
   document.body.removeChild(a);
 }
 
