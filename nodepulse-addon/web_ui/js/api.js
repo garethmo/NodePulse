@@ -149,6 +149,19 @@ export async function clearStaleNodes(days = null) {
   });
 }
 
+/**
+ * Remove nodes with invalid GPS coordinates from the local store.
+ * This cleans out nodes that don't have valid GPS coordinates (both latitude
+ * and longitude present and valid) from the persistent node store.
+ * @returns {Promise<{removed: number}>} - Number of nodes removed
+ */
+export async function cleanInvalidGPS() {
+  return _apiFetch('/nodes/clean-invalid-gps', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
 /** Fetch information about all local data stores. */
 export async function fetchDataStores() {
   return _apiFetch('/data-stores');
@@ -167,9 +180,13 @@ export async function downloadDataFile(filename) {
   a.href = downloadUrl;
   a.download = filename;
   document.body.appendChild(a);
-  a.click();
-  window.URL.revokeObjectURL(downloadUrl);
-  document.body.removeChild(a);
+  try {
+    a.click();
+  } finally {
+    // Always clean up the object URL and anchor, even if click() throws.
+    window.URL.revokeObjectURL(downloadUrl);
+    document.body.removeChild(a);
+  }
 }
 
 /** Fetch all user-defined node tags: { node_id: [tag, ...], ... }. */

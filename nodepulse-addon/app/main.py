@@ -33,6 +33,7 @@ from .routes import (
     handle_beacon,
     handle_channels,
     handle_clear_stale_nodes,
+    handle_clean_invalid_gps,
     handle_data_stores,
     handle_download_data_file,
     handle_delete_node,
@@ -126,6 +127,19 @@ async def _on_startup(app: web.Application) -> None:
                 logger.debug("ACK expiry sweep error (ignored): %s", exc)
 
     app["ack_expiry_task"] = asyncio.create_task(_run_ack_expiry_loop())
+    
+    # Launch the GPS coordinate retrieval task. Periodically attempts to get GPS coordinates
+    # for nodes that don't have them, preventing them from being filtered out of persistence.
+    async def _run_gps_coord_retrieval_loop() -> None:
+        while True:
+            await asyncio.sleep(300)  # Run every 5 minutes
+            try:
+                await asyncio.to_thread(conn._attempt_coordinate_retrieval_for_nodes_without_gps)
+            except Exception as exc:  # defensive: never crash the task  # noqa: BLE001
+                logger.debug("GPS coordinate retrieval error (ignored): %s", exc)
+    
+    app["gps_coord_retrieval_task"] = asyncio.create_task(_run_gps_coord_retrieval_loop())
+    
     # Launch the scheduled messages processor. Checks every second for messages
     # whose execute_time has arrived and sends them to the mesh.
     async def _run_scheduled_messages_loop() -> None:
@@ -213,6 +227,12 @@ async def _on_shutdown(app: web.Application) -> None:
         ack_expiry_task.cancel()
         with suppress(asyncio.CancelledError):  # expected on cancel
             await ack_expiry_task
+
+    gps_coord_retrieval_task: asyncio.Task = app.get("gps_coord_retrieval_task")
+    if gps_coord_retrieval_task and not gps_coord_retrieval_task.done():
+        gps_coord_retrieval_task.cancel()
+        with suppress(asyncio.CancelledError):  # expected on cancel
+            await gps_coord_retrieval_task
 
     scheduled_messages_task: asyncio.Task = app.get("scheduled_messages_task")
     if scheduled_messages_task and not scheduled_messages_task.done():
@@ -313,6 +333,7 @@ def build_app(config) -> web.Application:
     app.router.add_get("/api/status", handle_status)
     app.router.add_get("/api/nodes", handle_nodes)
     app.router.add_post("/api/nodes/clear-stale", handle_clear_stale_nodes)
+    app.router.add_post("/api/nodes/clean-invalid-gps", handle_clean_invalid_gps)
     app.router.add_get("/api/data-stores", handle_data_stores)
     app.router.add_get("/api/data-stores/{filename}", handle_download_data_file)
     app.router.add_delete("/api/node/{node_id}", handle_delete_node)

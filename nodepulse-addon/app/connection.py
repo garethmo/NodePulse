@@ -197,6 +197,45 @@ def _is_co_located(lat1: Any, lon1: Any, lat2: Any, lon2: Any, threshold_km: flo
         return False
 
 
+def _are_coordinates_suspicious(lat: Any, lon: Any) -> bool:
+    """Check if coordinates appear to be invalid or suspicious (default/placeholder values).
+    
+    Returns True if coordinates look like they might be incorrect:
+    - Either coordinate is None
+    - Coordinates are exactly 0,0 (common default)
+    - Coordinates are outside reasonable Earth bounds
+    - Coordinates are suspiciously rounded (likely placeholders)
+    """
+    if lat is None or lon is None:
+        return True
+    
+    try:
+        lat_f = float(lat)
+        lon_f = float(lon)
+        
+        # Check for exact 0,0 (common default/placeholder)
+        if lat_f == 0.0 and lon_f == 0.0:
+            return True
+        
+        # Check for coordinates outside Earth bounds
+        if not (-90 <= lat_f <= 90) or not (-180 <= lon_f <= 180):
+            return True
+        
+        # Check for suspiciously rounded coordinates (likely placeholders)
+        # If coordinates end with many zeros or have very few decimal places,
+        # they might be default values
+        lat_str = str(lat_f).rstrip('0').rstrip('.') if '.' in str(lat_f) else str(lat_f)
+        lon_str = str(lon_f).rstrip('0').rstrip('.') if '.' in str(lon_f) else str(lon_f)
+        
+        # If coordinates have 4 or fewer significant digits, they might be placeholders
+        if len(lat_str.replace('.', '').replace('-', '')) <= 4 and len(lon_str.replace('.', '').replace('-', '')) <= 4:
+            return True
+        
+        return False
+    except (TypeError, ValueError):
+        return True
+
+
 def _channel_role_name(value: int) -> str:
     """Map a Meshtastic Channel.Role integer to its enum name (e.g. 'PRIMARY').
 
@@ -446,6 +485,13 @@ class MeshtasticConnection:
         self._waypoints: list[dict[str, Any]] = []
         self._load_waypoints()
 
+        # Subscribe to inbound packets early so connection handshake packets are captured.
+        try:
+            pub.subscribe(self._on_mesh_receive, "meshtastic.receive")
+            self._subscribed = True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not subscribe to meshtastic receive events: %s", exc)
+
     # ------------------------------------------------------------------
     # Public async API
     # ------------------------------------------------------------------
@@ -541,6 +587,56 @@ class MeshtasticConnection:
             return 0
 
         logger.info("Bulk removing %s stale nodes (days=%s)", len(nodes_to_remove), days)
+
+        removed_count = 0
+        for nid in nodes_to_remove:
+            if self._delete_node_sync(nid):
+                removed_count += 1
+
+        return removed_count
+
+    async def clean_invalid_gps_nodes(self) -> int:
+        """Remove nodes with invalid GPS coordinates from the local store.
+
+        This method removes nodes that don't have valid GPS coordinates
+        (both latitude and longitude present and valid) from the persistent
+        node store. This helps keep the nodes.json file clean and focused on
+        nodes that can be properly displayed on the map.
+        """
+        return await asyncio.to_thread(self._clean_invalid_gps_nodes_sync)
+
+    def _clean_invalid_gps_nodes_sync(self) -> int:
+        """Synchronous implementation of clean_invalid_gps_nodes."""
+        with self._lock:
+            _iface_snap = self._interface
+            self_num = getattr(getattr(_iface_snap, "myInfo", None), "my_node_num", None) if _iface_snap else None
+            self_id = ("!" + format(self_num, "08x")) if self_num is not None else None
+
+        with self._nodes_lock:
+            nodes_to_remove: list[str] = []
+            for n in self._nodes:
+                nid = n.get("id")
+                if not nid or nid == self_id:
+                    continue
+
+                lat = n.get("latitude")
+                lng = n.get("longitude")
+
+                # Check if node has invalid GPS coordinates
+                if lat is None or lng is None:
+                    nodes_to_remove.append(nid)
+                    logger.debug("Node %s (%s) has invalid GPS coordinates (lat=%s, lng=%s)", 
+                                nid, n.get("long_name", n.get("short_name", "")), lat, lng)
+                elif _are_coordinates_suspicious(lat, lng):
+                    nodes_to_remove.append(nid)
+                    logger.debug("Node %s (%s) has suspicious GPS coordinates (lat=%s, lng=%s)", 
+                                nid, n.get("long_name", n.get("short_name", "")), lat, lng)
+
+        if not nodes_to_remove:
+            logger.info("No nodes with invalid GPS coordinates to clean")
+            return 0
+
+        logger.info("Bulk removing %s nodes with invalid GPS coordinates", len(nodes_to_remove))
 
         removed_count = 0
         for nid in nodes_to_remove:
@@ -1985,6 +2081,47 @@ class MeshtasticConnection:
         except Exception as exc:  # defensive — never crash the receive thread  # noqa: BLE001
             logger.debug("Error capturing packet to log (ignored): %s", exc)
 
+    def _capture_outbound_packet_log(
+        self,
+        packet_id: int | None = None,
+        to_id: str | None = None,
+        portnum: str = "TEXT_MESSAGE_APP",
+        channel: int = 0,
+        text: str | None = None,
+        want_ack: bool = False,
+        decoded: dict[str, Any] | None = None,
+    ) -> None:
+        """Record an outbound packet dispatched by NodePulse into the ring buffer."""
+        try:
+            self_id = self.get_my_node_id() or "!00000000"
+            payload = dict(decoded) if decoded else {}
+            if text is not None and "text" not in payload:
+                payload["text"] = text
+            if "portnum" not in payload:
+                payload["portnum"] = portnum
+
+            entry = {
+                "id": packet_id,
+                "from_id": self_id,
+                "to_id": to_id or "!ffffffff",
+                "portnum": portnum,
+                "channel": channel,
+                "rx_snr": None,
+                "rx_rssi": None,
+                "hop_limit": None,
+                "hop_start": None,
+                "want_ack": want_ack,
+                "via_mqtt": False,
+                "decoded_ok": True,
+                "outbound": True,
+                "timestamp": int(time.time()),
+                "decoded": self._safe_json_value(payload),
+            }
+            with self._packet_log_lock:
+                self._packet_log.appendleft(entry)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Error capturing outbound packet to log (ignored): %s", exc)
+
     def _safe_json_value(self, obj: Any) -> Any:
         """Recursively convert an arbitrary value to a JSON-serialisable form.
 
@@ -2917,14 +3054,30 @@ class MeshtasticConnection:
                             lat = n.get("latitude")
                             lng = n.get("longitude")
                             is_dup = False
-                            if node_name and lat is not None and lng is not None:
+                            
+                            # Validate coordinates from persisted data and mark as None if suspicious
+                            lat, lng = self._validate_and_correct_coordinates(nid, lat, lng)
+                            
+                            # Check for duplicates based on same coordinates (regardless of name)
+                            # This prevents nodes from appearing at the exact same location
+                            if lat is not None and lng is not None:
                                 for existing in self._nodes:
-                                    ex_name = (existing.get("long_name") or existing.get("short_name") or "").strip().lower()
                                     ex_lat = existing.get("latitude")
                                     ex_lng = existing.get("longitude")
-                                    if ex_name == node_name and _is_co_located(lat, lng, ex_lat, ex_lng):
-                                        is_dup = True
-                                        break
+                                    if ex_lat is not None and ex_lng is not None:
+                                        # Check for exact match or very close coordinates
+                                        if _is_co_located(lat, lng, ex_lat, ex_lng):
+                                            # Additional check: if same name AND same location, definitely a duplicate
+                                            ex_name = (existing.get("long_name") or existing.get("short_name") or "").strip().lower()
+                                            if ex_name == node_name:
+                                                is_dup = True
+                                                break
+                                            # If different names but same exact coordinates, also consider duplicate
+                                            # (likely same device with different config)
+                                            if lat == ex_lat and lng == ex_lng:
+                                                is_dup = True
+                                                break
+                            
                             if not is_dup:
                                 seen.add(nid)
                                 self._nodes.append(n)
@@ -2964,9 +3117,26 @@ class MeshtasticConnection:
                     return
                 self._last_node_save = now
                 self._pending_node_save = False
+                
+                # Filter to only save nodes with valid GPS coordinates
+                # This prevents cluttering the persistence file with nodes that have no location data
+                nodes_with_coords = [
+                    n for n in self._nodes 
+                    if n.get("latitude") is not None and n.get("longitude") is not None
+                ]
+                
+                # Log how many nodes are being filtered out
+                total_nodes = len(self._nodes)
+                nodes_with_gps = len(nodes_with_coords)
+                if total_nodes > nodes_with_gps:
+                    logger.info(
+                        "Filtering %s nodes without GPS coordinates from persistence (keeping %s with valid GPS)",
+                        total_nodes - nodes_with_gps, nodes_with_gps
+                    )
+                
                 # Cap persisted nodes: keep the most recently heard first.
                 nodes_sorted = sorted(
-                    self._nodes,
+                    nodes_with_coords,
                     key=lambda n: n.get("last_heard") or 0,
                     reverse=True,
                 )
@@ -3573,6 +3743,29 @@ class MeshtasticConnection:
                     # Truncate long name to first 8 chars as a fallback short name
                     short_name = long_name[:8]
 
+                # The library's _fixupPosition converts latitudeI/longitudeI → latitude/longitude
+                # when a position packet arrives, but the initial node list sync may not have
+                # triggered it yet. Fall back to manual conversion so we always get a coordinate.
+                # IMPORTANT: Only use coordinates when we have both lat/lng or both latI/lngI
+                # to avoid partial coordinate pairs that can cause nodes to share incorrect positions.
+                lat = position.get("latitude")
+                lng = position.get("longitude")
+                lat_i = position.get("latitudeI")
+                lng_i = position.get("longitudeI")
+                
+                # Use integer microdegrees if available, but only if we have both
+                if lat is None and lng is None and lat_i is not None and lng_i is not None:
+                    lat = lat_i * 1e-7
+                    lng = lng_i * 1e-7
+                
+                # If we still don't have a complete coordinate pair, set both to None
+                if lat is None or lng is None:
+                    lat = None
+                    lng = None
+
+                # Validate coordinates and attempt to correct if suspicious
+                lat, lng = self._validate_and_correct_coordinates(node_id, lat, lng)
+
                 entry = {
                     "id": node_id,
                     "long_name": long_name,
@@ -3583,8 +3776,8 @@ class MeshtasticConnection:
                     "rssi": node_data.get("rssi"),
                     "hops_away": node_data.get("hopsAway"),
                     "is_licensed": user.get("isLicensed", False),
-                    "latitude": position.get("latitude"),
-                    "longitude": position.get("longitude"),
+                    "latitude": lat,
+                    "longitude": lng,
                     "altitude": position.get("altitude"),
                     "battery_level": device_metrics.get("batteryLevel"),
                     "voltage": device_metrics.get("voltage"),
@@ -3662,6 +3855,8 @@ class MeshtasticConnection:
                     # library fix this cycle > previously retained last-known fix.
                     # IMPORTANT: Only restore coordinates when we have a complete
                     # pair from previous data. Never restore partial coordinates.
+                    # With the improved coordinate handling above, lat/lng will only
+                    # be set when we have a complete pair, so we can safely check for None.
                     
                     needs_restore = (entry["latitude"] is None and entry["longitude"] is None and 
                                     prev_lat is not None and prev_lng is not None)
@@ -3678,13 +3873,21 @@ class MeshtasticConnection:
 
                     if entry["altitude"] is None and prev_alt is not None:
                         cached[node_id]["altitude"] = prev_alt
-                    result.append(cached[node_id])
+                    
+                    # Apply coordinate offset if duplicates exist to prevent stacking
+                    node_to_add = self._apply_coordinate_offset(cached[node_id], result)
+                    result.append(node_to_add)
                     result_ids.add(node_id)
                 else:
                     entry["traceroute"] = None
-                    if entry["latitude"] is not None or entry["longitude"] is not None:
+                    # With improved coordinate handling, lat/lng are only set when we have
+                    # a complete pair, so we can check for both being non-None
+                    if entry["latitude"] is not None and entry["longitude"] is not None:
                         entry["last_position_fix"] = int(time.time())
                     cached[node_id] = entry
+                    
+                    # Apply coordinate offset if duplicates exist to prevent stacking
+                    entry = self._apply_coordinate_offset(entry, result)
                     result.append(entry)
                     result_ids.add(node_id)
                     newly_discovered.append(node_id)
@@ -3751,6 +3954,9 @@ class MeshtasticConnection:
                 restored = dict(node)
                 restored["id"] = nid
                 restored["stale"] = True
+                
+                # Apply coordinate offset if duplicates exist to prevent stacking
+                restored = self._apply_coordinate_offset(restored, result)
                 cached[nid] = restored
                 result.append(restored)
                 result_ids.add(nid)
@@ -3911,6 +4117,56 @@ class MeshtasticConnection:
             if not is_dup:
                 seen_final.add(nid)
                 deduped_result.append(node)
+
+        # Third pass: strip coordinates that were incorrectly inherited from other
+        # nodes (a symptom of the old partial-coordinate bug where lat/lng could be
+        # restored independently and cross-contaminate nodes).
+        #
+        # Rule: when two or more nodes share the EXACT same (lat, lng) float values
+        # and at least one has a non-zero position_fix_count, any node at that
+        # location with fix_count=0/null has inherited its coordinates — strip them
+        # so the node no longer produces a stacked marker on the map.
+        #
+        # Deliberately preserved:
+        #   - Groups where ALL nodes have zero fix counts (may be genuinely
+        #     co-located; cannot determine ownership, so leave for the map's
+        #     label-offset system to handle visual separation).
+        #   - Groups where every node has ≥1 fix (e.g. multiple radios at the
+        #     same base station; all positions are legitimate).
+        coord_groups: dict[tuple[float, float], list[int]] = {}
+        for idx, node in enumerate(deduped_result):
+            lat = node.get("latitude")
+            lng = node.get("longitude")
+            if lat is not None and lng is not None:
+                coord_groups.setdefault((lat, lng), []).append(idx)
+
+        for (lat, lng), indices in coord_groups.items():
+            if len(indices) <= 1:
+                continue
+
+            fix_counts = [(deduped_result[i].get("position_fix_count") or 0) for i in indices]
+            # Only act when at least one node has real GPS evidence at this spot.
+            if not any(fc > 0 for fc in fix_counts):
+                continue
+
+            for idx, fix_count in zip(indices, fix_counts):
+                if fix_count > 0:
+                    continue
+                node = deduped_result[idx]
+                logger.info(
+                    "Stripping inherited coordinates (%.7f, %.7f) from node %s (%s)"
+                    " — no GPS fix count recorded",
+                    lat,
+                    lng,
+                    node.get("id"),
+                    node.get("long_name") or node.get("short_name"),
+                )
+                deduped_result[idx] = {
+                    **node,
+                    "latitude": None,
+                    "longitude": None,
+                    "altitude": None,
+                }
 
         return deduped_result
 
@@ -4107,6 +4363,15 @@ class MeshtasticConnection:
             # DMs with want_ack=True get "sending" and flip on ROUTING_APP receipt (or timeout).
             initial_ack = "delivered" if (not is_dm or not want_ack) else "sending"
 
+            self._capture_outbound_packet_log(
+                packet_id=packet_id,
+                to_id=to_id,
+                portnum="TEXT_MESSAGE_APP",
+                channel=channel,
+                text=text,
+                want_ack=want_ack if is_dm else False,
+            )
+
             entry = {
                 "from_id": self_id,
                 "to_id": to_id,
@@ -4202,12 +4467,194 @@ class MeshtasticConnection:
                 # The call blocks until the RouteDiscovery reply arrives (the
                 # library waits internally for the acknowledgment flag).
                 iface.sendTraceRoute(dest_num if dest_num is not None else destination, hop_limit)
+                self._capture_outbound_packet_log(
+                    to_id=destination,
+                    portnum="TRACEROUTE_APP",
+                    want_ack=True,
+                    decoded={"request": "traceroute", "hop_limit": hop_limit},
+                )
                 return True
             except Exception as exc:  # noqa: BLE001
                 logger.error(
                     "Traceroute request failed (destination=%s): %s", destination, exc
                 )
                 return False
+
+    def _attempt_coordinate_retrieval_for_nodes_without_gps(self) -> None:
+        """Attempt to retrieve GPS coordinates for nodes that currently lack them.
+        
+        This method can be called periodically to try to get complete coordinate
+        data for nodes that don't have GPS information.
+        """
+        nodes_without_gps = []
+        
+        with self._nodes_lock:
+            for node in self._nodes:
+                if node.get("latitude") is None or node.get("longitude") is None:
+                    node_id = normalize_node_id(node.get("id"))
+                    if node_id:
+                        nodes_without_gps.append((node_id, node))
+        
+        if not nodes_without_gps:
+            return
+        
+        logger.info(
+            "Attempting to retrieve GPS coordinates for %s nodes without location data",
+            len(nodes_without_gps)
+        )
+        
+        # Attempt to request position for nodes without GPS
+        # We do this in a limited way to avoid overwhelming the network
+        max_concurrent_requests = 3
+        for i, (node_id, node) in enumerate(nodes_without_gps[:max_concurrent_requests]):
+            try:
+                # Only request if we're connected and the node might be reachable
+                with self._lock:
+                    if self._connected and self._interface is not None:
+                        logger.debug("Requesting position for node %s (%s) to get GPS data", 
+                                    node_id, node.get("long_name", node.get("short_name", "")))
+                        # This will trigger an async position request
+                        # The result will be captured via _capture_position
+                        success = self._request_position_sync(node_id)
+                        if success:
+                            logger.debug("Position request sent for node %s", node_id)
+                        else:
+                            logger.debug("Failed to request position for node %s", node_id)
+            except Exception as exc:
+                logger.debug("Error requesting position for node %s: %s", node_id, exc)
+
+    def _apply_coordinate_offset(self, node: dict[str, Any], existing_nodes: list[dict[str, Any]]) -> dict[str, Any]:
+        """Apply a small random offset to node coordinates if they duplicate existing nodes.
+        
+        This prevents nodes from stacking exactly on top of each other on the map.
+        The offset is very small (about 1-2 meters) so nodes appear at the same
+        general location but can be distinguished visually.
+        
+        Args:
+            node: The node to potentially offset
+            existing_nodes: List of already-processed nodes to check against
+            
+        Returns:
+            The node with potentially offset coordinates
+        """
+        import random
+        
+        lat = node.get("latitude")
+        lng = node.get("longitude")
+        
+        # If node has no coordinates, no offset needed
+        if lat is None or lng is None:
+            return node
+        
+        node_id = normalize_node_id(node.get("id"))
+        
+        for existing in existing_nodes:
+            ex_id = normalize_node_id(existing.get("id"))
+            # Skip comparison with self
+            if ex_id == node_id:
+                continue
+                
+            ex_lat = existing.get("latitude")
+            ex_lng = existing.get("longitude")
+            
+            if ex_lat is not None and ex_lng is not None:
+                # Check for EXACT coordinate match (not just close)
+                if lat == ex_lat and lng == ex_lng:
+                    # Apply a small random offset (~1-2 meters)
+                    # 1 degree of latitude ≈ 111,000 meters
+                    # 1 degree of longitude ≈ 111,000 meters * cos(latitude)
+                    lat_offset = random.uniform(-0.00001, 0.00001)  # ~1 meter
+                    lng_offset = random.uniform(-0.00001, 0.00001)  # ~1 meter
+                    
+                    node["latitude"] = lat + lat_offset
+                    node["longitude"] = lng + lng_offset
+                    
+                    logger.info(
+                        "Applied small coordinate offset to node %s (%s) to prevent map stacking with node %s",
+                        node_id, node.get("long_name", node.get("short_name", "")), ex_id
+                    )
+                    break
+        
+        return node
+
+    def _has_duplicate_coordinates(self, node: dict[str, Any], existing_nodes: list[dict[str, Any]]) -> bool:
+        """Check if a node has duplicate coordinates with any existing nodes.
+        
+        Args:
+            node: The node to check for duplicate coordinates
+            existing_nodes: List of already-processed nodes to check against
+            
+        Returns:
+            True if the node has duplicate coordinates with any existing node, False otherwise
+        """
+        lat = node.get("latitude")
+        lng = node.get("longitude")
+        
+        # If node has no coordinates, it can't be a coordinate duplicate
+        if lat is None or lng is None:
+            return False
+        
+        node_id = normalize_node_id(node.get("id"))
+        node_name = (node.get("long_name") or node.get("short_name") or "").strip().lower()
+        
+        for existing in existing_nodes:
+            ex_id = normalize_node_id(existing.get("id"))
+            # Skip comparison with self
+            if ex_id == node_id:
+                continue
+                
+            ex_lat = existing.get("latitude")
+            ex_lng = existing.get("longitude")
+            
+            if ex_lat is not None and ex_lng is not None:
+                # Check for exact match or very close coordinates
+                if _is_co_located(lat, lng, ex_lat, ex_lng):
+                    ex_name = (existing.get("long_name") or existing.get("short_name") or "").strip().lower()
+                    
+                    # Always consider exact coordinate matches as duplicates
+                    if lat == ex_lat and lng == ex_lng:
+                        return True
+                    
+                    # For close coordinates (within threshold), only flag as duplicate if same name
+                    # This prevents false positives for nearby legitimate nodes
+                    if ex_name == node_name:
+                        return True
+        
+        return False
+
+    def _validate_and_correct_coordinates(self, node_id: str, lat: Any, lng: Any) -> tuple[Any, Any]:
+        """Validate coordinates and mark as None if suspicious.
+        
+        This function checks if coordinates appear to be invalid or placeholder values.
+        If coordinates are suspicious, they are marked as None to prevent displaying
+        incorrect locations on the map. The system can later request fresh coordinates
+        through the normal position request mechanism.
+        
+        Args:
+            node_id: Node identifier for logging
+            lat: Latitude value to validate
+            lng: Longitude value to validate
+            
+        Returns:
+            Tuple of (validated_lat, validated_lng) - both None if invalid/suspicious
+        """
+        # First check if coordinates are valid at all
+        if lat is None or lng is None:
+            logger.debug("Node %s has missing coordinates (lat=%s, lng=%s)", node_id, lat, lng)
+            return None, None
+        
+        # Check if coordinates look suspicious
+        if _are_coordinates_suspicious(lat, lng):
+            logger.warning(
+                "Node %s has suspicious coordinates (lat=%s, lng=%s) - marking as invalid to prevent incorrect map placement",
+                node_id, lat, lng
+            )
+            # Mark as None to prevent incorrect map placement
+            # User can manually request position update through UI/API if needed
+            return None, None
+        
+        # Coordinates appear valid
+        return lat, lng
 
     def _request_position_sync(self, destination: str) -> bool:
         # Release the lock before the blocking sendPosition call for the same
@@ -4231,6 +4678,12 @@ class MeshtasticConnection:
             # onResponsePosition -> _onPositionReceive, updating its node DB.
             # We then copy that fresh fix into our own nodes dict below.
             iface.sendPosition(destinationId=dest_num if dest_num is not None else destination, wantResponse=True)
+            self._capture_outbound_packet_log(
+                to_id=destination,
+                portnum="POSITION_APP",
+                want_ack=True,
+                decoded={"request": "position"},
+            )
             with self._lock:
                 self._pending_position_dests.add(destination)
             return True
@@ -4296,6 +4749,9 @@ class MeshtasticConnection:
         if lat is None or lng is None:
             lat = None
             lng = None
+
+        # Validate coordinates and mark as None if suspicious
+        lat, lng = self._validate_and_correct_coordinates(canon_id, lat, lng)
 
         patch = {
             "long_name": long_name,

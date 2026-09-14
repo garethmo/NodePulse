@@ -27,6 +27,7 @@ The addon runs as a Home Assistant addon (Docker container) serving a REST API a
 | `/api/nodes` | GET | Full node list with SNR, position, traceroute, neighbors, telemetry |
 | `/api/node/{node_id}` | DELETE | Remove a single node from the persistent store |
 | `/api/nodes/clear-stale` | POST | Purge all cached/stale nodes |
+| `/api/nodes/clean-invalid-gps` | POST | Purge nodes missing valid GPS coordinates from persistent store |
 | `/api/channels` | GET | Configured mesh channels |
 | `/api/messages` | GET | Recent message buffer (capped at 1000, oldest first; optional `?load_archived=true` to load unlimited history from date-based archive files) |
 | `/api/messages/export` | GET | Download message history as JSON or CSV (optional `?format=json|csv` and `?conversation=` filters) |

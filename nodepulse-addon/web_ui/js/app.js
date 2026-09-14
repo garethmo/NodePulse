@@ -13,7 +13,7 @@
  * is easy to trace top-to-bottom.
  */
 
-import { fetchStatus, fetchNodes, fetchChannels, fetchMessages, sendMessage, requestTraceRoute, requestPosition, fetchTrackedNodes, trackNode, clearStaleNodes, fetchDataStores, downloadDataFile, fetchTags, setTags, fetchFavorites, setFavorite, fetchPositionHistory, fetchPackets, fetchSnifferStats, fetchWaypoints, addWaypoint, updateWaypoint, deleteWaypoint, deleteNode, fetchSecurityScan, fetchNodeSignal, fetchNodeGpx, fetchHops, fetchBeacon } from './api.js';
+import { fetchStatus, fetchNodes, fetchChannels, fetchMessages, sendMessage, requestTraceRoute, requestPosition, fetchTrackedNodes, trackNode, clearStaleNodes, cleanInvalidGPS, fetchDataStores, downloadDataFile, fetchTags, setTags, fetchFavorites, setFavorite, fetchPositionHistory, fetchPackets, fetchSnifferStats, fetchWaypoints, addWaypoint, updateWaypoint, deleteWaypoint, deleteNode, fetchSecurityScan, fetchNodeSignal, fetchNodeGpx, fetchHops, fetchBeacon } from './api.js';
 import { MapManager } from './map.js';
 import { ChartManager } from './charts.js';
 import { TopologyManager } from './topology.js';
@@ -2458,6 +2458,26 @@ async function init() {
       } finally {
         btnClearStale.disabled = false;
         btnClearStale.textContent = originalText;
+      }
+    });
+  }
+
+  // Clean invalid GPS button (Settings view)
+  const btnCleanInvalidGPS = document.getElementById('btn-clean-invalid-gps');
+  if (btnCleanInvalidGPS) {
+    btnCleanInvalidGPS.addEventListener('click', async () => {
+      const originalText = btnCleanInvalidGPS.textContent;
+      btnCleanInvalidGPS.disabled = true;
+      btnCleanInvalidGPS.textContent = 'Cleaning...';
+      try {
+        const res = await cleanInvalidGPS();
+        showToast(`Cleaned ${res.removed} node(s) with invalid GPS.`, 'success');
+        pollData(); // Refresh node list
+      } catch (err) {
+        showToast(`Failed to clean invalid GPS: ${err.message}`, 'error');
+      } finally {
+        btnCleanInvalidGPS.disabled = false;
+        btnCleanInvalidGPS.textContent = originalText;
       }
     });
   }

@@ -453,6 +453,26 @@ async def handle_clear_stale_nodes(request: web.Request) -> web.Response:
         return _error_response("Failed to clear stale nodes")
 
 
+async def handle_clean_invalid_gps(request: web.Request) -> web.Response:
+    """
+    Remove nodes with invalid GPS coordinates from the local store.
+
+    This endpoint cleans out nodes that don't have valid GPS coordinates
+    (latitude and longitude both present) from the persistent node store.
+    This helps keep the nodes.json file clean and focused on nodes that can
+    be properly displayed on the map. Returns the count removed.
+    """
+    conn: MeshtasticConnection = request.app["connection"]
+    _apply_access_key(request)
+    try:
+        removed = await conn.clean_invalid_gps_nodes()
+        resp_data: dict[str, Any] = {"removed": removed}
+        return _json_response(resp_data)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Error cleaning invalid GPS nodes: %s", exc)
+        return _error_response("Failed to clean invalid GPS nodes")
+
+
 # ---------------------------------------------------------------------------
 # Route: GET /api/data-stores
 # ---------------------------------------------------------------------------
@@ -463,9 +483,6 @@ async def handle_data_stores(request: web.Request) -> web.Response:
     entry counts, and last modified times.
     """
     try:
-        import os
-        from pathlib import Path
-        
         data_dir = os.environ.get("NODEPULSE_DATA_DIR", "/data")
         stores = {}
         
@@ -557,29 +574,31 @@ async def handle_download_data_file(request: web.Request) -> web.Response:
     for browser download. Only allows downloading whitelisted files for security.
     """
     try:
-        import os
-        from pathlib import Path
-        
         filename = request.match_info.get("filename", "").strip()
-        
-        # Security: whitelist of allowed files
+
+        # Security: whitelist of allowed files — first line of defence
         allowed_files = {
             "nodes.json",
-            "messages.json", 
+            "messages.json",
             "traceroutes.json",
             "position_history.json",
             "waypoints.json",
             "favorites.json",
             "tags.json",
             "channels.json",
-            "scheduled_messages.json"
+            "scheduled_messages.json",
         }
-        
+
         if filename not in allowed_files:
             return _error_response(f"File '{filename}' is not allowed for download", status=403)
-        
+
         data_dir = os.environ.get("NODEPULSE_DATA_DIR", "/data")
         filepath = os.path.join(data_dir, filename)
+
+        # Defence-in-depth: ensure the resolved path stays inside data_dir
+        # (guards against any future relaxation of the allowlist)
+        if not os.path.realpath(filepath).startswith(os.path.realpath(data_dir)):
+            return _error_response("Access denied", status=403)
         
         if not os.path.exists(filepath):
             return _error_response(f"File '{filename}' not found", status=404)

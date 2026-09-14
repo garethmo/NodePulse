@@ -19,16 +19,18 @@ class TestOnStartup:
         }
         mock_app["connection"].monitor_connection = AsyncMock()
         mock_app["connection"].run_channel_refresh_loop = AsyncMock()
+        mock_app["connection"].run_favorite_sync_loop = AsyncMock()
         mock_app["connection"].expire_pending_acks = AsyncMock()
         mock_app["connection"]._process_scheduled_messages = Mock(return_value=[])
         mock_app["connection"].send_message = AsyncMock()
+        mock_app["connection"]._attempt_coordinate_retrieval_for_nodes_without_gps = Mock()
         
         mock_app["mqtt_bridge"].start = AsyncMock()
         mock_app["telegram_bot"].start = AsyncMock()
 
         with patch("app.main.asyncio.create_task") as mock_create_task:
             await main._on_startup(mock_app)
-            assert mock_create_task.call_count == 5
+            assert mock_create_task.call_count == 6  # Updated to include GPS coord retrieval task
 
     @pytest.mark.asyncio
     async def test_on_startup_mqtt_bridge_start(self):
@@ -39,10 +41,11 @@ class TestOnStartup:
         }
         mock_app["connection"].monitor_connection = AsyncMock()
         mock_app["connection"].run_channel_refresh_loop = AsyncMock()
+        mock_app["connection"].run_favorite_sync_loop = AsyncMock()
         mock_app["connection"].expire_pending_acks = AsyncMock()
         mock_app["connection"]._process_scheduled_messages = Mock(return_value=[])
         mock_app["connection"].send_message = AsyncMock()
-        mock_app["connection"].run_favorite_sync_loop = AsyncMock()
+        mock_app["connection"]._attempt_coordinate_retrieval_for_nodes_without_gps = Mock()
         
         mock_app["mqtt_bridge"].start = AsyncMock()
         mock_app["telegram_bot"].start = AsyncMock()
@@ -64,6 +67,7 @@ class TestOnStartup:
         mock_app["connection"].expire_pending_acks = AsyncMock()
         mock_app["connection"]._process_scheduled_messages = Mock(return_value=[])
         mock_app["connection"].send_message = AsyncMock()
+        mock_app["connection"]._attempt_coordinate_retrieval_for_nodes_without_gps = Mock()
         
         mock_app["mqtt_bridge"].start = AsyncMock()
         mock_app["telegram_bot"].start = AsyncMock()
@@ -82,6 +86,7 @@ class TestOnShutdown:
         mock_monitor_task = asyncio.create_task(dummy_task())
         mock_channel_task = asyncio.create_task(dummy_task())
         mock_ack_task = asyncio.create_task(dummy_task())
+        mock_gps_coord_retrieval_task = asyncio.create_task(dummy_task())
         
         mock_mqtt_bridge = Mock()
         mock_mqtt_bridge.stop = AsyncMock()
@@ -94,6 +99,7 @@ class TestOnShutdown:
             "monitor_task": mock_monitor_task,
             "channel_refresh_task": mock_channel_task,
             "ack_expiry_task": mock_ack_task,
+            "gps_coord_retrieval_task": mock_gps_coord_retrieval_task,
             "mqtt_bridge": mock_mqtt_bridge,
             "telegram_bot": mock_telegram_bot,
             "connection": mock_connection,
@@ -109,6 +115,7 @@ class TestOnShutdown:
         assert mock_monitor_task.cancelled()
         assert mock_channel_task.cancelled()
         assert mock_ack_task.cancelled()
+        assert mock_gps_coord_retrieval_task.cancelled()
 
     @pytest.mark.asyncio
     async def test_on_shutdown_handles_done_tasks(self):
@@ -120,6 +127,7 @@ class TestOnShutdown:
             "monitor_task": mock_monitor_task,
             "channel_refresh_task": None,
             "ack_expiry_task": None,
+            "gps_coord_retrieval_task": None,
             "mqtt_bridge": None,
             "telegram_bot": None,
             "connection": Mock(),

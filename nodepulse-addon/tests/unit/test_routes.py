@@ -283,6 +283,36 @@ class TestHandleClearStaleNodes:
 
 
 # ----------------------------------------------------------------------
+# handle_clean_invalid_gps tests
+# ----------------------------------------------------------------------
+class TestHandleCleanInvalidGPS:
+    @pytest.mark.asyncio
+    async def test_handle_clean_invalid_gps_success(self):
+        mock_conn = AsyncMock()
+        mock_conn.clean_invalid_gps_nodes.return_value = 5
+        request = make_request(
+            app_dict={"connection": mock_conn},
+            method="POST",
+            path="/api/nodes/clean-invalid-gps",
+        )
+        resp = await routes.handle_clean_invalid_gps(request)
+        assert resp.status == 200
+        body = json.loads(resp.body)
+        assert body == {"removed": 5}
+        mock_conn.clean_invalid_gps_nodes.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_handle_clean_invalid_gps_error(self):
+        mock_conn = AsyncMock()
+        mock_conn.clean_invalid_gps_nodes.side_effect = Exception("DB error")
+        request = make_request(app_dict={"connection": mock_conn}, method="POST", path="/api/nodes/clean-invalid-gps")
+        resp = await routes.handle_clean_invalid_gps(request)
+        assert resp.status == 500
+        body = json.loads(resp.body)
+        assert body == {"error": "Failed to clean invalid GPS nodes"}
+
+
+# ----------------------------------------------------------------------
 # handle_delete_node tests
 # ----------------------------------------------------------------------
 class TestHandleDeleteNode:

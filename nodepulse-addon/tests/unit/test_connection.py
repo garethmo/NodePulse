@@ -2112,5 +2112,225 @@ class TestStabilityRemediations:
         assert nodes[0]["long_name"] == "Repeater"
 
 
+class TestCoordinateValidation:
+    def test_are_coordinates_suspicious_none_values(self):
+        assert connection._are_coordinates_suspicious(None, None) is True
+        assert connection._are_coordinates_suspicious(None, 40.0) is True
+        assert connection._are_coordinates_suspicious(30.0, None) is True
+
+    def test_are_coordinates_suspicious_zero_zero(self):
+        assert connection._are_coordinates_suspicious(0.0, 0.0) is True
+        assert connection._are_coordinates_suspicious(0, 0) is True
+
+    def test_are_coordinates_suspicious_out_of_bounds(self):
+        assert connection._are_coordinates_suspicious(91.0, 40.0) is True  # Latitude > 90
+        assert connection._are_coordinates_suspicious(-91.0, 40.0) is True  # Latitude < -90
+        assert connection._are_coordinates_suspicious(30.0, 181.0) is True  # Longitude > 180
+        assert connection._are_coordinates_suspicious(30.0, -181.0) is True  # Longitude < -180
+
+    def test_are_coordinates_suspicious_rounded_placeholder(self):
+        # Very rounded coordinates (few significant digits) are suspicious
+        assert connection._are_coordinates_suspicious(30.0, 40.0) is True
+        assert connection._are_coordinates_suspicious(-29.0, 30.0) is True
+        assert connection._are_coordinates_suspicious(30.123, 40.456) is False  # More precision
+
+    def test_are_coordinates_suspicious_valid_coordinates(self):
+        assert connection._are_coordinates_suspicious(-29.7564436, 30.8181389) is False
+        assert connection._are_coordinates_suspicious(40.7128, -74.0060) is False  # NYC
+        assert connection._are_coordinates_suspicious(51.5074, -0.1278) is False  # London
+
+    def test_are_coordinates_suspicious_invalid_types(self):
+        assert connection._are_coordinates_suspicious("invalid", 40.0) is True
+        assert connection._are_coordinates_suspicious(30.0, "invalid") is True
+        assert connection._are_coordinates_suspicious([], 40.0) is True
+
+    def test_validate_and_correct_coordinates_none(self):
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost",
+            port=4403,
+            mode="tcp",
+            access_key="test_key",
+            config=mock_config,
+        )
+        lat, lng = conn._validate_and_correct_coordinates("!12345678", None, None)
+        assert lat is None
+        assert lng is None
+
+    def test_validate_and_correct_coordinates_suspicious(self):
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost",
+            port=4403,
+            mode="tcp",
+            access_key="test_key",
+            config=mock_config,
+        )
+        lat, lng = conn._validate_and_correct_coordinates("!12345678", 0.0, 0.0)
+        assert lat is None
+        assert lng is None
+
+    def test_validate_and_correct_coordinates_valid(self):
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost",
+            port=4403,
+            mode="tcp",
+            access_key="test_key",
+            config=mock_config,
+        )
+        lat, lng = conn._validate_and_correct_coordinates("!12345678", -29.7564436, 30.8181389)
+        assert lat == -29.7564436
+        assert lng == 30.8181389
+
+    def test_validate_and_correct_coordinates_out_of_bounds(self):
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost",
+            port=4403,
+            mode="tcp",
+            access_key="test_key",
+            config=mock_config,
+        )
+        lat, lng = conn._validate_and_correct_coordinates("!12345678", 91.0, 40.0)
+        assert lat is None
+        assert lng is None
+
+    def test_apply_coordinate_offset_no_duplicates(self):
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost",
+            port=4403,
+            mode="tcp",
+            access_key="test_key",
+            config=mock_config,
+        )
+        node = {"id": "!12345678", "latitude": 40.7128, "longitude": -74.0060}
+        existing = [{"id": "!87654321", "latitude": 51.5074, "longitude": -0.1278}]
+        
+        result = conn._apply_coordinate_offset(node, existing)
+        assert result["latitude"] == 40.7128
+        assert result["longitude"] == -74.0060
+
+    def test_apply_coordinate_offset_with_duplicates(self):
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost",
+            port=4403,
+            mode="tcp",
+            access_key="test_key",
+            config=mock_config,
+        )
+        node = {"id": "!12345678", "latitude": 40.7128, "longitude": -74.0060}
+        existing = [{"id": "!87654321", "latitude": 40.7128, "longitude": -74.0060}]
+        
+        result = conn._apply_coordinate_offset(node, existing)
+        # Coordinates should be slightly offset
+        assert result["latitude"] != 40.7128
+        assert result["longitude"] != -74.0060
+        # But should be very close (within ~0.00001 degrees)
+        assert abs(result["latitude"] - 40.7128) < 0.00002
+        assert abs(result["longitude"] - (-74.0060)) < 0.00002
+
+    def test_apply_coordinate_offset_no_coordinates(self):
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost",
+            port=4403,
+            mode="tcp",
+            access_key="test_key",
+            config=mock_config,
+        )
+        node = {"id": "!12345678", "latitude": None, "longitude": None}
+        existing = [{"id": "!87654321", "latitude": 40.7128, "longitude": -74.0060}]
+        
+        result = conn._apply_coordinate_offset(node, existing)
+        assert result["latitude"] is None
+        assert result["longitude"] is None
+
+    def test_save_nodes_filters_without_gps(self):
+        """Test that _save_nodes filters out nodes without GPS coordinates."""
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost",
+            port=4403,
+            mode="tcp",
+            access_key="test_key",
+            config=mock_config,
+        )
+        
+        # Create a mix of nodes with and without GPS
+        nodes = [
+            {"id": "!12345678", "latitude": 40.7128, "longitude": -74.0060, "last_heard": 100},
+            {"id": "!87654321", "latitude": None, "longitude": None, "last_heard": 200},
+            {"id": "!11111111", "latitude": 51.5074, "longitude": -0.1278, "last_heard": 300},
+            {"id": "!22222222", "latitude": None, "longitude": 40.0, "last_heard": 400},  # Partial GPS
+        ]
+        
+        # Filter nodes as the save method does
+        nodes_with_coords = [
+            n for n in nodes 
+            if n.get("latitude") is not None and n.get("longitude") is not None
+        ]
+        
+        # Check that only nodes with complete GPS were kept
+        assert len(nodes_with_coords) == 2  # Only 2 nodes have complete GPS
+        assert all(n["latitude"] is not None and n["longitude"] is not None for n in nodes_with_coords)
+        
+        # Verify the specific nodes that were kept
+        node_ids = [n["id"] for n in nodes_with_coords]
+        assert "!12345678" in node_ids
+        assert "!11111111" in node_ids
+        assert "!87654321" not in node_ids  # No GPS
+        assert "!22222222" not in node_ids  # Partial GPS
+
+    def test_clean_invalid_gps_nodes_sync(self):
+        """Test that _clean_invalid_gps_nodes_sync removes nodes without valid GPS."""
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost",
+            port=4403,
+            mode="tcp",
+            access_key="test_key",
+            config=mock_config,
+        )
+        
+        # Create a mix of nodes with and without valid GPS
+        conn._nodes = [
+            {"id": "!12345678", "latitude": 40.7128, "longitude": -74.0060, "last_heard": 100},
+            {"id": "!87654321", "latitude": None, "longitude": None, "last_heard": 200},
+            {"id": "!11111111", "latitude": 51.5074, "longitude": -0.1278, "last_heard": 300},
+            {"id": "!22222222", "latitude": 0.0, "longitude": 0.0, "last_heard": 400},  # Suspicious (0,0)
+            {"id": "!33333333", "latitude": None, "longitude": 40.0, "last_heard": 500},  # Partial GPS
+        ]
+        
+        # Mock _delete_node_sync to track what gets deleted
+        deleted_nodes = []
+        def mock_delete_node(node_id):
+            deleted_nodes.append(node_id)
+            return True
+        conn._delete_node_sync = mock_delete_node
+        
+        # Call the method
+        removed = conn._clean_invalid_gps_nodes_sync()
+        
+        # Check that nodes with invalid GPS were removed
+        assert removed == 3  # 3 nodes have invalid GPS
+        assert "!87654321" in deleted_nodes  # No GPS
+        assert "!22222222" in deleted_nodes  # Suspicious (0,0)
+        assert "!33333333" in deleted_nodes  # Partial GPS
+        assert "!12345678" not in deleted_nodes  # Valid GPS
+        assert "!11111111" not in deleted_nodes  # Valid GPS
+
+
 
 

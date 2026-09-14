@@ -2,6 +2,17 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.29.0] - 2026-09-14
+### Added
+- **Clean Invalid GPS Action & Endpoint** — Added `POST /api/nodes/clean-invalid-gps` endpoint and a **"Clean invalid GPS"** action button in the Settings view to purge persistent store entries lacking valid GPS coordinates.
+- **Outbound Packet Logging** — Enhanced Packet Inspector to record outbound packets (direct/broadcast text messages, traceroute requests, position requests, and beacons) in real-time alongside inbound packets.
+- **Early Packet Listener Subscription** — PyPubSub listener is now subscribed early during initialization to capture connection handshake packets.
+- **Data File Download Security** — Added path-traversal safeguards (`os.path.realpath`) and robust front-end DOM cleanup (`try...finally`) for data file downloads.
+
+### Fixed
+- **GPS Coordinate Stacking Bug** — Implemented a third deduplication pass that strips inherited floating-point coordinates from nodes with zero GPS fix history (`position_fix_count` is 0 or null) when sharing exact coordinates with verified GPS nodes, while preserving legitimate co-locations.
+- **Invalid Coordinate Validation** — Added `_validate_and_correct_coordinates()` sanitisation to convert suspicious or placeholder coordinates (`0.0, 0.0`) to `None` before map rendering or store retention.
+
 ## [1.28.0] - 2026-09-08
 ### Added
 - **Map Favorite Button** — Added "⭐ Favorite" button to map node popups, allowing users to quickly mark nodes as favorites directly from the map view. The button shows the current favorite state (⭐ Favorite vs ★ Favorited) and integrates with the existing favorite sync system.
