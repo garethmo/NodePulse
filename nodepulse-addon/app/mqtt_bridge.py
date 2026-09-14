@@ -215,11 +215,15 @@ class MqttBridge:
 
     def _check_position_bounds(self, position: dict) -> bool:
         """Return True if position coordinates fall within the configured bounding box."""
-        lat_i = position.get("latitudeI")
-        lng_i = position.get("longitudeI")
-        if lat_i is None or lng_i is None:
+        lat = position.get("latitude")
+        lng = position.get("longitude")
+        if lat is None or lng is None:
+            lat_i = position.get("latitudeI")
+            lng_i = position.get("longitudeI")
+            if lat_i is not None and lng_i is not None:
+                lat = lat_i / 1e7
+                lng = lng_i / 1e7
+        if lat is None or lng is None:
             # No coordinate data — allow through (unknown location).
             return True
-        lat = lat_i / 1e7
-        lng = lng_i / 1e7
-        return self.lat_min <= lat <= self.lat_max and self.lng_min <= lng <= self.lng_max
+        return self.lat_min <= float(lat) <= self.lat_max and self.lng_min <= float(lng) <= self.lng_max

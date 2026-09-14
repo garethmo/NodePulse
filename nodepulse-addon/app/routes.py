@@ -709,10 +709,10 @@ def _build_gpx_track(node_id: str, name: str, points: list[dict]) -> str:
         if lat is None or lng is None:
             continue
         alt = p.get("altitude") if "altitude" in p else p.get("alt")
-        alt_str = f'<ele>{alt}</ele>' if alt is not None else ""
+        alt_str = f"        <ele>{alt}</ele>\n" if alt is not None else ""
         trkpts.append(
             f'      <trkpt lat="{lat}" lon="{lng}">\n'
-            f'        {alt_str}\n'
+            f'{alt_str}'
             f'        <time>{_fmt(p.get("timestamp"))}</time>\n'
             f'      </trkpt>'
         )

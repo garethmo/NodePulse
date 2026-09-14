@@ -777,6 +777,10 @@ class MeshtasticConnection:
         if tr_cleaned:
             self._save_traceroutes()
 
+        with self._snr_lock:
+            for cid in ids_to_clean:
+                self._snr_history.pop(cid, None)
+
         pos_cleaned = False
         with self._pos_hist_lock:
             for cid in ids_to_clean:
