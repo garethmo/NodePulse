@@ -687,11 +687,15 @@ export class MapManager {
     if (this._heatLayer && this._mapHasSize()) {
       if (this._heatmapVisible) {
         if (!this._map.hasLayer(this._heatLayer)) {
-          if (this._lastHeatPoints.length) this._heatLayer.setLatLngs(this._lastHeatPoints);
           this._heatLayer.addTo(this._map);
+          if (this._lastHeatPoints.length) {
+            try { this._heatLayer.setLatLngs(this._lastHeatPoints); } catch (e) {}
+          }
         }
       } else {
-        this._map.removeLayer(this._heatLayer);
+        if (this._map.hasLayer(this._heatLayer)) {
+          this._map.removeLayer(this._heatLayer);
+        }
       }
     }
     // Show/hide the heatmap section in the legend.
@@ -916,22 +920,22 @@ export class MapManager {
     }
 
     if (this._heatLayer && this._mapHasSize()) {
-      // Only call setLatLngs (which triggers an expensive getImageData canvas
-      // redraw) when the points have actually changed. A simple serialise-and-
-      // compare is safe because the heatPoints array is always built fresh.
+      if (this._heatmapVisible && !this._map.hasLayer(this._heatLayer)) {
+        this._heatLayer.addTo(this._map);
+      }
       const newSig = JSON.stringify(heatPoints);
       if (newSig !== this._lastHeatSig) {
         this._lastHeatSig = newSig;
         this._lastHeatPoints = heatPoints;
-        this._heatLayer.setLatLngs(heatPoints);
-      }
-      // Ensure it is on the map if the toggle is active.
-      if (this._heatmapVisible && !this._map.hasLayer(this._heatLayer)) {
-        this._heatLayer.addTo(this._map);
+        if (this._map.hasLayer(this._heatLayer)) {
+          try {
+            this._heatLayer.setLatLngs(heatPoints);
+          } catch (e) {
+            // Ignore transient canvas redraw issues when map is detached or sizing
+          }
+        }
       }
     } else {
-      // Store the points for when the map container gets a valid size
-      // (e.g. after the deferred rAF for the Map view fires).
       this._lastHeatSig = JSON.stringify(heatPoints);
       this._lastHeatPoints = heatPoints;
     }
@@ -1028,8 +1032,10 @@ export class MapManager {
     // container had zero size (e.g. the deferred rAF just fired), apply it now.
     if (this._heatLayer && this._heatmapVisible && this._mapHasSize()) {
       if (!this._map.hasLayer(this._heatLayer)) {
-        if (this._lastHeatPoints.length) this._heatLayer.setLatLngs(this._lastHeatPoints);
         this._heatLayer.addTo(this._map);
+        if (this._lastHeatPoints.length) {
+          try { this._heatLayer.setLatLngs(this._lastHeatPoints); } catch (e) {}
+        }
       }
     }
   }
