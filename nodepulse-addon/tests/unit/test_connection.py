@@ -2211,9 +2211,10 @@ class TestCoordinateValidation:
             config=mock_config,
         )
         node = {"id": "!12345678", "latitude": 40.7128, "longitude": -74.0060}
-        existing = [{"id": "!87654321", "latitude": 51.5074, "longitude": -0.1278}]
-        
-        result = conn._apply_coordinate_offset(node, existing)
+        # seen_coords is a mutable set of (lat, lng) tuples, as used in production
+        seen_coords: set[tuple[float, float]] = {(51.5074, -0.1278)}
+
+        result = conn._apply_coordinate_offset(node, seen_coords)
         assert result["latitude"] == 40.7128
         assert result["longitude"] == -74.0060
 
@@ -2228,9 +2229,10 @@ class TestCoordinateValidation:
             config=mock_config,
         )
         node = {"id": "!12345678", "latitude": 40.7128, "longitude": -74.0060}
-        existing = [{"id": "!87654321", "latitude": 40.7128, "longitude": -74.0060}]
-        
-        result = conn._apply_coordinate_offset(node, existing)
+        # Duplicate coordinates already in the set should trigger an offset
+        seen_coords: set[tuple[float, float]] = {(40.7128, -74.0060)}
+
+        result = conn._apply_coordinate_offset(node, seen_coords)
         # Coordinates should be slightly offset
         assert result["latitude"] != 40.7128
         assert result["longitude"] != -74.0060
@@ -2249,9 +2251,9 @@ class TestCoordinateValidation:
             config=mock_config,
         )
         node = {"id": "!12345678", "latitude": None, "longitude": None}
-        existing = [{"id": "!87654321", "latitude": 40.7128, "longitude": -74.0060}]
-        
-        result = conn._apply_coordinate_offset(node, existing)
+        seen_coords: set[tuple[float, float]] = {(40.7128, -74.0060)}
+
+        result = conn._apply_coordinate_offset(node, seen_coords)
         assert result["latitude"] is None
         assert result["longitude"] is None
 
