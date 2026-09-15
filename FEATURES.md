@@ -90,6 +90,7 @@ Each card shows:
 - **Traceroute**: Forward and return path with hop-by-hop resolved names and timing; shows "⏱ Timed out — no route discovered" when the 300s window expires. Path construction properly handles different firmware versions that may or may not include self/target nodes in the route array, preventing duplicate nodes and ensuring correct multi-hop visualization.
 - **Neighbors**: Per-peer SNR chips when NEIGHBORINFO_APP data is available
 - **Actions**: Traceroute, Request Position, Message, Track in HA, Notify, Delete (red button with confirmation prompt)
+- **Traceroute All (Staggered Sweep)** — A dedicated "⛓ Traceroute All" button in the toolbar dispatches traceroutes to every visible remote node sequentially with a 5-second inter-node pause, live progress tracking, and instant cancellation (`✕`).
 - **Position request feedback** — The "Req. Position" button enters a loading state ("⏳ Requesting...") and auto-refreshes node data on response (30s timeout) so it always returns to a usable state.
 - **Device favorite integration** — Favoriting a node also sends an admin message that marks the node as a favorite in the device's NodeDB, so communication with it no longer counts against hop limits (same behaviour as the Meshtastic Android app).
 
@@ -106,6 +107,8 @@ Full-screen map with an interactive filter bar:
 | **Text** | Substring match on name, short name, or ID |
 | **Max hops** | Any / 0 (direct) / 1–4 / 5+ |
 | **Heard within** | Any time / 15 min / 1 h / 6 h / 24 h / Cached only |
+| **Hardware** | Filter by hardware model (e.g., Heltec V3, T-Beam, RAK4631) |
+| **Role** | Filter by device role (CLIENT, ROUTER, REPEATER, TRACKER, etc.) |
 
 A live `N shown` counter updates on filter change and on every poll.
 
@@ -117,6 +120,10 @@ A live `N shown` counter updates on filter change and on every poll.
 
 Selection persists in `localStorage` across sessions.
 
+**Filter & Layer Toggles**:
+- **Traceroutes** checkbox toggle in the filter bar (synced with floating `⤴` control and `T` shortcut)
+- **Heatmap** checkbox toggle in the filter bar (synced with floating `🌡` control and `M` shortcut)
+
 **Overlay toggle controls** (collapsible via **C** key):
 - Self→node links (teal dashes, distance-labelled)
 - Peer proximity links (amber dashes, within ~15 km or both 1-hop)
@@ -124,7 +131,10 @@ Selection persists in `localStorage` across sessions.
 - Node name labels (permanent tooltips)
 - Position history trails (deep orange polylines) — last 200 GPS fixes per node
 
-**Export**: KML and GPX download of visible GPS-fixed nodes.
+**Map Action Tools**:
+- **🎯 Locate** — HTML5 Geolocation button centering the map on your physical browser position with a custom animated pulse marker.
+- **🏆 DX Links** — Opens a panel listing the top direct (0-hop) node-to-node and node-to-gateway radio hops ranked by real-world distance in kilometers.
+- **Export**: KML and GPX download of visible GPS-fixed nodes.
 
 **Node popups**: Click any node marker to see a popup with node details and quick actions including:
 - **Favorite button** (⭐) — Mark/unmark the node as a favorite, with state synchronized across the UI and device NodeDB

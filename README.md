@@ -77,7 +77,10 @@ NodePulse is a Home Assistant addon and custom integration that gives you deep v
 | 📜 **Logbook** | Mesh messages recorded in the Home Assistant logbook timeline |
 | 🗂️ **Persistent Node Store** | Every node ever seen is saved and re-shown even after the radio drops it from its bounded (~250) node DB; evicted nodes appear faded ("cached") and keep their last-known GPS position |
 | 📍 **Last-Known-Position Retention** | Nodes that lose GPS or stop reporting keep their previous good fix on the map instead of vanishing; `last_position_fix` exposed per node |
-| 🔎 **Map Node Filter** | Filter the map by name/ID, max hops away, last-heard window, or cached-only — with a live node count |
+| 🔎 **Map Node Filter** | Filter the map by name/ID, max hops away, last-heard window, hardware model, or device role — with a live node count |
+| ⛓️ **Staggered Traceroute Sweep** | **Traceroute All** button on the Nodes toolbar to send traceroute requests to every visible remote node sequentially with a 5s inter-node pause, live progress tracking, and instant cancellation |
+| 🎯 **Locate Me** | HTML5 Geolocation button on the map toolbar to center the map on your physical browser position with a custom animated pulse marker |
+| 🏆 **DX Longest Direct Links** | Dedicated DX links panel displaying top direct (0-hop) node-to-node and node-to-gateway radio paths ranked by distance in km |
 | 🏷️ **Node Tagging** | Comma-separated tags per node stored server-side; visible on node cards |
 | 🧹 **Clear Stale Nodes** | One-click purge of cached (stale) nodes from the store via Settings |
 | 🗑️ **Delete Single Node** | Remove any individual node from the persistent store via the red "Delete" button on its card, with confirmation prompt |

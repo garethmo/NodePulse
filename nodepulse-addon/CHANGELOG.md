@@ -2,6 +2,18 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.30.0] - 2026-09-15
+### Added
+- **Staggered Traceroute Sweep ("Traceroute All")** — Added a **"⛓ Traceroute All"** button in the Nodes tab toolbar to send traceroute requests to every visible remote node sequentially with a 5-second inter-node delay, live progress status, and instant cancellation (✕).
+- **Map View Traceroute Toggle** — Added a `Traceroutes` checkbox toggle to the map filter bar, bidirectionally synced with the floating overlay toggle (`⤴`) and keyboard shortcut (`T`).
+- **HTML5 Geolocation ("Locate Me")** — Added a `🎯 Locate` button to the map filter bar to center the map on the user's browser GPS coordinates with a custom pulsating location marker.
+- **Longest Direct RF Links (DX Panel)**: Added a `🏆 DX Links` button and interactive panel (`#dx-panel`) ranking direct (0-hop) node-to-node and node-to-gateway links by real-world distance in km.
+- **Hardware & Role Map Filters**: Added `Hardware` and `Role` dropdown selectors to the map filter bar to filter map node markers in real-time by device hardware model and role.
+
+### Fixed
+- **Export Button Event Delegation** — Scoped export button click listeners strictly to `.map-export-btn[data-export]` to prevent `TypeError` when clicking non-export toolbar action buttons.
+- **Heatmap Layer Detached Canvas Redraw** — Reordered heatmap layer lifecycle to ensure `addTo(map)` executes before `setLatLngs()`, preventing `TypeError: Cannot read properties of null (reading '_animating')` when updating heatmaps.
+
 ## [1.29.0] - 2026-09-14
 ### Added
 - **Clean Invalid GPS Action & Endpoint** — Added `POST /api/nodes/clean-invalid-gps` endpoint and a **"Clean invalid GPS"** action button in the Settings view to purge persistent store entries lacking valid GPS coordinates.
