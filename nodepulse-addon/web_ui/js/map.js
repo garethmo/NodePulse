@@ -517,12 +517,37 @@ export class MapManager {
 
   /**
    * Center the map on the user's current GPS location using HTML5 Geolocation.
+   * If browser blocks GPS due to HTTP insecure origin (e.g. accessing HA via HTTP IP),
+   * falls back gracefully to centering on the connected Gateway/Self node.
    */
   locateUser() {
-    if (!navigator.geolocation) {
-      showToast('Geolocation is not supported by your browser.', 'error');
+    const centerOnGatewayFallback = (reasonMessage) => {
+      const selfNode = this._selfId ? this._allNodes.find(n => n.id === this._selfId) : null;
+      if (selfNode && selfNode.latitude != null && selfNode.longitude != null) {
+        this._map.setView([selfNode.latitude, selfNode.longitude], 14, { animate: true });
+        showToast(`${reasonMessage} Centered on Gateway (${selfNode.short_name || selfNode.id}).`, 'info', 4000);
+        return true;
+      }
+      const nodeWithGps = this._allNodes.find(n => n.latitude != null && n.longitude != null);
+      if (nodeWithGps) {
+        this._map.setView([nodeWithGps.latitude, nodeWithGps.longitude], 14, { animate: true });
+        showToast(`${reasonMessage} Centered on node (${nodeWithGps.short_name || nodeWithGps.id}).`, 'info', 4000);
+        return true;
+      }
+      showToast(`${reasonMessage} Access over HTTPS is required for browser GPS.`, 'error', 5000);
+      return false;
+    };
+
+    if (window.isSecureContext === false) {
+      centerOnGatewayFallback('Browser GPS blocked on HTTP (requires HTTPS).');
       return;
     }
+
+    if (!navigator.geolocation) {
+      centerOnGatewayFallback('Geolocation not supported by browser.');
+      return;
+    }
+
     showToast('Locating your position…', 'info');
     navigator.geolocation.getCurrentPosition(
       (pos) => {
@@ -543,7 +568,7 @@ export class MapManager {
         showToast('Map centered on your location.', 'success', 2000);
       },
       (err) => {
-        showToast(`Geolocation error: ${err.message}`, 'error');
+        centerOnGatewayFallback(`Browser GPS unavailable (${err.message}).`);
       },
       { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
     );
