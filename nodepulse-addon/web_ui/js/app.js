@@ -3226,9 +3226,10 @@ function wireMapFilters() {
   };
 
   // Export buttons — use the nodes from state and re-apply filter logic.
-  document.querySelectorAll('.map-export-btn').forEach(btn => {
+  document.querySelectorAll('.map-export-btn[data-export]').forEach(btn => {
     btn.addEventListener('click', () => {
       const fmt = btn.dataset.export; // 'kml' or 'gpx'
+      if (!fmt) return;
       // Get the currently visible nodes from the full map's filtered result.
       const visible = fullMap._filterNodes ? fullMap._filterNodes(fullMap._allNodes) : state.nodes;
       const withGps = visible.filter(n => n.latitude != null && n.longitude != null);
