@@ -480,7 +480,10 @@
                 <input type="number" id="coverage-ant-h" class="terrain-param-input" value="2" step="any" />
               </label>
             </div>
-            <button type="button" id="coverage-analyze-btn" class="terrain-analyze-btn">Generate Coverage Map</button>
+            <div style="display:flex;gap:8px;">
+              <button type="button" id="coverage-analyze-btn" class="terrain-analyze-btn" style="flex:1;">Generate Coverage Map</button>
+              <button type="button" id="coverage-clear-btn" class="terrain-analyze-btn" style="background:var(--bg-highlight);color:var(--text-secondary);border:1px solid var(--border-subtle);flex:0 0 auto;">Clear Overlay</button>
+            </div>
             <div class="terrain-verdicts" id="coverage-verdicts"></div>
           </div>
         </div>

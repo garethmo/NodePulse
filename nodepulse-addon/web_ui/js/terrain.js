@@ -522,6 +522,18 @@ export function initCoveragePanel(leafletMap) {
   });
 
   analyzeBtn.addEventListener('click', () => runCoverageAnalysis(leafletMap));
+
+  const clearBtn = document.getElementById('coverage-clear-btn');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      if (leafletMap && leafletMap._map) {
+        _coverageLayers.forEach(l => leafletMap._map.removeLayer(l));
+        _coverageLayers = [];
+      }
+      const verdicts = document.getElementById('coverage-verdicts');
+      if (verdicts) verdicts.innerHTML = '';
+    });
+  }
 }
 
 async function runCoverageAnalysis(leafletMap) {
