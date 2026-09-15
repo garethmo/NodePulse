@@ -3047,6 +3047,7 @@ class MeshtasticConnection:
                 with self._nodes_lock:
                     self._nodes = []
                     seen: set[str] = set()
+                    seen_coords_for_load: set[tuple[float, float]] = set()
                     for n in data:
                         if isinstance(n, dict):
                             nid = normalize_node_id(n.get("id"))
@@ -3062,30 +3063,16 @@ class MeshtasticConnection:
                             # Validate coordinates from persisted data and mark as None if suspicious
                             lat, lng = self._validate_and_correct_coordinates(nid, lat, lng)
                             
-                            # Check for duplicates based on same coordinates (regardless of name)
-                            # This prevents nodes from appearing at the exact same location
+                            # Check for duplicates based on exact same coordinates
                             if lat is not None and lng is not None:
-                                for existing in self._nodes:
-                                    ex_lat = existing.get("latitude")
-                                    ex_lng = existing.get("longitude")
-                                    if (
-                                        ex_lat is not None
-                                        and ex_lng is not None
-                                        and _is_co_located(lat, lng, ex_lat, ex_lng)
-                                    ):
-                                            # Additional check: if same name AND same location, definitely a duplicate
-                                            ex_name = (existing.get("long_name") or existing.get("short_name") or "").strip().lower()
-                                            if ex_name == node_name:
-                                                is_dup = True
-                                                break
-                                            # If different names but same exact coordinates, also consider duplicate
-                                            # (likely same device with different config)
-                                            if lat == ex_lat and lng == ex_lng:
-                                                is_dup = True
-                                                break
+                                coord_tuple = (lat, lng)
+                                if coord_tuple in seen_coords_for_load:
+                                    is_dup = True
                             
                             if not is_dup:
                                 seen.add(nid)
+                                if lat is not None and lng is not None:
+                                    seen_coords_for_load.add((lat, lng))
                                 self._nodes.append(n)
                 logger.debug(
                     "Restored %s persisted nodes from %s",
@@ -3712,6 +3699,9 @@ class MeshtasticConnection:
         # stale re-injection loop below can correctly identify which persisted
         # nodes are absent from the current poll and need restoring.
         result_ids: set[str] = set()
+        
+        # Track coordinates to prevent O(N^2) coordinate stacking checks
+        seen_coords: set[tuple[float, float]] = set()
 
         # Merge the interface's latest node data into our persistent cache.
         # This keeps late-arriving traceroute/position updates visible on the
@@ -3881,7 +3871,7 @@ class MeshtasticConnection:
                         cached[node_id]["altitude"] = prev_alt
                     
                     # Apply coordinate offset if duplicates exist to prevent stacking
-                    node_to_add = self._apply_coordinate_offset(cached[node_id], result)
+                    node_to_add = self._apply_coordinate_offset(cached[node_id], seen_coords)
                     result.append(node_to_add)
                     result_ids.add(node_id)
                 else:
@@ -3893,7 +3883,7 @@ class MeshtasticConnection:
                     cached[node_id] = entry
                     
                     # Apply coordinate offset if duplicates exist to prevent stacking
-                    entry = self._apply_coordinate_offset(entry, result)
+                    entry = self._apply_coordinate_offset(entry, seen_coords)
                     result.append(entry)
                     result_ids.add(node_id)
                     newly_discovered.append(node_id)
@@ -3965,7 +3955,7 @@ class MeshtasticConnection:
                 restored["stale"] = True
                 
                 # Apply coordinate offset if duplicates exist to prevent stacking
-                restored = self._apply_coordinate_offset(restored, result)
+                restored = self._apply_coordinate_offset(restored, seen_coords)
                 cached[nid] = restored
                 result.append(restored)
                 result_ids.add(nid)
@@ -4517,25 +4507,23 @@ class MeshtasticConnection:
         max_concurrent_requests = 3
         for node_id, node in nodes_without_gps[:max_concurrent_requests]:
             try:
-                # Only request if we're connected and the node might be reachable
-                with self._lock:
-                    if self._connected and self._interface is not None:
-                        logger.debug(
-                            "Requesting position for node %s (%s) to get GPS data", 
-                            node_id,
-                            node.get("long_name", node.get("short_name", "")),
-                        )
-                        # This will trigger an async position request
-                        # The result will be captured via _capture_position
-                        success = self._request_position_sync(node_id)
-                        if success:
-                            logger.debug("Position request sent for node %s", node_id)
-                        else:
-                            logger.debug("Failed to request position for node %s", node_id)
+                # _request_position_sync handles its own locking internally
+                logger.debug(
+                    "Requesting position for node %s (%s) to get GPS data", 
+                    node_id,
+                    node.get("long_name", node.get("short_name", "")),
+                )
+                # This will trigger an async position request
+                # The result will be captured via _capture_position
+                success = self._request_position_sync(node_id)
+                if success:
+                    logger.debug("Position request sent for node %s", node_id)
+                else:
+                    logger.debug("Failed to request position for node %s", node_id)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("Error requesting position for node %s: %s", node_id, exc)
 
-    def _apply_coordinate_offset(self, node: dict[str, Any], existing_nodes: list[dict[str, Any]]) -> dict[str, Any]:
+    def _apply_coordinate_offset(self, node: dict[str, Any], seen_coords: set[tuple[float, float]]) -> dict[str, Any]:
         """Apply a small random offset to node coordinates if they duplicate existing nodes.
         
         This prevents nodes from stacking exactly on top of each other on the map.
@@ -4544,7 +4532,7 @@ class MeshtasticConnection:
         
         Args:
             node: The node to potentially offset
-            existing_nodes: List of already-processed nodes to check against
+            seen_coords: A set of (lat, lng) tuples representing already-processed nodes
             
         Returns:
             The node with potentially offset coordinates
@@ -4557,33 +4545,26 @@ class MeshtasticConnection:
         # If node has no coordinates, no offset needed
         if lat is None or lng is None:
             return node
-        
-        node_id = normalize_node_id(node.get("id"))
-        
-        for existing in existing_nodes:
-            ex_id = normalize_node_id(existing.get("id"))
-            # Skip comparison with self
-            if ex_id == node_id:
-                continue
-                
-            ex_lat = existing.get("latitude")
-            ex_lng = existing.get("longitude")
             
-            if ex_lat is not None and ex_lng is not None and lat == ex_lat and lng == ex_lng:
-                    # Apply a small random offset (~1-2 meters)
-                    # 1 degree of latitude ≈ 111,000 meters
-                    # 1 degree of longitude ≈ 111,000 meters * cos(latitude)
-                    lat_offset = random.uniform(-0.00001, 0.00001)  # ~1 meter
-                    lng_offset = random.uniform(-0.00001, 0.00001)  # ~1 meter
-                    
-                    node["latitude"] = lat + lat_offset
-                    node["longitude"] = lng + lng_offset
-                    
-                    logger.info(
-                        "Applied small coordinate offset to node %s (%s) to prevent map stacking with node %s",
-                        node_id, node.get("long_name", node.get("short_name", "")), ex_id
-                    )
-                    break
+        coord_tuple = (lat, lng)
+        
+        if coord_tuple in seen_coords:
+            # Apply a small random offset (~1-2 meters)
+            lat_offset = random.uniform(-0.00001, 0.00001)
+            lng_offset = random.uniform(-0.00001, 0.00001)
+            
+            node["latitude"] = lat + lat_offset
+            node["longitude"] = lng + lng_offset
+            
+            logger.info(
+                "Applied small coordinate offset to node %s (%s) to prevent map stacking",
+                normalize_node_id(node.get("id")), node.get("long_name", node.get("short_name", ""))
+            )
+            
+            # Record the new coordinates so if a third node has these we offset it too (unlikely)
+            seen_coords.add((node["latitude"], node["longitude"]))
+        else:
+            seen_coords.add(coord_tuple)
         
         return node
 
@@ -4617,16 +4598,16 @@ class MeshtasticConnection:
             ex_lng = existing.get("longitude")
             
             if ex_lat is not None and ex_lng is not None and _is_co_located(lat, lng, ex_lat, ex_lng):
-                    ex_name = (existing.get("long_name") or existing.get("short_name") or "").strip().lower()
-                    
-                    # Always consider exact coordinate matches as duplicates
-                    if lat == ex_lat and lng == ex_lng:
-                        return True
-                    
-                    # For close coordinates (within threshold), only flag as duplicate if same name
-                    # This prevents false positives for nearby legitimate nodes
-                    if ex_name == node_name:
-                        return True
+                ex_name = (existing.get("long_name") or existing.get("short_name") or "").strip().lower()
+                
+                # Always consider exact coordinate matches as duplicates
+                if lat == ex_lat and lng == ex_lng:
+                    return True
+                
+                # For close coordinates (within threshold), only flag as duplicate if same name
+                # This prevents false positives for nearby legitimate nodes
+                if ex_name == node_name:
+                    return True
         
         return False
 

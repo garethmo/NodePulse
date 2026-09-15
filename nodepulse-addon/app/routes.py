@@ -27,6 +27,28 @@ from .terrain import TerrainService, analyze_link
 
 logger = logging.getLogger(__name__)
 
+_ADDON_VERSION = None
+
+def _get_addon_version() -> str:
+    global _ADDON_VERSION
+    if _ADDON_VERSION is not None:
+        return _ADDON_VERSION
+        
+    try:
+        _cfg_candidates = [
+            os.path.join(os.path.dirname(__file__), "..", "config.json"),
+            "/data/config.json",
+        ]
+        for _p in _cfg_candidates:
+            if os.path.exists(_p):
+                with open(_p) as _f:
+                    _ADDON_VERSION = json.load(_f).get("version", "")
+                return _ADDON_VERSION
+    except Exception:
+        pass
+    _ADDON_VERSION = ""
+    return _ADDON_VERSION
+
 # A canonical Meshtastic node ID is a "!" followed by up to 8 hex digits. The
 # Web UI always sends IDs in this form, so we reject anything else before
 # handing it to the meshtastic library.
@@ -368,19 +390,7 @@ async def handle_status(request: web.Request) -> web.Response:
         }
         # Embed the addon version from config.json so the UI can display it
         # without hardcoding it in the HTML template.
-        try:
-            # HA Supervisor mounts config.json one level above the app/ package.
-            _cfg_candidates = [
-                os.path.join(os.path.dirname(__file__), "..", "config.json"),
-                "/data/config.json",
-            ]
-            for _p in _cfg_candidates:
-                if os.path.exists(_p):
-                    with open(_p) as _f:
-                        status["addon_version"] = json.load(_f).get("version", "")
-                    break
-        except Exception:  # noqa: BLE001
-            status["addon_version"] = ""
+        status["addon_version"] = _get_addon_version()
         # Attach scheduled messages stats
         with conn._scheduled_messages_lock:
             status["scheduled_count"] = len(conn._scheduled_messages)
@@ -499,6 +509,18 @@ async def handle_data_stores(request: web.Request) -> web.Response:
             "scheduled_messages.json": "Scheduled message queue",
         }
         
+        async def _get_json_file_len(filepath: str) -> Any:
+            def _read() -> Any:
+                try:
+                    with open(filepath, encoding="utf-8") as f:
+                        data = json.load(f)
+                        if isinstance(data, (list, dict)):
+                            return len(data)
+                        return None
+                except (OSError, json.JSONDecodeError):
+                    return "Error reading"
+            return await asyncio.to_thread(_read)
+        
         for filename, description in data_files.items():
             filepath = os.path.join(data_dir, filename)
             if os.path.exists(filepath):
@@ -508,14 +530,7 @@ async def handle_data_stores(request: web.Request) -> web.Response:
                 modified = stat.st_mtime
                 
                 # Try to load and count entries
-                entry_count = None
-                try:
-                    with open(filepath, encoding="utf-8") as f:
-                        data = json.load(f)
-                        if isinstance(data, (list, dict)):
-                            entry_count = len(data)
-                except (OSError, json.JSONDecodeError):
-                    entry_count = "Error reading"
+                entry_count = await _get_json_file_len(filepath)
                 
                 stores[filename] = {
                     "description": description,
@@ -604,18 +619,11 @@ async def handle_download_data_file(request: web.Request) -> web.Response:
         if not os.path.isfile(filepath):
             return _error_response(f"'{filename}' is not a file", status=400)
         
-        # Read the file content
-        with open(filepath, encoding="utf-8") as f:
-            content = f.read()
-        
-        # Return as JSON with download headers
-        return web.Response(
-            text=content,
-            content_type='application/json',
-            headers={
-                'Content-Disposition': f'attachment; filename="{filename}"'
-            }
-        )
+        # Return as JSON with download headers using FileResponse for async streaming
+        response = web.FileResponse(filepath)
+        response.headers['Content-Type'] = 'application/json'
+        response.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return response
     except Exception as exc:  # noqa: BLE001
         logger.error("Error downloading data file %s: %s", filename, exc)
         return _error_response("Failed to download file")
