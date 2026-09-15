@@ -1823,6 +1823,7 @@ export class MapManager {
   }
 
   /** Update the ruler panel stats and elevation profile. */
+  /** Update the ruler panel stats and elevation profile. */
   async _updateRulerPanel() {
     const pts = this._rulerPoints;
     const totalEl = document.getElementById('ruler-dist-total');
@@ -1831,14 +1832,16 @@ export class MapManager {
     const ptsEl = document.getElementById('ruler-points');
     const emptyEl = document.getElementById('ruler-profile-empty');
     const canvas = document.getElementById('ruler-profile-canvas');
+    const badgeEl = document.getElementById('ruler-summary-badge');
     if (!totalEl) return;
 
-    ptsEl.textContent = pts.length;
+    if (ptsEl) ptsEl.textContent = pts.length;
 
     if (pts.length < 2) {
       totalEl.textContent = '0 m';
-      gainEl.textContent = '0 m';
-      lossEl.textContent = '0 m';
+      gainEl.textContent = '▲ 0 m';
+      lossEl.textContent = '▼ 0 m';
+      if (badgeEl) badgeEl.innerHTML = '';
       if (emptyEl) emptyEl.style.display = '';
       if (canvas) this._drawElevationProfile([]);
       return;
@@ -1853,6 +1856,7 @@ export class MapManager {
 
     // Fetch real DEM terrain elevation from backend API
     let samples = [];
+    let meta = null;
     try {
       const res = await fetch('/api/terrain/link', {
         method: 'POST',
@@ -1861,7 +1865,7 @@ export class MapManager {
           from: { lat: pts[0].lat, lng: pts[0].lng },
           to: { lat: pts[pts.length - 1].lat, lng: pts[pts.length - 1].lng },
           frequency_mhz: 915,
-          samples: 64
+          samples: 96
         })
       });
       if (res.ok) {
@@ -1869,8 +1873,16 @@ export class MapManager {
         if (data && Array.isArray(data.profile)) {
           samples = data.profile.map(p => ({
             distKm: p.dist_km,
-            alt: p.elev_m != null ? p.elev_m : 0
+            alt: p.elev_m != null ? p.elev_m : 0,
+            los: p.los_m,
+            fresnelMin: p.fresnel_min_m,
+            fresnelMax: p.fresnel_max_m
           }));
+          meta = {
+            isBlocked: data.verdict?.is_blocked ?? false,
+            pathLossDb: data.link_budget?.free_space_path_loss_db ? Math.round(data.link_budget.free_space_path_loss_db) : null,
+            marginDb: data.verdict?.fresnel_clearance_margin_m ? Math.round(data.verdict.fresnel_clearance_margin_m) : null
+          };
         }
       }
     } catch (_) {
@@ -1884,6 +1896,17 @@ export class MapManager {
     if (emptyEl && samples.length > 0) emptyEl.style.display = 'none';
     if (emptyEl && samples.length === 0) emptyEl.style.display = '';
 
+    // Update summary badge
+    if (badgeEl) {
+      if (meta && meta.isBlocked) {
+        badgeEl.innerHTML = `<span class="badge-status blocked">BLOCKED</span> <span>${formatDistance(totalKm)} ${meta.pathLossDb ? `· loss ${meta.pathLossDb} dB` : ''}</span>`;
+      } else if (meta) {
+        badgeEl.innerHTML = `<span class="badge-status clear">CLEAR</span> <span>${formatDistance(totalKm)} ${meta.marginDb != null ? `· margin ${meta.marginDb} m` : ''}</span>`;
+      } else {
+        badgeEl.innerHTML = `<span>${formatDistance(totalKm)}</span>`;
+      }
+    }
+
     // Compute elevation gain/loss
     let gain = 0, loss = 0;
     for (let i = 1; i < samples.length; i++) {
@@ -1891,20 +1914,15 @@ export class MapManager {
       if (diff > 0) gain += diff;
       else loss += Math.abs(diff);
     }
-    gainEl.textContent = `${Math.round(gain)} m`;
-    lossEl.textContent = `${Math.round(loss)} m`;
+    gainEl.textContent = `▲ ${Math.round(gain)} m`;
+    lossEl.textContent = `▼ ${Math.round(loss)} m`;
 
-    if (canvas) this._drawElevationProfile(samples);
+    if (canvas) this._drawElevationProfile(samples, meta);
   }
 
-  /**
-   * Sample elevation along a path by interpolating from position history altitudes.
-   * Returns [{ distKm, alt }] at regular intervals.
-   */
+  /** Sample elevation along a path by interpolating from position history altitudes. */
   _sampleElevationPath(pts) {
     if (!this._posHistory || Object.keys(this._posHistory).length === 0) return [];
-
-    // Build a flat list of all known position fixes with altitude
     const known = [];
     for (const entries of Object.values(this._posHistory)) {
       if (!Array.isArray(entries)) continue;
@@ -1915,12 +1933,9 @@ export class MapManager {
       }
     }
     if (known.length === 0) return [];
-
-    // Sample the path at a fine granularity for a detailed profile
     const totalKm = this._pathLength(pts);
     const steps = Math.max(100, Math.min(500, Math.round(totalKm / 0.005)));
     const samples = [];
-
     for (let s = 0; s <= steps; s++) {
       const frac = s / steps;
       const pos = this._interpolatePath(pts, frac);
@@ -1960,17 +1975,14 @@ export class MapManager {
     return pts[pts.length - 1];
   }
 
-  /** Find the nearest known altitude to a point by inverse-distance weighting among the 4 closest fixes. */
+  /** Find the nearest known altitude to a point. */
   _nearestAltitude(lat, lng, known) {
     const distances = known.map(k => ({
       d: haversineKm(lat, lng, k.lat, k.lng),
       alt: k.alt,
     })).sort((a, b) => a.d - b.d);
-
-    // Use the closest point if it's very near; otherwise IDW from 4 nearest
     if (distances.length === 0) return 0;
     if (distances[0].d < 0.01 || distances.length === 1) return distances[0].alt;
-
     const nearest = distances.slice(0, Math.min(4, distances.length));
     let wSum = 0, altSum = 0;
     for (const n of nearest) {
@@ -1982,7 +1994,7 @@ export class MapManager {
   }
 
   /** Draw the elevation profile chart on the canvas. */
-  _drawElevationProfile(samples) {
+  _drawElevationProfile(samples, meta = null) {
     const canvas = document.getElementById('ruler-profile-canvas');
     if (!canvas) return;
     const rect = canvas.parentElement.getBoundingClientRect();
@@ -1996,7 +2008,6 @@ export class MapManager {
     ctx.clearRect(0, 0, W, H);
 
     if (!samples || samples.length < 2) {
-      // Draw a dashed flat line hint
       ctx.beginPath();
       ctx.setLineDash([4, 4]);
       ctx.strokeStyle = '#444';
@@ -2008,13 +2019,19 @@ export class MapManager {
       return;
     }
 
-    const padL = 35 * dpr, padR = 10 * dpr, padT = 10 * dpr, padB = 18 * dpr;
+    const padL = 45 * dpr, padR = 15 * dpr, padT = 15 * dpr, padB = 22 * dpr;
     const plotW = W - padL - padR;
     const plotH = H - padT - padB;
 
-    const alts = samples.map(s => s.alt != null ? s.alt : 0);
-    const altMin = Math.min(...alts) - 5;
-    const altMax = Math.max(...alts) + 5;
+    const allAlts = [];
+    samples.forEach(s => {
+      if (s.alt != null) allAlts.push(s.alt);
+      if (s.los != null) allAlts.push(s.los);
+      if (s.fresnelMax != null) allAlts.push(s.fresnelMax);
+      if (s.fresnelMin != null) allAlts.push(s.fresnelMin);
+    });
+    const altMin = Math.min(...allAlts) - 5;
+    const altMax = Math.max(...allAlts) + 5;
     const altRange = Math.max(altMax - altMin, 10);
     const maxDist = samples[samples.length - 1].distKm;
 
@@ -2024,34 +2041,64 @@ export class MapManager {
     const toX = (km) => padL + km * xScale;
     const toY = (alt) => padT + plotH - (alt - altMin) * yScale;
 
-    // Grid lines
-    ctx.strokeStyle = '#2a2a2a';
-    ctx.lineWidth = 0.5 * dpr;
+    // Grid lines & Y-axis Ticks
+    ctx.strokeStyle = '#1e2838';
+    ctx.lineWidth = 0.8 * dpr;
     ctx.setLineDash([2, 3]);
     const gridSteps = 4;
-    for (let i = 0; i <= gridSteps; i++) {
-      const y = padT + (plotH / gridSteps) * i;
-      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
-    }
-    ctx.setLineDash([]);
-
-    // Y-axis labels (altitude)
-    ctx.fillStyle = '#666';
+    ctx.fillStyle = '#8892a4';
     ctx.font = `${9 * dpr}px Inter, sans-serif`;
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
-    for (let i = 0; i <= gridSteps; i++) {
-      const alt = altMin + (altRange / gridSteps) * i;
-      const y = padT + plotH - (plotH / gridSteps) * i;
-      ctx.fillText(`${Math.round(alt)}m`, padL - 4 * dpr, y);
-    }
 
-    // X-axis label
+    for (let i = 0; i <= gridSteps; i++) {
+      const altVal = altMin + (altRange / gridSteps) * i;
+      const y = padT + plotH - (plotH / gridSteps) * i;
+      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
+      ctx.fillText(`${Math.round(altVal)} m`, padL - 6 * dpr, y);
+    }
+    ctx.setLineDash([]);
+
+    // X-axis Distance Ticks
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
-    ctx.fillText(maxDist < 1 ? `${Math.round(maxDist * 1000)}m` : `${maxDist.toFixed(2)}km`, padL + plotW / 2, H - padB + 2 * dpr);
+    const xSteps = 5;
+    for (let i = 0; i <= xSteps; i++) {
+      const dist = (maxDist / xSteps) * i;
+      const x = padL + (plotW / xSteps) * i;
+      const label = dist < 1 ? `${Math.round(dist * 1000)} m` : `${dist.toFixed(1)} km`;
+      ctx.fillText(label, x, H - padB + 4 * dpr);
+    }
 
-    // Fill area under profile
+    // Fresnel Zone Band (Amber Shading)
+    if (samples[0].fresnelMin != null) {
+      ctx.beginPath();
+      ctx.moveTo(toX(samples[0].distKm), toY(samples[0].fresnelMax || samples[0].alt));
+      for (let i = 0; i < samples.length; i++) {
+        ctx.lineTo(toX(samples[i].distKm), toY(samples[i].fresnelMax));
+      }
+      for (let i = samples.length - 1; i >= 0; i--) {
+        ctx.lineTo(toX(samples[i].distKm), toY(samples[i].fresnelMin));
+      }
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(255, 213, 79, 0.15)';
+      ctx.fill();
+    }
+
+    // Line of Sight (LOS) Beam Line (Red/Coral)
+    if (samples[0].los != null) {
+      ctx.beginPath();
+      for (let i = 0; i < samples.length; i++) {
+        const x = toX(samples[i].distKm);
+        const y = toY(samples[i].los);
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = meta && meta.isBlocked ? '#ff6b6b' : '#00d4aa';
+      ctx.lineWidth = 1.5 * dpr;
+      ctx.stroke();
+    }
+
+    // Ground Elevation Polygon & Line (Cyan / Blue Gradient)
     ctx.beginPath();
     ctx.moveTo(toX(samples[0].distKm), padT + plotH);
     for (const s of samples) {
@@ -2060,21 +2107,46 @@ export class MapManager {
     ctx.lineTo(toX(samples[samples.length - 1].distKm), padT + plotH);
     ctx.closePath();
     const grad = ctx.createLinearGradient(0, padT, 0, padT + plotH);
-    grad.addColorStop(0, 'rgba(255, 213, 79, 0.3)');
-    grad.addColorStop(1, 'rgba(255, 213, 79, 0.02)');
+    grad.addColorStop(0, 'rgba(79, 195, 247, 0.4)');
+    grad.addColorStop(1, 'rgba(79, 195, 247, 0.03)');
     ctx.fillStyle = grad;
     ctx.fill();
 
-    // Profile line
     ctx.beginPath();
     for (let i = 0; i < samples.length; i++) {
       const x = toX(samples[i].distKm);
       const y = toY(samples[i].alt || 0);
       i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
     }
-    ctx.strokeStyle = '#ffd54f';
+    ctx.strokeStyle = '#4fc3f7';
     ctx.lineWidth = 2 * dpr;
     ctx.stroke();
+
+    // Hover Crosshair Interactivity
+    if (!canvas._npHoverBound) {
+      canvas._npHoverBound = true;
+      canvas.addEventListener('mousemove', (e) => {
+        const cRect = canvas.getBoundingClientRect();
+        const mouseX = (e.clientX - cRect.left) * dpr;
+        if (mouseX < padL || mouseX > W - padR) return;
+
+        const frac = (mouseX - padL) / plotW;
+        const targetDist = maxDist * frac;
+        
+        let closest = samples[0];
+        let minDist = Infinity;
+        for (const s of samples) {
+          const d = Math.abs(s.distKm - targetDist);
+          if (d < minDist) { minDist = d; closest = s; }
+        }
+
+        const readoutEl = document.getElementById('ruler-hover-readout');
+        if (readoutEl && closest) {
+          readoutEl.innerHTML = `📍 <b>Distance:</b> ${formatDistance(closest.distKm)} · <b>Ground:</b> ${Math.round(closest.alt)} m ${closest.los != null ? `· <b>LOS:</b> ${Math.round(closest.los)} m` : ''}`;
+        }
+      });
+    }
+  }
 
     // Sample dots
     ctx.fillStyle = '#ffd54f';

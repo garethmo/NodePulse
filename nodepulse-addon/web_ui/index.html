@@ -348,36 +348,30 @@
           <button type="button" id="map-3d-btn" class="map-export-btn" title="Toggle 3D terrain view">🏔 3D</button>
         </div>
 
-        <!-- Ruler panel — shown when "📏 Ruler" is clicked -->
-        <div id="ruler-panel" class="ruler-panel hidden" role="dialog" aria-label="Ruler">
+        <!-- Ruler / Elevation Profile panel — docked at map bottom -->
+        <div id="ruler-panel" class="ruler-panel hidden" role="dialog" aria-label="Elevation profile">
           <div class="ruler-panel-header">
-            <span class="ruler-panel-title">📏 Ruler</span>
+            <span class="ruler-panel-title">
+              <span>📏 Elevation Profile</span>
+              <span id="ruler-summary-badge" class="ruler-summary-badge"></span>
+            </span>
             <button type="button" id="ruler-panel-close" class="ruler-panel-close" aria-label="Close">✕</button>
           </div>
           <div class="ruler-panel-body">
-            <div class="ruler-stats">
-              <div class="ruler-stat">
-                <span class="ruler-stat-value" id="ruler-dist-total">0 m</span>
-                <span class="ruler-stat-label">Total</span>
-              </div>
-              <div class="ruler-stat">
-                <span class="ruler-stat-value" id="ruler-elev-gain">0 m</span>
-                <span class="ruler-stat-label">Elev Gain</span>
-              </div>
-              <div class="ruler-stat">
-                <span class="ruler-stat-value" id="ruler-elev-loss">0 m</span>
-                <span class="ruler-stat-label">Elev Loss</span>
-              </div>
-              <div class="ruler-stat">
-                <span class="ruler-stat-value" id="ruler-points">0</span>
-                <span class="ruler-stat-label">Points</span>
-              </div>
-            </div>
             <div class="ruler-profile-wrap">
               <canvas id="ruler-profile-canvas" class="ruler-profile-canvas"></canvas>
-              <div class="ruler-profile-empty" id="ruler-profile-empty">Click the map to add points</div>
+              <div class="ruler-profile-empty" id="ruler-profile-empty">Click 2 points on the map to plot elevation profile</div>
             </div>
-            <button type="button" id="ruler-clear-btn" class="ruler-clear-btn">Clear</button>
+            <div class="ruler-readout-footer">
+              <span id="ruler-hover-readout">Click map to set points · Hover chart to inspect heights</span>
+              <div style="display:flex;gap:12px;align-items:center;">
+                <span id="ruler-dist-total" style="font-weight:700;color:var(--text-primary);">0 m</span>
+                <span id="ruler-elev-gain" style="font-weight:600;color:#00d4aa;">▲ 0 m</span>
+                <span id="ruler-elev-loss" style="font-weight:600;color:#ff6b6b;">▼ 0 m</span>
+                <span id="ruler-points" style="display:none">0</span>
+                <button type="button" id="ruler-clear-btn" class="ruler-clear-btn" style="width:auto;padding:3px 10px;">Clear</button>
+              </div>
+            </div>
           </div>
         </div>
 
