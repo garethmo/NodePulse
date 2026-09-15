@@ -601,6 +601,90 @@ function renderNodesGrid(nodes) {
 }
 
 // ============================================================================
+// Traceroute All — per-node staggered sweep
+// ============================================================================
+
+// Delay (ms) between successive per-node traceroute dispatches.
+// 5 s is enough breathing room for the radio TX queue.
+const TRACEROUTE_ALL_DELAY_MS = 5_000;
+
+// Cancellation token for an ongoing sweep. Set to true to abort.
+let _tracerouteAllCancelled = false;
+
+/**
+ * Dispatch traceroutes to every visible, non-self node one at a time.
+ * A `TRACEROUTE_ALL_DELAY_MS` pause separates each dispatch so we don't
+ * saturate the radio TX queue. The user can stop the sweep at any time
+ * via the cancel button (✕) shown while it runs.
+ */
+async function tracerouteAllNodes() {
+  // Collect the nodes currently visible in the grid (respects active filters).
+  const targets = state.nodes.filter(n => n.id !== state.selfId);
+
+  if (targets.length === 0) {
+    showToast('No remote nodes to traceroute.', 'info');
+    return;
+  }
+
+  const btn      = document.getElementById('traceroute-all-btn');
+  const progress = document.getElementById('traceroute-all-progress');
+  const label    = document.getElementById('traceroute-all-label');
+  const cancelBtn = document.getElementById('traceroute-all-cancel');
+
+  // --- Activate sweep UI ---
+  _tracerouteAllCancelled = false;
+  if (btn) {
+    btn.disabled = true;
+    btn.classList.add('traceroute-all-active');
+  }
+  if (progress) progress.hidden = false;
+
+  const onCancel = () => { _tracerouteAllCancelled = true; };
+  if (cancelBtn) cancelBtn.addEventListener('click', onCancel, { once: true });
+
+  try {
+    for (let i = 0; i < targets.length; i++) {
+      if (_tracerouteAllCancelled) {
+        showToast('Traceroute sweep cancelled.', 'info');
+        break;
+      }
+
+      const node = targets[i];
+      if (label) label.textContent = `Tracing ${i + 1}/${targets.length}: ${node.short_name || node.id}`;
+
+      try {
+        await requestTraceRoute(node.id);
+      } catch (err) {
+        // Log failures per-node but continue so one bad node doesn't
+        // abort the entire sweep.
+        showToast(`Traceroute to ${node.id} failed: ${err.message}`, 'error', 4000);
+      }
+
+      // Wait between nodes, but bail immediately if cancelled.
+      if (i < targets.length - 1 && !_tracerouteAllCancelled) {
+        await new Promise(resolve => {
+          const t = setTimeout(resolve, TRACEROUTE_ALL_DELAY_MS);
+          // Allow cancel to also resolve the delay early.
+          cancelBtn?.addEventListener('click', () => { clearTimeout(t); resolve(); }, { once: true });
+        });
+      }
+    }
+
+    if (!_tracerouteAllCancelled) {
+      showToast(`Traceroute sweep complete — ${targets.length} node(s) queued.`, 'success');
+    }
+  } finally {
+    // --- Restore UI regardless of outcome ---
+    if (btn) {
+      btn.disabled = false;
+      btn.classList.remove('traceroute-all-active');
+    }
+    if (progress) progress.hidden = true;
+    if (label) label.textContent = 'Tracing…';
+  }
+}
+
+// ============================================================================
 // Node Card Action Handler
 // ============================================================================
 async function handleNodeCardAction(event) {
@@ -2718,6 +2802,14 @@ async function init() {
     });
   }
 
+  // Wire up the "Traceroute All" button to the staggered per-node sweep.
+  const tracerouteAllBtn = document.getElementById('traceroute-all-btn');
+  if (tracerouteAllBtn) {
+    tracerouteAllBtn.addEventListener('click', () => {
+      tracerouteAllNodes();
+    });
+  }
+
   // Map overlay toggles: control buttons on each Leaflet map dispatch custom
   // events; the "L"/"T"/"N" keys are keyboard shortcuts for the same actions.
   // `after(visible)` is an optional callback fired after a toggle, useful for
@@ -2761,13 +2853,21 @@ async function init() {
       });
   });
 
-  // Keep the dashboard heatmap checkbox in sync with the map control-bar toggle.
+  // Keep the dashboard heatmap and traceroute checkboxes in sync with map control-bar toggles.
   const syncHeatCheckbox = () => {
     const cb = document.getElementById('map-toggle-heatmap');
     if (cb) cb.checked = !!fullMap._heatmapVisible;
   };
+  const syncTracesCheckbox = () => {
+    const cb = document.getElementById('map-toggle-traceroute');
+    if (cb) cb.checked = !!fullMap._tracesVisible;
+  };
   document.getElementById('map')?.addEventListener('nodepulse:toggleheatmap', syncHeatCheckbox);
   document.getElementById('full-map')?.addEventListener('nodepulse:toggleheatmap', syncHeatCheckbox);
+  document.getElementById('map')?.addEventListener('nodepulse:toggletraces', syncTracesCheckbox);
+  document.getElementById('full-map')?.addEventListener('nodepulse:toggletraces', syncTracesCheckbox);
+  syncHeatCheckbox();
+  syncTracesCheckbox();
 
   // Map node filter (text / max hops / last-heard window) — apply to both maps.
   wireMapFilters();
@@ -3014,6 +3114,20 @@ function wireMapFilters() {
   textEl.addEventListener('input', apply);
   hopsEl.addEventListener('change', apply);
   heardEl.addEventListener('change', apply);
+  const traceEl = document.getElementById('map-toggle-traceroute');
+  if (traceEl) {
+    traceEl.addEventListener('change', () => {
+      if (fullMap._tracesVisible !== traceEl.checked) {
+        fullMap.toggleTraces();
+        dashMap.toggleTraces();
+      }
+      document.querySelectorAll('.leaflet-control-maptoggle').forEach(b => {
+        if (b.title && b.title.toLowerCase().includes('traceroute')) {
+          b.classList.toggle('active', traceEl.checked);
+        }
+      });
+    });
+  }
   if (heatEl) {
     heatEl.addEventListener('change', () => {
       dashMap.toggleHeatmap(heatEl.checked);
