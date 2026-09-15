@@ -840,7 +840,8 @@ class MeshtasticConnection:
                 logger.debug("Periodic favorite sync failed (ignored): %s", exc)
 
     async def send_message(
-        self, text: str, destination: str | None = None, channel: int = 0
+        self, text: str, destination: str | None = None, channel: int = 0,
+        sender_name: str | None = None,
     ) -> bool:
         """
         Send a text message over the mesh.
@@ -849,17 +850,25 @@ class MeshtasticConnection:
             text: The plaintext message content.
             destination: Node ID hex string for a DM, or None for broadcast.
             channel: Channel index to send on (0 = primary channel).
+            sender_name: When set, the stored message is attributed to this
+                name and marked as *not* outgoing (i.e. a relay from a third
+                party such as the Telegram bridge). When None the message is
+                stored as the local user's own outgoing message.
 
         Returns:
             True if the send was accepted by the library, False otherwise.
         """
         logger.debug(
-            "Sending mesh message: text='%s' destination=%s channel=%s",
+            "Sending mesh message: text='%s' destination=%s channel=%s sender_name=%s",
             text[:30] if text else "",
             destination or "broadcast",
             channel,
+            sender_name,
         )
-        result = await asyncio.to_thread(self._send_message_sync, text, destination, channel)
+        result = await asyncio.to_thread(
+            self._send_message_sync, text, destination, channel,
+            want_ack=True, sender_name=sender_name,
+        )
         logger.debug(
             "Mesh message sent: text='%s' destination=%s channel=%s result=%s",
             text[:30] if text else "",
@@ -4301,8 +4310,13 @@ class MeshtasticConnection:
         return result
 
     def _send_message_sync(
-        self, text: str, destination: str | None, channel: int, want_ack: bool = True
+        self, text: str, destination: str | None, channel: int,
+        want_ack: bool = True, sender_name: str | None = None,
     ) -> bool:
+        # When sender_name is given the message originates from a third-party
+        # relay (e.g. Telegram bridge) rather than the local user.  We store it
+        # as an incoming-style entry so the UI displays it correctly.
+        is_relay = sender_name is not None
         # Take a snapshot of the interface under the lock, then release it
         # BEFORE calling sendText. Holding _lock during sendText (which does
         # blocking radio I/O) would stall every other thread (get_nodes, health
@@ -4370,20 +4384,29 @@ class MeshtasticConnection:
                 want_ack=want_ack if is_dm else False,
             )
 
+            self_name = "You"
+            if not is_relay and self_num is not None:
+                node_data = self._lookup_node(iface, self_num)
+                user = node_data.get("user", {})
+                self_name = user.get("longName") or user.get("shortName") or self_id or "You"
+
             entry = {
-                "from_id": self_id,
+                # Relay messages appear to come from the relay sender, not self.
+                "from_id": None if is_relay else self_id,
                 "to_id": to_id,
                 # `destination` mirrors what the frontend optimistic message stores so
                 # the client-side echo-dedup in storeMessage() can match the two entries
                 # and suppress the duplicate bubble. Without this field the comparison
                 # `m.destination === msg.destination` always fails (undefined vs string).
                 "destination": to_id,  # None for broadcasts, "!hex" for DMs
-                "from_name": "You",
+                "from_name": sender_name if is_relay else self_name,
                 "text": text,
                 "channel": channel,
                 "conversation": conversation,
                 "is_dm": is_dm,
-                "outgoing": True,
+                # Relay messages are shown as incoming in the UI so they are
+                # clearly distinguishable from the local user's own messages.
+                "outgoing": not is_relay,
                 "rx_snr": None,
                 "rx_rssi": None,
                 "timestamp": int(time.time()),

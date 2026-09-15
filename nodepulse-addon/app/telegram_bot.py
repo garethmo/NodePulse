@@ -239,11 +239,16 @@ class TelegramBot:
                     return
 
         # Plain messages in any authorized chat (group or private) are broadcast to the mesh.
-        sender_name = message.get("from", {}).get("first_name", "Telegram")
-        formatted_text = f"[{sender_name}] {text}"
+        sender_info = message.get("from", {})
+        first_name = sender_info.get("first_name") or sender_info.get("username") or "Telegram"
+        # The on-air text keeps the [Name] prefix so mesh nodes (not just NodePulse)
+        # can see who sent it. The sender_name arg is used by NodePulse to display
+        # the message as an incoming relay rather than as the local user's own message.
+        formatted_text = f"[{first_name}] {text}"
+        sender_label = f"📱 {first_name}"
         
-        logger.info("Broadcasting Telegram message from chat %s to the mesh", chat_id)
-        success = await self.send_message_callback(formatted_text, channel=0)
+        logger.info("Broadcasting Telegram message from %s (chat %s) to the mesh", first_name, chat_id)
+        success = await self.send_message_callback(formatted_text, channel=0, sender_name=sender_label)
         if not success:
             await self._send_text("❌ Failed to broadcast message to mesh.", chat_id=chat_id)
         else:

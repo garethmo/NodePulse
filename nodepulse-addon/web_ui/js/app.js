@@ -95,6 +95,9 @@ const fullMap  = new MapManager('full-map');
 const topology = new TopologyManager('topology-container');
 const charts   = new ChartManager();
 
+let dashMapListenersAttached = false;
+let fullMapListenersAttached = false;
+
 // ============================================================================
 // Utility: Toast notifications
 // ============================================================================
@@ -1000,6 +1003,17 @@ function shortNameFor(nodeId) {
   return n && n.short_name ? n.short_name : null;
 }
 
+// Resolve display name for the connected local node (self).
+function selfNodeName() {
+  if (!state.selfId) return 'You';
+  const selfNode = state.nodes.find(n => n.id === state.selfId);
+  if (selfNode) {
+    return selfNode.long_name || selfNode.short_name || selfNode.id;
+  }
+  return shortNameFor(state.selfId) || nodeName(state.selfId) || state.selfId;
+}
+
+
 function formatMessageTime(timestamp) {
   const d = new Date((timestamp || Date.now() / 1000) * 1000);
   return `${d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} ${d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`;
@@ -1208,7 +1222,7 @@ async function handleSend() {
     outgoing: true,
     conversation: convKey,
     timestamp: Date.now() / 1000,
-    from_name: 'Me',
+    from_name: selfNodeName(),
     status: 'sending', // sending -> sent | failed
     destination,
     channel,
@@ -1270,7 +1284,14 @@ function renderMessagesSidebar() {
   // Filter out dismissed conversations (except the active one)
   const filtered = [...keys].filter(k => k === state.activeConversation || !state.dismissedConvs.has(k));
 
-  const ordered = filtered.sort((a, b) => {
+  // Separate keys into Channels and Direct Messages
+  const channelKeys = filtered.filter(k => k.startsWith('ch:')).sort((a, b) => {
+    const idxA = parseInt(a.slice(3), 10) || 0;
+    const idxB = parseInt(b.slice(3), 10) || 0;
+    return idxA - idxB;
+  });
+
+  const dmKeys = filtered.filter(k => k.startsWith('dm:')).sort((a, b) => {
     const threadA = state.messagesByConv[a] || [];
     const threadB = state.messagesByConv[b] || [];
     const lastA = threadA.length ? threadA[threadA.length - 1].timestamp : 0;
@@ -1279,68 +1300,82 @@ function renderMessagesSidebar() {
   });
 
   list.innerHTML = '';
-  for (const key of ordered) {
-    const conv = _ensureConversation(key);
-    const thread = (state.messagesByConv[key] || []);
-    const lastMsg = thread.length > 0 ? thread[thread.length - 1] : null;
-    const time = lastMsg
-      ? new Date(lastMsg.timestamp * 1000).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
-      : '';
 
-    const item = document.createElement('div');
-    item.className = `messages-conv-item ${key === state.activeConversation ? 'active' : ''}`;
-    item.dataset.conv = key;
-    item.setAttribute('role', 'option');
-    item.setAttribute('aria-selected', key === state.activeConversation);
+  const renderSection = (headerTitle, sectionKeys) => {
+    if (!sectionKeys.length) return;
+    const header = document.createElement('div');
+    header.className = 'messages-section-header';
+    header.textContent = headerTitle;
+    list.appendChild(header);
 
-    const avatar = document.createElement('div');
-    avatar.className = `messages-conv-avatar ${conv.kind}`;
-    avatar.textContent = conv.name.charAt(0).toUpperCase();
+    for (const key of sectionKeys) {
+      const conv = _ensureConversation(key);
+      const thread = (state.messagesByConv[key] || []);
+      const lastMsg = thread.length > 0 ? thread[thread.length - 1] : null;
+      const time = lastMsg
+        ? new Date(lastMsg.timestamp * 1000).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+        : '';
 
-    const content = document.createElement('div');
-    content.className = 'messages-conv-content';
+      const item = document.createElement('div');
+      item.className = `messages-conv-item ${key === state.activeConversation ? 'active' : ''}`;
+      item.dataset.conv = key;
+      item.setAttribute('role', 'option');
+      item.setAttribute('aria-selected', key === state.activeConversation);
 
-    const nameRow = document.createElement('div');
-    nameRow.className = 'messages-conv-name-row';
-    nameRow.innerHTML = `<span class="messages-conv-name">${escapeHtml(conv.name)}</span>`;
-    if (conv.unread > 0) {
-      nameRow.innerHTML += `<span class="messages-conv-unread">${conv.unread > 99 ? '99+' : conv.unread}</span>`;
-    }
-    if (time) {
-      nameRow.innerHTML += `<span class="messages-conv-time">${time}</span>`;
-    }
+      const avatar = document.createElement('div');
+      avatar.className = `messages-conv-avatar ${conv.kind}`;
+      avatar.textContent = conv.name.charAt(0).toUpperCase();
 
-    content.appendChild(nameRow);
+      const content = document.createElement('div');
+      content.className = 'messages-conv-content';
 
-    if (lastMsg) {
-      const lastMsgEl = document.createElement('div');
-      lastMsgEl.className = 'messages-conv-last-msg';
-      lastMsgEl.textContent = lastMsg.text || '(media)';
-      content.appendChild(lastMsgEl);
-    }
-
-    item.appendChild(avatar);
-    item.appendChild(content);
-
-    const closeBtn = document.createElement('button');
-    closeBtn.className = 'messages-conv-close';
-    closeBtn.setAttribute('aria-label', `Close ${conv.name}`);
-    closeBtn.innerHTML = '✕';
-    closeBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      state.dismissedConvs.add(key);
-      try { localStorage.setItem('nodepulse_dismissed_convs', JSON.stringify([...state.dismissedConvs])); } catch (_) {}
-      if (state.activeConversation === key) {
-        selectConversation('ch:0');
+      const nameRow = document.createElement('div');
+      nameRow.className = 'messages-conv-name-row';
+      nameRow.innerHTML = `<span class="messages-conv-name">${escapeHtml(conv.name)}</span>`;
+      if (conv.unread > 0) {
+        nameRow.innerHTML += `<span class="messages-conv-unread">${conv.unread > 99 ? '99+' : conv.unread}</span>`;
       }
-      renderMessagesSidebar();
-      renderMessagesThread();
-    });
-    item.appendChild(closeBtn);
+      if (time) {
+        nameRow.innerHTML += `<span class="messages-conv-time">${time}</span>`;
+      }
 
-    item.addEventListener('click', () => selectMessagesConversation(key));
-    list.appendChild(item);
-  }
+      content.appendChild(nameRow);
+
+      if (lastMsg) {
+        const lastMsgEl = document.createElement('div');
+        lastMsgEl.className = 'messages-conv-last-msg';
+        lastMsgEl.textContent = lastMsg.text || '(media)';
+        content.appendChild(lastMsgEl);
+      }
+
+      item.appendChild(avatar);
+      item.appendChild(content);
+
+      if (conv.kind === 'dm') {
+        const closeBtn = document.createElement('button');
+        closeBtn.className = 'messages-conv-close';
+        closeBtn.setAttribute('aria-label', `Close ${conv.name}`);
+        closeBtn.innerHTML = '✕';
+        closeBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          state.dismissedConvs.add(key);
+          try { localStorage.setItem('nodepulse_dismissed_convs', JSON.stringify([...state.dismissedConvs])); } catch (_) {}
+          if (state.activeConversation === key) {
+            selectConversation('ch:0');
+          }
+          renderMessagesSidebar();
+          renderMessagesThread();
+        });
+        item.appendChild(closeBtn);
+      }
+
+      item.addEventListener('click', () => selectMessagesConversation(key));
+      list.appendChild(item);
+    }
+  };
+
+  renderSection('📡 Channels', channelKeys);
+  renderSection('💬 Direct Messages', dmKeys);
 }
 
 function selectMessagesConversation(key) {
@@ -1500,7 +1535,7 @@ function renderMessagesThread() {
     }
 
     const sender = isOutgoing
-      ? null
+      ? selfNodeName()
       : (shortNameFor(msg.from_id) || msg.from_name || nodeName(msg.from_id) || 'Unknown');
 
     bubble.innerHTML = `
@@ -1571,7 +1606,7 @@ async function handleMessagesSend() {
     outgoing: true,
     conversation: convKey,
     timestamp: Date.now() / 1000,
-    from_name: 'Me',
+    from_name: selfNodeName(),
     status: 'sending',
     destination,
     channel,
@@ -1729,43 +1764,49 @@ function switchView(viewName) {
     if (viewName === 'dashboard') {
       dashMap.invalidateSize();
 
-      // Listen for map popup actions (traceroute, message) on dashboard mini-map
-      dashMap._map?.getContainer().addEventListener('nodepulse:traceroute', (e) => {
-        requestTraceRoute(e.detail.nodeId).then(() => showToast(`Traceroute dispatched to ${e.detail.nodeId}`, 'success')).catch(err => showToast(`Traceroute failed: ${err.message}`, 'error'));
-      });
-      dashMap._map?.getContainer().addEventListener('nodepulse:message', (e) => {
-        openDirectMessage(e.detail.nodeId);
-      });
-      dashMap._map?.getContainer().addEventListener('nodepulse:diagnostics', (e) => {
-        openDiagnostics(e.detail.nodeId);
-      });
-      dashMap._map?.getContainer().addEventListener('nodepulse:gpx', (e) => {
-        downloadNodeGpx(e.detail.nodeId);
-      });
-      dashMap._map?.getContainer().addEventListener('nodepulse:favorite', (e) => {
-        toggleFavorite(e.detail.nodeId, null);
-      });
+      // Listen for map popup actions (traceroute, message) on dashboard mini-map (attach once)
+      if (!dashMapListenersAttached && dashMap._map) {
+        dashMapListenersAttached = true;
+        dashMap._map.getContainer().addEventListener('nodepulse:traceroute', (e) => {
+          requestTraceRoute(e.detail.nodeId).then(() => showToast(`Traceroute dispatched to ${e.detail.nodeId}`, 'success')).catch(err => showToast(`Traceroute failed: ${err.message}`, 'error'));
+        });
+        dashMap._map.getContainer().addEventListener('nodepulse:message', (e) => {
+          openDirectMessage(e.detail.nodeId);
+        });
+        dashMap._map.getContainer().addEventListener('nodepulse:diagnostics', (e) => {
+          openDiagnostics(e.detail.nodeId);
+        });
+        dashMap._map.getContainer().addEventListener('nodepulse:gpx', (e) => {
+          downloadNodeGpx(e.detail.nodeId);
+        });
+        dashMap._map.getContainer().addEventListener('nodepulse:favorite', (e) => {
+          toggleFavorite(e.detail.nodeId, null);
+        });
+      }
     } else if (viewName === 'map') {
       fullMap.init();
       fullMap.updateNodes(state.nodes);
       fullMap.invalidateSize();
 
-      // Listen for map popup actions (traceroute, message)
-      fullMap._map.getContainer().addEventListener('nodepulse:traceroute', (e) => {
-        requestTraceRoute(e.detail.nodeId).then(() => showToast(`Traceroute dispatched to ${e.detail.nodeId}`, 'success')).catch(err => showToast(`Traceroute failed: ${err.message}`, 'error'));
-      });
-      fullMap._map.getContainer().addEventListener('nodepulse:message', (e) => {
-        openDirectMessage(e.detail.nodeId);
-      });
-      fullMap._map.getContainer().addEventListener('nodepulse:diagnostics', (e) => {
-        openDiagnostics(e.detail.nodeId);
-      });
-      fullMap._map.getContainer().addEventListener('nodepulse:gpx', (e) => {
-        downloadNodeGpx(e.detail.nodeId);
-      });
-      fullMap._map.getContainer().addEventListener('nodepulse:favorite', (e) => {
-        toggleFavorite(e.detail.nodeId, null);
-      });
+      // Listen for map popup actions (traceroute, message) (attach once)
+      if (!fullMapListenersAttached && fullMap._map) {
+        fullMapListenersAttached = true;
+        fullMap._map.getContainer().addEventListener('nodepulse:traceroute', (e) => {
+          requestTraceRoute(e.detail.nodeId).then(() => showToast(`Traceroute dispatched to ${e.detail.nodeId}`, 'success')).catch(err => showToast(`Traceroute failed: ${err.message}`, 'error'));
+        });
+        fullMap._map.getContainer().addEventListener('nodepulse:message', (e) => {
+          openDirectMessage(e.detail.nodeId);
+        });
+        fullMap._map.getContainer().addEventListener('nodepulse:diagnostics', (e) => {
+          openDiagnostics(e.detail.nodeId);
+        });
+        fullMap._map.getContainer().addEventListener('nodepulse:gpx', (e) => {
+          downloadNodeGpx(e.detail.nodeId);
+        });
+        fullMap._map.getContainer().addEventListener('nodepulse:favorite', (e) => {
+          toggleFavorite(e.detail.nodeId, null);
+        });
+      }
     } else if (viewName === 'settings') {
       renderSettings();
     } else if (viewName === 'topology') {

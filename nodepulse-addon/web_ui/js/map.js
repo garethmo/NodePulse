@@ -2146,7 +2146,6 @@ export class MapManager {
         }
       });
     }
-  }
 
     // Sample dots
     ctx.fillStyle = '#ffd54f';

@@ -18,10 +18,20 @@ import { escapeHtml, formatDistance } from './util.js';
 
 // AWS Terrain Tiles (terrarium encoding) — free public DEM tiles, no key.
 const TERRARIUM_URL = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png';
-// Base imagery for the 3D view (OSM raster — no key).
-const OSM_RASTER_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+// Base imagery for the 3D view (CARTO dark raster — distributed across subdomains).
+const CARTO_RASTER_TILES = [
+  'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+  'https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+  'https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+  'https://d.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+];
 const MAPLIBRE_CDN_JS = 'https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js';
 const MAPLIBRE_CDN_CSS = 'https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css';
+
+// Node colour constants for 3D view markers.
+const NODE_COLOR_SELF    = '#4fc3f7'; // cyan — this device
+const NODE_COLOR_ROUTER  = '#ffb300'; // amber — router/repeater
+const NODE_COLOR_DEFAULT = '#00d4aa'; // teal — regular node
 
 let _nodes = [];
 let _selfId = null;
@@ -133,16 +143,29 @@ export async function toggle3DView(isActive) {
   if (!_maplibreMap) {
     _maplibreMap = new window.maplibregl.Map({
       container,
+      localIdeographFontFamily: 'sans-serif',
       style: {
         version: 8,
+        // glyphs URL is required for symbol layers with text-font to render.
+        // Using MapLibre's public demo endpoint (acceptable for self-hosted apps).
+        glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
         sources: {
-          'osm': {
+          'base-tiles': {
             type: 'raster',
-            tiles: [OSM_RASTER_URL],
+            tiles: CARTO_RASTER_TILES,
             tileSize: 256,
-            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>',
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
           },
-          'dem': {
+          // Separate raster-dem sources for 3D terrain mesh and hillshade layer
+          // to eliminate MapLibre shared-source warnings and rendering conflicts.
+          'dem-terrain': {
+            type: 'raster-dem',
+            tiles: [TERRARIUM_URL],
+            encoding: 'terrarium',
+            tileSize: 256,
+            maxzoom: 15,
+          },
+          'dem-hillshade': {
             type: 'raster-dem',
             tiles: [TERRARIUM_URL],
             encoding: 'terrarium',
@@ -151,9 +174,10 @@ export async function toggle3DView(isActive) {
           },
         },
         layers: [
-          { id: 'base', type: 'raster', source: 'osm' },
-          { id: 'hillshade', type: 'hillshade', source: 'dem', paint: { 'hillshade-exaggeration': 1.2 } },
+          { id: 'base', type: 'raster', source: 'base-tiles' },
+          { id: 'hillshade', type: 'hillshade', source: 'dem-hillshade', paint: { 'hillshade-exaggeration': 1.0 } },
         ],
+        terrain: { source: 'dem-terrain', exaggeration: 1.5 },
       },
       center: [31.0218, -29.8587],
       zoom: 11,
@@ -161,13 +185,17 @@ export async function toggle3DView(isActive) {
       bearing: -20,
     });
     _maplibreMap.on('load', () => {
-      _maplibreMap.setTerrain({ source: 'dem', exaggeration: 1.5 });
       _add3DNodes();
     });
   }
 }
 
-/** Render mesh nodes as 3D-extruded markers on the MapLibre map. */
+/**
+ * Render mesh nodes as circle markers + label symbols on the MapLibre map.
+ *
+ * NOTE: fill-extrusion requires *polygon* geometry and silently renders nothing
+ * for Point features. We use circle + symbol layers which work with points.
+ */
 function _add3DNodes() {
   if (!_maplibreMap) return;
   const positioned = _nodes.filter(n => n.latitude != null && n.longitude != null);
@@ -176,26 +204,59 @@ function _add3DNodes() {
     properties: {
       id: n.id,
       name: n.long_name || n.short_name || n.id,
-      height: n.hops_away != null && n.hops_away > 0 ? 4 + n.hops_away * 2 : 6,
-      color: n.id === _selfId ? '#4fc3f7' : (n.role === 'ROUTER' || n.role === 'REPEATER') ? '#ffb300' : '#00d4aa',
+      // Assign a stable colour string that MapLibre can use in a match expression.
+      color: n.id === _selfId
+        ? NODE_COLOR_SELF
+        : (n.role === 'ROUTER' || n.role === 'REPEATER')
+          ? NODE_COLOR_ROUTER
+          : NODE_COLOR_DEFAULT,
     },
     geometry: { type: 'Point', coordinates: [n.longitude, n.latitude] },
   }));
 
+  // Remove existing layers and source before re-adding to keep things clean.
   if (_maplibreMap.getSource('nodes')) {
-    if (_maplibreMap.getLayer('node-extruded')) _maplibreMap.removeLayer('node-extruded');
+    ['node-labels', 'node-circles'].forEach(id => {
+      if (_maplibreMap.getLayer(id)) _maplibreMap.removeLayer(id);
+    });
     _maplibreMap.removeSource('nodes');
   }
-  _maplibreMap.addSource('nodes', { type: 'geojson', data: { type: 'FeatureCollection', features } });
+
+  _maplibreMap.addSource('nodes', {
+    type: 'geojson',
+    data: { type: 'FeatureCollection', features },
+  });
+
+  // Filled circle for each node.
   _maplibreMap.addLayer({
-    id: 'node-extruded',
-    type: 'fill-extrusion',
+    id: 'node-circles',
+    type: 'circle',
     source: 'nodes',
     paint: {
-      'fill-extrusion-color': ['get', 'color'],
-      'fill-extrusion-height': ['get', 'height'],
-      'fill-extrusion-base': 0,
-      'fill-extrusion-opacity': 0.85,
+      'circle-radius': 8,
+      'circle-color': ['get', 'color'],
+      'circle-stroke-width': 2,
+      'circle-stroke-color': '#ffffff',
+      'circle-opacity': 0.9,
+    },
+  });
+
+  // Short-name label above each circle.
+  _maplibreMap.addLayer({
+    id: 'node-labels',
+    type: 'symbol',
+    source: 'nodes',
+    layout: {
+      'text-field': ['get', 'name'],
+      'text-font': ['Noto Sans Regular'],
+      'text-size': 11,
+      'text-offset': [0, 1.5],
+      'text-anchor': 'top',
+    },
+    paint: {
+      'text-color': '#ffffff',
+      'text-halo-color': '#000000',
+      'text-halo-width': 1,
     },
   });
 }

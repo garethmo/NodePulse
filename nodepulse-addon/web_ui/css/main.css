@@ -2188,6 +2188,26 @@ body::before {
   background: linear-gradient(135deg, var(--color-purple), var(--color-blue));
 }
 
+.messages-section-header {
+  padding: 12px 14px 4px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--color-teal);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+}
+.messages-section-header::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border-subtle);
+  opacity: 0.5;
+}
+
 .messages-conv-content {
   flex: 1;
   min-width: 0;
