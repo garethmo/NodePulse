@@ -54,7 +54,7 @@ const TILE_ATTRIBUTION =
   '&copy; <a href="https://opentopomap.org">OpenTopoMap</a>' +
   '&copy; <a href="https://esri.com">Esri</a>';
 
-const DEFAULT_MAP_TYPE = 'dark';
+const DEFAULT_MAP_TYPE = 'satellite';
 // Map type keys: 'dark', 'light', 'satellite', 'topographical'
 
 // Custom icon for default client node markers.
@@ -236,7 +236,7 @@ function createMap(elementId, mapType = DEFAULT_MAP_TYPE) {
        container.appendChild(btn);
      };
 
-     // Dark matter (current default)
+     // Dark matter
      makeMapTypeToggle('dark', 'Dark Matter', '◉', mapType === 'dark');
      // Light matter
      makeMapTypeToggle('light', 'Light Matter', '☀', mapType === 'light');

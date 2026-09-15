@@ -1086,10 +1086,8 @@ class TelegramBot:
             for i, hop in enumerate(route):
                 label = _name(hop)
                 if i < len(snrs) and snrs[i] is not None:
-                    try:
+                    with contextlib.suppress(ValueError, TypeError):
                         label += f" ({float(snrs[i]):.1f}dB)"
-                    except (ValueError, TypeError):
-                        pass
                 parts.append(label)
             return " → ".join(parts)
 

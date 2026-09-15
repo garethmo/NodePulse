@@ -44,7 +44,7 @@ def _get_addon_version() -> str:
                 with open(_p) as _f:
                     _ADDON_VERSION = json.load(_f).get("version", "")
                 return _ADDON_VERSION
-    except Exception:
+    except (OSError, ValueError):
         pass
     _ADDON_VERSION = ""
     return _ADDON_VERSION

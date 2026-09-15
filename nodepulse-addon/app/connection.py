@@ -3055,7 +3055,6 @@ class MeshtasticConnection:
                                 continue
                             n["id"] = nid
 
-                            node_name = (n.get("long_name") or n.get("short_name") or "").strip().lower()
                             lat = n.get("latitude")
                             lng = n.get("longitude")
                             is_dup = False
