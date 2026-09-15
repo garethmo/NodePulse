@@ -1222,6 +1222,49 @@ body::before {
 }
 
 
+/* User location marker pulse animation */
+@keyframes np-user-pulse {
+  0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(79, 195, 247, 0.7); }
+  70% { transform: scale(1.05); box-shadow: 0 0 0 12px rgba(79, 195, 247, 0); }
+  100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(79, 195, 247, 0); }
+}
+.user-location-marker {
+  width: 16px;
+  height: 16px;
+  background: #4fc3f7;
+  border: 3px solid #ffffff;
+  border-radius: 50%;
+  animation: np-user-pulse 2s infinite;
+}
+
+/* DX Longest Links Table */
+.dx-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.dx-table th {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+.dx-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.dx-rank {
+  font-weight: 700;
+  color: var(--text-teal);
+  width: 24px;
+}
+.dx-dist {
+  font-weight: 700;
+  color: #ffb300;
+}
+
+
 #view-map { padding: var(--space-md); display: none; }
 #view-map.active { display: flex; flex-direction: column; }
 #full-map { flex: 1; border-radius: var(--radius-lg); overflow: hidden; border: 1px solid var(--border-subtle); }

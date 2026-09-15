@@ -316,6 +316,18 @@
               <option value="stale">Cached only</option>
             </select>
           </label>
+          <label class="map-filter-field">
+            Hardware
+            <select id="map-filter-hardware">
+              <option value="">Any HW</option>
+            </select>
+          </label>
+          <label class="map-filter-field">
+            Role
+            <select id="map-filter-role">
+              <option value="">Any Role</option>
+            </select>
+          </label>
           <label class="map-filter-field" style="display:flex; align-items:center; gap:4px; margin-left: 8px;">
             <input type="checkbox" id="map-toggle-heatmap" />
             Heatmap
@@ -325,6 +337,8 @@
             Traceroutes
           </label>
           <span class="map-filter-count" id="map-filter-count"></span>
+          <button type="button" id="map-locate-btn" class="map-export-btn" title="Center map on my browser location">🎯 Locate</button>
+          <button type="button" id="map-dx-btn" class="map-export-btn" title="View longest direct (0-hop) RF links">🏆 DX Links</button>
           <button type="button" class="map-export-btn" data-export="kml" title="Export visible nodes as KML">📥 KML</button>
           <button type="button" class="map-export-btn" data-export="gpx" title="Export visible nodes as GPX">📥 GPX</button>
           <button type="button" id="map-add-waypoint-btn" class="map-export-btn" title="Drop a waypoint on the map">📍 Waypoint</button>
@@ -493,6 +507,20 @@
             <p class="waypoint-hint">Click the map to set coords, or leave blank to place at map center. Drag marker after placing.</p>
             <button type="submit" class="waypoint-submit-btn">Add Waypoint</button>
           </form>
+        </div>
+
+        <!-- DX Longest Direct Links panel — shown when "🏆 DX Links" is clicked -->
+        <div id="dx-panel" class="terrain-panel hidden" role="dialog" aria-label="Longest Direct RF Links">
+          <div class="terrain-panel-header">
+            <span class="terrain-panel-title">🏆 Longest Direct RF Links (DX)</span>
+            <button type="button" id="dx-panel-close" class="terrain-panel-close" aria-label="Close">✕</button>
+          </div>
+          <div class="terrain-panel-body" style="max-height:400px;overflow-y:auto;">
+            <p style="font-size:12px;color:var(--text-secondary);margin-bottom:10px;">
+              Node-to-node direct hops (0-hop) with verified radio coverage distance.
+            </p>
+            <div id="dx-list-container"></div>
+          </div>
         </div>
 
         <div id="full-map"></div>

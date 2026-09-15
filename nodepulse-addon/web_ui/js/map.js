@@ -462,8 +462,10 @@ export class MapManager {
     this._allNodes = [];
     // Active map filter. Keys: text (name substring), maxHops (int|null),
     // heardWithin (seconds|null — only show nodes heard within this window),
-    // staleOnly (bool — only show cached/stale nodes).
-    this._filter = { text: '', maxHops: null, heardWithin: null, staleOnly: false };
+    // staleOnly (bool — only show cached/stale nodes), hardware, role.
+    this._filter = { text: '', maxHops: null, heardWithin: null, staleOnly: false, hardware: '', role: '' };
+    this._precisionCircles = new Map();
+    this._userMarker = null;
 
     // --- Ruler ---
     this._rulerActive = false;
@@ -501,8 +503,99 @@ export class MapManager {
         if (ageMs > f.heardWithin * 1000) return false;
       }
       if (f.staleOnly && !n.stale) return false;
+      if (f.hardware) {
+        const hw = String(n.hardware_model || n.hardware || '').toLowerCase();
+        if (hw !== f.hardware.toLowerCase()) return false;
+      }
+      if (f.role) {
+        const r = String(n.role || '').toLowerCase();
+        if (r !== f.role.toLowerCase()) return false;
+      }
       return true;
     });
+  }
+
+  /**
+   * Center the map on the user's current GPS location using HTML5 Geolocation.
+   */
+  locateUser() {
+    if (!navigator.geolocation) {
+      showToast('Geolocation is not supported by your browser.', 'error');
+      return;
+    }
+    showToast('Locating your position…', 'info');
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const { latitude, longitude } = pos.coords;
+        if (!this._userMarker) {
+          const icon = L.divIcon({
+            className: 'user-location-marker',
+            iconSize: [16, 16],
+            iconAnchor: [8, 8]
+          });
+          this._userMarker = L.marker([latitude, longitude], { icon, zIndexOffset: 1000 })
+            .bindPopup('<b>🎯 Your Location</b>')
+            .addTo(this._map);
+        } else {
+          this._userMarker.setLatLng([latitude, longitude]);
+        }
+        this._map.setView([latitude, longitude], 14, { animate: true });
+        showToast('Map centered on your location.', 'success', 2000);
+      },
+      (err) => {
+        showToast(`Geolocation error: ${err.message}`, 'error');
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+    );
+  }
+
+  /**
+   * Calculate top direct (0-hop) node-to-node or node-to-gateway links sorted by distance in km.
+   * Returns array of { source: Node, target: Node, distKm: number, snr: number|null }.
+   */
+  getTopDirectLinks(limit = 20) {
+    const links = [];
+    const nodesWithGps = this._allNodes.filter(n => n.latitude != null && n.longitude != null);
+    const nodeMap = new Map(nodesWithGps.map(n => [n.id, n]));
+
+    for (const node of nodesWithGps) {
+      if (node.traceroute && Array.isArray(node.traceroute.route) && node.traceroute.route.length === 1) {
+        const destId = node.traceroute.route[0];
+        const destNode = nodeMap.get(destId);
+        if (destNode && destNode.id !== node.id) {
+          const dist = haversineKm(node.latitude, node.longitude, destNode.latitude, destNode.longitude);
+          links.push({
+            source: node,
+            target: destNode,
+            distKm: dist,
+            snr: node.snr
+          });
+        }
+      }
+      if (node.hops_away === 0 && this._selfId && node.id !== this._selfId) {
+        const selfNode = nodeMap.get(this._selfId);
+        if (selfNode) {
+          const dist = haversineKm(node.latitude, node.longitude, selfNode.latitude, selfNode.longitude);
+          links.push({
+            source: selfNode,
+            target: node,
+            distKm: dist,
+            snr: node.snr
+          });
+        }
+      }
+    }
+
+    const uniqueMap = new Map();
+    for (const link of links) {
+      const key = [link.source.id, link.target.id].sort().join('<->');
+      if (!uniqueMap.has(key) || uniqueMap.get(key).distKm < link.distKm) {
+        uniqueMap.set(key, link);
+      }
+    }
+
+    const sorted = Array.from(uniqueMap.values()).sort((a, b) => b.distKm - a.distKm);
+    return sorted.slice(0, limit);
   }
 
   /**

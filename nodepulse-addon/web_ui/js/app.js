@@ -3095,6 +3095,14 @@ function wireMapFilters() {
   const heardEl  = document.getElementById('map-filter-heard');
   const countEl  = document.getElementById('map-filter-count');
   const heatEl   = document.getElementById('map-toggle-heatmap');
+  const hwEl     = document.getElementById('map-filter-hardware');
+  const roleEl   = document.getElementById('map-filter-role');
+  const locateBtn = document.getElementById('map-locate-btn');
+  const dxBtn    = document.getElementById('map-dx-btn');
+  const dxPanel  = document.getElementById('dx-panel');
+  const dxClose  = document.getElementById('dx-panel-close');
+  const dxContainer = document.getElementById('dx-list-container');
+
   if (!textEl || !hopsEl || !heardEl || !countEl) return;
 
   const apply = () => {
@@ -3102,9 +3110,10 @@ function wireMapFilters() {
     const patch = {
       text: textEl.value,
       maxHops: hopsEl.value === '' ? null : parseInt(hopsEl.value, 10),
-      // "stale" option => staleOnly; numeric => heardWithin seconds; "" => clear both.
       heardWithin: heardVal === '' || heardVal === 'stale' ? null : parseInt(heardVal, 10),
       staleOnly: heardVal === 'stale',
+      hardware: hwEl ? hwEl.value : '',
+      role: roleEl ? roleEl.value : ''
     };
     const shown = dashMap.setFilter(patch);
     fullMap.setFilter(patch);
@@ -3114,6 +3123,75 @@ function wireMapFilters() {
   textEl.addEventListener('input', apply);
   hopsEl.addEventListener('change', apply);
   heardEl.addEventListener('change', apply);
+  if (hwEl) hwEl.addEventListener('change', apply);
+  if (roleEl) roleEl.addEventListener('change', apply);
+
+  // Dynamic population of hardware and role options
+  const updateHwAndRoleOptions = (nodes) => {
+    if (hwEl && hwEl.options.length <= 1) {
+      const hws = Array.from(new Set(nodes.map(n => n.hardware_model || n.hardware).filter(Boolean))).sort();
+      hws.forEach(h => {
+        const opt = document.createElement('option');
+        opt.value = h;
+        opt.textContent = h;
+        hwEl.appendChild(opt);
+      });
+    }
+    if (roleEl && roleEl.options.length <= 1) {
+      const roles = Array.from(new Set(nodes.map(n => n.role).filter(Boolean))).sort();
+      roles.forEach(r => {
+        const opt = document.createElement('option');
+        opt.value = r;
+        opt.textContent = r;
+        roleEl.appendChild(opt);
+      });
+    }
+  };
+
+  if (locateBtn) {
+    locateBtn.addEventListener('click', () => {
+      fullMap.locateUser();
+    });
+  }
+
+  if (dxBtn && dxPanel) {
+    dxBtn.addEventListener('click', () => {
+      dxPanel.classList.remove('hidden');
+      const topLinks = fullMap.getTopDirectLinks(25);
+      if (topLinks.length === 0) {
+        dxContainer.innerHTML = '<p style="color:var(--text-secondary);font-size:12px;">No direct (0-hop) RF links recorded with GPS fixes yet.</p>';
+      } else {
+        let html = `
+          <table class="dx-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Source Node</th>
+                <th>Target Node</th>
+                <th>Distance</th>
+              </tr>
+            </thead>
+            <tbody>`;
+        topLinks.forEach((link, idx) => {
+          const sName = link.source.long_name || link.source.short_name || link.source.id;
+          const tName = link.target.long_name || link.target.short_name || link.target.id;
+          html += `
+            <tr>
+              <td class="dx-rank">${idx + 1}</td>
+              <td><b>${escapeHtml(sName)}</b></td>
+              <td><b>${escapeHtml(tName)}</b></td>
+              <td class="dx-dist">${formatDistance(link.distKm)}</td>
+            </tr>`;
+        });
+        html += `</tbody></table>`;
+        dxContainer.innerHTML = html;
+      }
+    });
+    if (dxClose) {
+      dxClose.addEventListener('click', () => dxPanel.classList.add('hidden'));
+    }
+  }
+
   const traceEl = document.getElementById('map-toggle-traceroute');
   if (traceEl) {
     traceEl.addEventListener('change', () => {
@@ -3132,7 +3210,6 @@ function wireMapFilters() {
     heatEl.addEventListener('change', () => {
       dashMap.toggleHeatmap(heatEl.checked);
       fullMap.toggleHeatmap(heatEl.checked);
-      // Keep the map control-bar button's active state in sync.
       document.querySelectorAll('.leaflet-control-maptoggle').forEach(b => {
         if (b.title && b.title.toLowerCase().includes('heatmap')) {
           b.classList.toggle('active', heatEl.checked);
@@ -3142,7 +3219,11 @@ function wireMapFilters() {
   }
   // Keep the counter in sync on every poll (node set changes underneath filter).
   const origUpdateNodes = fullMap.updateNodes.bind(fullMap);
-  fullMap.updateNodes = (nodes) => { origUpdateNodes(nodes); countEl.textContent = `${fullMap._filterNodes(fullMap._allNodes).length} shown`; };
+  fullMap.updateNodes = (nodes) => {
+    origUpdateNodes(nodes);
+    updateHwAndRoleOptions(nodes);
+    countEl.textContent = `${fullMap._filterNodes(fullMap._allNodes).length} shown`;
+  };
 
   // Export buttons — use the nodes from state and re-apply filter logic.
   document.querySelectorAll('.map-export-btn').forEach(btn => {
