@@ -1798,7 +1798,7 @@ export class MapManager {
   }
 
   /** Update the ruler panel stats and elevation profile. */
-  _updateRulerPanel() {
+  async _updateRulerPanel() {
     const pts = this._rulerPoints;
     const totalEl = document.getElementById('ruler-dist-total');
     const gainEl = document.getElementById('ruler-elev-gain');
@@ -1826,8 +1826,36 @@ export class MapManager {
     }
     totalEl.textContent = formatDistance(totalKm);
 
-    // Sample elevation along the path
-    const samples = this._sampleElevationPath(pts);
+    // Fetch real DEM terrain elevation from backend API
+    let samples = [];
+    try {
+      const res = await fetch('/api/terrain/link', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          from: { lat: pts[0].lat, lng: pts[0].lng },
+          to: { lat: pts[pts.length - 1].lat, lng: pts[pts.length - 1].lng },
+          frequency_mhz: 915,
+          samples: 64
+        })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && Array.isArray(data.profile)) {
+          samples = data.profile.map(p => ({
+            distKm: p.dist_km,
+            alt: p.elev_m != null ? p.elev_m : 0
+          }));
+        }
+      }
+    } catch (_) {
+      // Fall back to local position history sampling if backend call fails
+    }
+
+    if (samples.length === 0) {
+      samples = this._sampleElevationPath(pts);
+    }
+
     if (emptyEl && samples.length > 0) emptyEl.style.display = 'none';
     if (emptyEl && samples.length === 0) emptyEl.style.display = '';
 
