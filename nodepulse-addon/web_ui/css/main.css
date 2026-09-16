@@ -1265,31 +1265,57 @@ body::before {
 }
 
 
-#view-map { padding: var(--space-md); display: none; }
+#view-map {
+  padding: var(--space-md);
+  display: none;
+  position: relative;
+  height: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
+}
 #view-map.active { display: flex; flex-direction: column; }
-#full-map { flex: 1; border-radius: var(--radius-lg); overflow: hidden; border: 1px solid var(--border-subtle); }
+#full-map {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+}
 
-/* --- Map Filter Bar ------------------------------------------------------- */
+/* Offset Leaflet zoom & attribution controls below the top tab bar */
+#full-map .leaflet-top {
+  top: 56px;
+}
+
+/* --- Map Filter Bar (Overlay across top of the map) ------------------------ */
 .map-filter-bar {
+  position: absolute;
+  top: calc(var(--space-md) + 4px);
+  left: calc(var(--space-md) + 4px);
+  right: calc(var(--space-md) + 4px);
+  z-index: 850;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-sm);
-  margin-bottom: var(--space-sm);
-  padding: var(--space-sm) var(--space-md);
-  background: var(--bg-card);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
+  gap: var(--space-xs);
+  padding: 6px 12px;
+  background: rgba(10, 14, 26, 0.92);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
 }
 .map-filter-input {
-  flex: 1 1 200px;
-  min-width: 160px;
-  padding: 8px 12px;
+  flex: 1 1 180px;
+  min-width: 140px;
+  padding: 6px 10px;
   background: var(--bg-input);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: 12px;
 }
 .map-filter-input:focus { outline: none; border-color: var(--border-accent); }
 .map-filter-field {
@@ -1302,12 +1328,12 @@ body::before {
   gap: 2px;
 }
 .map-filter-field select {
-  padding: 6px 8px;
+  padding: 5px 8px;
   background: var(--bg-input);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: 12px;
 }
 .map-filter-count {
   margin-left: auto;
@@ -1316,18 +1342,19 @@ body::before {
   white-space: nowrap;
 }
 .map-export-btn {
-  background: transparent;
+  background: rgba(255, 255, 255, 0.04);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
   cursor: pointer;
   font-family: inherit;
   font-size: 11px;
-  padding: 3px 8px;
+  padding: 4px 10px;
   white-space: nowrap;
-  transition: border-color var(--transition-fast), color var(--transition-fast);
+  transition: all var(--transition-fast);
 }
 .map-export-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
   border-color: var(--border-accent);
   color: var(--text-primary);
 }
@@ -1343,7 +1370,7 @@ body::before {
   left: 12px;
   right: 12px;
   top: auto;
-  z-index: 900;
+  z-index: 950;
   background: rgba(10, 14, 26, 0.94);
   border: 1px solid rgba(79, 195, 247, 0.3);
   border-radius: var(--radius-lg);
@@ -1477,9 +1504,10 @@ body::before {
   padding: 4px 8px !important;
   width: auto !important;
   position: absolute !important;
-  top: 8px !important;
-  right: 8px !important;
-  z-index: 900 !important;
+  top: calc(var(--space-md) + 4px) !important;
+  right: calc(var(--space-md) + 4px) !important;
+  left: auto !important;
+  z-index: 950 !important;
   flex-direction: row !important;
   flex-wrap: nowrap !important;
   background: var(--bg-card);
@@ -1501,14 +1529,11 @@ body::before {
 /* Waypoint Panel (floating form above the map)                                */
 /* -------------------------------------------------------------------------- */
 
-#view-map {
-  position: relative; /* stacking context so the panel overlays the map */
-}
 .waypoint-panel {
   position: absolute;
-  top: 70px; /* just below the filter bar */
-  right: 16px;
-  z-index: 800; /* above the Leaflet control layer */
+  top: 76px;
+  right: calc(var(--space-md) + 8px);
+  z-index: 950;
   width: 260px;
   background: var(--bg-card);
   border: 1px solid var(--border-subtle);
@@ -1609,17 +1634,17 @@ body::before {
 
 .terrain-panel {
   position: absolute;
-  top: 70px;
-  right: 16px;
-  z-index: 800;
-  width: 300px;
+  top: 76px;
+  right: calc(var(--space-md) + 8px);
+  z-index: 950;
+  width: 320px;
   background: var(--bg-card);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
   backdrop-filter: blur(8px);
   overflow: hidden;
-  max-height: calc(100vh - 120px);
+  max-height: calc(100vh - 160px);
   overflow-y: auto;
 }
 .terrain-panel.hidden { display: none; }
