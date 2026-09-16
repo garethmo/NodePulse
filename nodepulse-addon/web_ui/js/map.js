@@ -10,6 +10,7 @@
  */
 
 import { escapeHtml, haversineKm, formatDistance } from './util.js';
+import { analyzeTerrainLink } from './api.js';
 
 // Defensive monkeypatch: leaflet-heat's _redraw() calls getImageData on its
 // canvas. If the map container hasn't been laid out yet (zero width), the
@@ -1858,32 +1859,25 @@ export class MapManager {
     let samples = [];
     let meta = null;
     try {
-      const res = await fetch('/api/terrain/link', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          from: { lat: pts[0].lat, lng: pts[0].lng },
-          to: { lat: pts[pts.length - 1].lat, lng: pts[pts.length - 1].lng },
-          frequency_mhz: 915,
-          samples: 96
-        })
+      const data = await analyzeTerrainLink({
+        from: { lat: pts[0].lat, lng: pts[0].lng },
+        to: { lat: pts[pts.length - 1].lat, lng: pts[pts.length - 1].lng },
+        frequency_mhz: 915,
+        samples: 96
       });
-      if (res.ok) {
-        const data = await res.json();
-        if (data && Array.isArray(data.profile)) {
-          samples = data.profile.map(p => ({
-            distKm: p.dist_km,
-            alt: p.elev_m != null ? p.elev_m : 0,
-            los: p.los_m,
-            fresnelMin: p.fresnel_min_m,
-            fresnelMax: p.fresnel_max_m
-          }));
-          meta = {
-            isBlocked: data.verdict?.is_blocked ?? false,
-            pathLossDb: data.link_budget?.free_space_path_loss_db ? Math.round(data.link_budget.free_space_path_loss_db) : null,
-            marginDb: data.verdict?.fresnel_clearance_margin_m ? Math.round(data.verdict.fresnel_clearance_margin_m) : null
-          };
-        }
+      if (data && Array.isArray(data.profile)) {
+        samples = data.profile.map(p => ({
+          distKm: p.dist_km,
+          alt: p.elev_m != null ? p.elev_m : 0,
+          los: p.los_m,
+          fresnelMin: p.fresnel_min_m,
+          fresnelMax: p.fresnel_max_m
+        }));
+        meta = {
+          isBlocked: data.verdict?.is_blocked ?? false,
+          pathLossDb: data.link_budget?.free_space_path_loss_db ? Math.round(data.link_budget.free_space_path_loss_db) : null,
+          marginDb: data.verdict?.fresnel_clearance_margin_m ? Math.round(data.verdict.fresnel_clearance_margin_m) : null
+        };
       }
     } catch (_) {
       // Fall back to local position history sampling if backend call fails
