@@ -1812,8 +1812,10 @@ body::before {
   display: none;
   flex-direction: column;
   padding: var(--space-md);
-  gap: var(--space-sm);
-  min-height: 0; /* allow flex child to scroll */
+  position: relative;
+  height: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 #view-topology.active {
   display: flex;
@@ -1821,7 +1823,8 @@ body::before {
 
 #topology-container {
   flex: 1;
-  min-height: 400px;
+  width: 100%;
+  height: 100%;
   border-radius: var(--radius-lg);
   overflow: hidden;
   border: 1px solid var(--border-subtle);
@@ -1830,14 +1833,22 @@ body::before {
 }
 
 .topology-toolbar {
+  position: absolute;
+  top: calc(var(--space-md) + 4px);
+  left: calc(var(--space-md) + 4px);
+  right: calc(var(--space-md) + 4px);
+  z-index: 850;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: var(--space-sm);
-  padding: var(--space-sm) var(--space-md);
-  background: var(--bg-card);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
+  gap: var(--space-xs);
+  padding: 6px 12px;
+  background: rgba(10, 14, 26, 0.92);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
 }
 
 .topology-toolbar-title {
