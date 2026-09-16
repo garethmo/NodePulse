@@ -218,7 +218,6 @@ class TestTelegramBotHandleMessage:
         bot._send_text.assert_called_with("✅ Reply sent to Channel 1.", chat_id="12345")
 
     @pytest.mark.asyncio
-    @pytest.mark.asyncio
     async def test_handle_message_plain_text_broadcast(self):
         mock_config = make_mock_config()
         bot = TelegramBot(mock_config, AsyncMock(), Mock(), Mock(), Mock())
@@ -229,12 +228,11 @@ class TestTelegramBotHandleMessage:
             "text": "hello mesh",
             "from": {"first_name": "Alice"}
         })
-        bot.send_message_callback.assert_called_once_with("[Alice] hello mesh", channel=0)
+        bot.send_message_callback.assert_called_once_with("[Alice] hello mesh", channel=0, sender_name="📱 Alice")
         bot._send_text.assert_called_with("✅ Message sent to mesh.", chat_id="12345")
 
 
 class TestTelegramBotHandleCommand:
-    @pytest.mark.asyncio
     @pytest.mark.asyncio
     async def test_handle_command_status(self):
         mock_config = make_mock_config()
