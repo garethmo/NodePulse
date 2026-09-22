@@ -161,6 +161,37 @@
         <button id="bell-btn" title="Enable browser notifications" type="button" style="margin-left:12px;background:transparent;border:1px solid var(--border-subtle);border-radius:var(--radius-sm);color:var(--text-secondary);cursor:pointer;padding:4px 8px;font-size:16px;line-height:1">🔔</button>
         <button id="theme-toggle" title="Toggle dark/light theme" type="button" style="margin-left:12px;background:transparent;border:1px solid var(--border-subtle);border-radius:var(--radius-sm);color:var(--text-secondary);cursor:pointer;padding:4px 8px;font-size:13px;line-height:1">🌙</button>
       </div>
+      <div id="header-map-overlays" class="header-map-overlays hidden">
+        <div class="map-filter-legend">
+          <span class="map-filter-legend-item">
+            <span class="map-filter-legend-marker map-marker-router"></span>
+            Router / Repeater
+          </span>
+          <span class="map-filter-legend-item">
+            <span class="map-filter-legend-marker map-marker-client"></span>
+            Client
+          </span>
+          <span class="map-filter-legend-item">
+            <span class="map-filter-legend-marker map-marker-tracker"></span>
+            Tracker
+          </span>
+        </div>
+        <div class="map-filter-divider"></div>
+        <div class="map-filter-types">
+          <button type="button" class="map-type-btn active" data-map-type="dark" title="Dark Matter">◉</button>
+          <button type="button" class="map-type-btn" data-map-type="light" title="Light Matter">☀</button>
+          <button type="button" class="map-type-btn" data-map-type="satellite" title="Satellite">🛰</button>
+          <button type="button" class="map-type-btn" data-map-type="topographical" title="Topographical">🗺</button>
+        </div>
+        <div class="map-filter-divider"></div>
+        <button type="button" class="map-export-btn header-overlay-btn" data-export="kml" title="Export visible nodes as KML">📥 KML</button>
+        <button type="button" class="map-export-btn header-overlay-btn" data-export="gpx" title="Export visible nodes as GPX">📥 GPX</button>
+        <button type="button" id="map-add-waypoint-btn" class="map-export-btn header-overlay-btn" title="Drop a waypoint on the map">📍 Waypoint</button>
+        <button type="button" id="map-ruler-btn" class="map-export-btn header-overlay-btn map-ruler-btn" title="Measure distance and elevation">📏 Ruler</button>
+        <button type="button" id="map-terrain-btn" class="map-export-btn header-overlay-btn" title="Analyse a radio link over terrain (LOS / Fresnel / link budget)">⛰ Terrain</button>
+        <button type="button" id="map-coverage-btn" class="map-export-btn header-overlay-btn" title="Compute a radial RF coverage map (Site Planner)">📡 Coverage</button>
+        <button type="button" id="map-3d-btn" class="map-export-btn header-overlay-btn" title="Toggle 3D terrain view">🏔 3D</button>
+      </div>
     </header>
 
     <!-- ================================================================
@@ -328,24 +359,17 @@
               <option value="">Any Role</option>
             </select>
           </label>
-          <label class="map-filter-field" style="display:flex; align-items:center; gap:4px; margin-left: 8px;">
+          <label class="map-filter-checkbox-field">
             <input type="checkbox" id="map-toggle-heatmap" />
             Heatmap
           </label>
-          <label class="map-filter-field" style="display:flex; align-items:center; gap:4px; margin-left: 8px;">
+          <label class="map-filter-checkbox-field">
             <input type="checkbox" id="map-toggle-traceroute" checked />
             Traceroutes
           </label>
           <span class="map-filter-count" id="map-filter-count"></span>
           <button type="button" id="map-locate-btn" class="map-export-btn" title="Center map on my browser location">🎯 Locate</button>
           <button type="button" id="map-dx-btn" class="map-export-btn" title="View longest direct (0-hop) RF links">🏆 DX Links</button>
-          <button type="button" class="map-export-btn" data-export="kml" title="Export visible nodes as KML">📥 KML</button>
-          <button type="button" class="map-export-btn" data-export="gpx" title="Export visible nodes as GPX">📥 GPX</button>
-          <button type="button" id="map-add-waypoint-btn" class="map-export-btn" title="Drop a waypoint on the map">📍 Waypoint</button>
-          <button type="button" id="map-ruler-btn" class="map-export-btn map-ruler-btn" title="Measure distance and elevation">📏 Ruler</button>
-          <button type="button" id="map-terrain-btn" class="map-export-btn" title="Analyse a radio link over terrain (LOS / Fresnel / link budget)">⛰ Terrain</button>
-          <button type="button" id="map-coverage-btn" class="map-export-btn" title="Compute a radial RF coverage map (Site Planner)">📡 Coverage</button>
-          <button type="button" id="map-3d-btn" class="map-export-btn" title="Toggle 3D terrain view">🏔 3D</button>
         </div>
 
         <!-- Ruler / Elevation Profile panel — docked at map bottom -->

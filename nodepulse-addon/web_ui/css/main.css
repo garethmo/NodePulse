@@ -180,6 +180,34 @@ body::before {
   color: var(--text-secondary);
 }
 
+.header-map-overlays {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: 0 var(--space-md);
+  border-left: 1px solid var(--border-subtle);
+  margin-left: var(--space-md);
+}
+
+.header-overlay-btn {
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  padding: 6px 10px;
+  white-space: nowrap;
+  transition: all var(--transition-fast);
+}
+
+.header-overlay-btn:hover {
+  background: var(--bg-highlight);
+  border-color: var(--border-accent);
+  color: var(--text-primary);
+}
+
 .status-dot {
   width: 8px;
   height: 8px;
@@ -500,11 +528,10 @@ body::before {
   box-shadow: var(--glow-teal);
 }
 
-/* Overlay toggle stack stays floating but sits just below the map filter bar
-   (which holds the Ruler / Terrain / 3D buttons). The offset clears the
-   filter bar's height + margin so the buttons never overlap it. */
+/* Overlay toggle stack stays floating but sits just below the top overlay.
+   The offset clears the overlay's height + margin so the buttons never overlap it. */
 .leaflet-control-togglebar {
-  margin-top: 10px;
+  margin-top: 20px;
 }
 
 /* Override Leaflet popup styles to match dark theme */
@@ -1285,61 +1312,84 @@ body::before {
 
 /* Offset Leaflet zoom & attribution controls below the top tab bar */
 #full-map .leaflet-top {
-  top: 56px;
+  top: 10px;
 }
 
-/* --- Map Filter Bar (Overlay across top of the map) ------------------------ */
+/* --- Map Filter Bar (Header bar across top of the map view) ------------------------ */
 .map-filter-bar {
-  position: absolute;
-  top: calc(var(--space-md) + 4px);
-  left: calc(var(--space-md) + 4px);
-  right: calc(var(--space-md) + 4px);
+  position: relative;
   z-index: 850;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-xs);
-  padding: 6px 12px;
+  gap: 6px 10px;
+  padding: 6px 10px;
   background: rgba(10, 14, 26, 0.92);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: var(--radius-md);
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  margin-bottom: var(--space-xs);
+  flex-shrink: 0;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+.map-filter-checkbox-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.map-filter-checkbox-field input[type="checkbox"] {
+  cursor: pointer;
+  accent-color: var(--text-teal);
 }
 .map-filter-input {
-  flex: 1 1 180px;
-  min-width: 140px;
-  padding: 6px 10px;
-  background: var(--bg-input);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  color: var(--text-primary);
-  font-size: 12px;
-}
-.map-filter-input:focus { outline: none; border-color: var(--border-accent); }
-.map-filter-field {
-  display: inline-flex;
-  flex-direction: column;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-secondary);
-  gap: 2px;
-}
-.map-filter-field select {
+  flex: 0 1 180px;
+  min-width: 110px;
+  max-width: 200px;
   padding: 5px 8px;
   background: var(--bg-input);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: 11px;
+}
+.map-filter-input:focus { outline: none; border-color: var(--border-accent); }
+.map-filter-field {
+  display: inline-flex;
+  flex-direction: column;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  gap: 2px;
+  flex-shrink: 0;
+}
+.map-filter-field select {
+  padding: 4px 6px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 11px;
+  max-width: 110px;
+  text-overflow: ellipsis;
 }
 .map-filter-count {
-  margin-left: auto;
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text-muted);
   white-space: nowrap;
+  flex-shrink: 0;
+  padding: 0 4px;
 }
 .map-export-btn {
   background: rgba(255, 255, 255, 0.04);
@@ -1351,12 +1401,74 @@ body::before {
   font-size: 11px;
   padding: 4px 10px;
   white-space: nowrap;
+  flex-shrink: 0;
   transition: all var(--transition-fast);
 }
 .map-export-btn:hover {
   background: rgba(255, 255, 255, 0.1);
   border-color: var(--border-accent);
   color: var(--text-primary);
+}
+
+.map-filter-divider {
+  width: 1px;
+  height: 20px;
+  background: var(--border-subtle);
+  margin: 0 var(--space-xs);
+}
+
+.map-filter-legend {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.map-filter-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.map-filter-legend-marker {
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.map-filter-types {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.map-type-btn {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition-fast);
+}
+
+.map-type-btn:hover {
+  border-color: var(--border-accent);
+  color: var(--text-primary);
+}
+
+.map-type-btn.active {
+  background: linear-gradient(135deg, rgba(0,212,170,0.25), rgba(79,195,247,0.2));
+  border-color: var(--border-accent);
+  color: var(--text-teal);
+  box-shadow: var(--glow-teal);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1519,10 +1631,12 @@ body::before {
 #view-map.ruler-active .map-filter-bar > * {
   display: none !important;
 }
-#view-map.ruler-active .map-filter-bar > #map-ruler-btn {
-  display: inline-flex !important;
-  font-size: 13px;
-  padding: 6px 12px;
+/* Highlight the header Ruler button while measurement mode is active */
+#header-map-overlays .header-overlay-btn.map-ruler-btn.active {
+  background: linear-gradient(135deg, rgba(0,212,170,0.25), rgba(79,195,247,0.2));
+  border-color: var(--border-accent);
+  color: var(--text-teal);
+  box-shadow: var(--glow-teal);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -3228,6 +3342,18 @@ body.nav-open #sidebar-backdrop { display: block; }
 
   #main { overflow-y: auto; }
 
+  /* Allow header map action buttons to wrap on narrow screens */
+  #header-map-overlays {
+    flex-wrap: wrap;
+    gap: var(--space-xs);
+    max-height: 60px;
+    overflow: hidden;
+  }
+  .header-overlay-btn {
+    font-size: 11px;
+    padding: 4px 8px;
+  }
+
   /* Stack the dashboard into a single scrollable column with usable heights
      so nothing collapses to zero inside the ingress iframe. */
   #view-dashboard {
@@ -3367,16 +3493,19 @@ body.nav-open #sidebar-backdrop { display: block; }
     font-size: 14px;
   }
 
-  /* Map filter bar — stack vertically on mobile */
+  /* Map filter bar — wrap cleanly on mobile */
   .map-filter-bar {
-    flex-direction: column;
-    align-items: stretch;
+    position: relative;
+    top: 0;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
     gap: var(--space-xs);
-    padding: var(--space-sm);
+    padding: var(--space-xs) var(--space-sm);
   }
   .map-filter-input {
     min-width: 0;
-    flex: 1;
+    flex: 1 1 100%;
   }
   .map-filter-field {
     flex-direction: row;
@@ -4363,6 +4492,31 @@ body.nav-open #sidebar-backdrop { display: block; }
   vertical-align: middle;
   opacity: 0.85;
   cursor: default;
+}
+
+/* Portnum badge in Packet Inspector table */
+.portnum-badge {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1px;
+  line-height: 1.2;
+  font-weight: 600;
+  font-size: 12px;
+  cursor: default;
+}
+
+/* Muted description subtitle shown under the portnum name.
+ * Inherits the parent's accent colour at reduced opacity for a tinted look. */
+.portnum-badge-desc {
+  display: block;
+  font-size: 10px;
+  font-weight: 400;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
+  color: inherit;
+  opacity: 0.55;
 }
 
 /* ============================================================================

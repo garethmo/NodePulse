@@ -2,6 +2,16 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.31.0] - 2026-09-22
+### Added
+- **Meshtastic Application Port Descriptions** — Added human-readable Descriptions and tooltips for port numbers (TELEMETRY_APP, NODEINFO_APP, ADMIN_APP, etc.) in the Packet Inspector view.
+
+### Fixed
+- **Map Filter Bar Overflow & Layout** — Fixed layout and overflow behavior on the map filter bar by replacing unconstrained search input flex-growth and right-pushing margins with responsive flex wrapping and bounded element sizing.
+- **Frontend DOM XSS Hardening** — Enforced HTML escaping on `node.role` inside node cards.
+- **Blob URL Lifecycle** — Deferred `URL.revokeObjectURL()` cleanup in packet export helpers (`exportPacketsJSON`, `exportPacketsCSV`).
+- **Backend Route Validation** — Fixed potential `UnboundLocalError` in file downloads and added strict coordinate validation for `/api/terrain/coverage`.
+
 ## [1.30.0] - 2026-09-15
 ### Added
 - **Staggered Traceroute Sweep ("Traceroute All")** — Added a **"⛓ Traceroute All"** button in the Nodes tab toolbar to send traceroute requests to every visible remote node sequentially with a 5-second inter-node delay, live progress status, and instant cancellation (✕).

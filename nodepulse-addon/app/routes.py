@@ -586,6 +586,7 @@ async def handle_download_data_file(request: web.Request) -> web.Response:
     Returns the file content as JSON with appropriate Content-Disposition header
     for browser download. Only allows downloading whitelisted files for security.
     """
+    filename = ""
     try:
         filename = request.match_info.get("filename", "").strip()
 
@@ -1691,8 +1692,25 @@ async def handle_terrain_coverage(request: web.Request) -> web.Response:
         return _error_response("Terrain analysis is not enabled", status=503)
     try:
         body = await request.json()
+    except Exception:  # noqa: BLE001
+        return _error_response("Request body must be valid JSON", status=400)
+    if not isinstance(body, dict):
+        return _error_response("Request body must be a JSON object", status=400)
+
+    try:
         lat = float(body["lat"])
         lng = float(body["lng"])
+    except KeyError as exc:
+        return _error_response(f"Missing required parameter: {exc}", status=400)
+    except (TypeError, ValueError):
+        return _error_response("'lat' and 'lng' must be numbers", status=400)
+
+    if not (-90.0 <= lat <= 90.0):
+        return _error_response("Latitude must be within [-90, 90]", status=400)
+    if not (-180.0 <= lng <= 180.0):
+        return _error_response("Longitude must be within [-180, 180]", status=400)
+
+    try:
         radius_m = float(body.get("radius_m", 5000))
         freq_mhz = float(body.get("freq_mhz", 915.0))
         tx_power_dbm = float(body.get("tx_power_dbm", 10.0))

@@ -210,51 +210,8 @@ function createMap(elementId, mapType = DEFAULT_MAP_TYPE) {
   }
   tileLayer.addTo(map);
 
-   // --- Map type toggle controls (top-right) ---------------------------
-   // Allows switching between dark, light, satellite and topographical maps.
-   const mapTypeControl = L.control({ position: 'topleft' });
-   mapTypeControl.onAdd = () => {
-     const container = L.DomUtil.create('div', 'leaflet-control-maptype');
-     container.style.display = 'flex';
-     container.style.flexDirection = 'column';
-     container.style.gap = '4px';
-     container.style.transition = 'opacity 0.15s';
-
-     const makeMapTypeToggle = (mapTypeKey, title, glyph, initialOn) => {
-       const btn = L.DomUtil.create('button', 'leaflet-control-maptoggle');
-       btn.type = 'button';
-       btn.title = title;
-       btn.textContent = glyph;
-       if (initialOn) btn.classList.add('active');
-       L.DomEvent.disableClickPropagation(btn);
-       L.DomEvent.on(btn, 'click', () => {
-         // Remove active class from all map type buttons
-         container.querySelectorAll('.leaflet-control-maptoggle').forEach(b => b.classList.remove('active'));
-         btn.classList.add('active');
-         // Switch the tile layer
-         setMapType(mapTypeKey);
-       });
-       container.appendChild(btn);
-     };
-
-     // Dark matter
-     makeMapTypeToggle('dark', 'Dark Matter', '◉', mapType === 'dark');
-     // Light matter
-     makeMapTypeToggle('light', 'Light Matter', '☀', mapType === 'light');
-     // Satellite
-     makeMapTypeToggle('satellite', 'Satellite', '🛰', mapType === 'satellite');
-     // Topographical
-     makeMapTypeToggle('topographical', 'Topographical', '🗺', mapType === 'topographical');
-
-     // Restore saved collapsed state.
-     const saved = localStorage.getItem('nodepulse-map-type-collapsed');
-     if (saved === 'true') {
-       container.classList.add('collapsed');
-     }
-
-     return container;
-   };
-   mapTypeControl.addTo(map);
+   // --- Map type toggle controls moved to map filter bar ---------------------------
+   // Map type controls are now inline in the map filter bar, handled by app.js
 
    // --- Map overlay toggle controls (top-right) ---------------------------
    // Each button toggles one overlay category and dispatches a custom event
@@ -272,7 +229,7 @@ function createMap(elementId, mapType = DEFAULT_MAP_TYPE) {
      collapseBtn.type = 'button';
      collapseBtn.title = 'Collapse overlay controls (C)';
      collapseBtn.textContent = '−';
-     collapseBtn.style.marginBottom = '2px';
+     // collapseBtn.style.marginBottom = '2px';
      L.DomEvent.disableClickPropagation(collapseBtn);
      L.DomEvent.on(collapseBtn, 'click', () => {
        const collapsed = container.classList.toggle('collapsed');
@@ -305,7 +262,7 @@ function createMap(elementId, mapType = DEFAULT_MAP_TYPE) {
      // Node <-> node proximity links (amber)            — key "P"
      makeToggle('nodepulse:togglepeerlinks', 'Toggle peer proximity links (P)', '⤬', false);
      // Traceroute paths (blue)                          — key "T"
-     makeToggle('nodepulse:toggletraces',    'Toggle traceroute paths (T)',     '⤴', true);
+     // makeToggle('nodepulse:toggletraces',    'Toggle traceroute paths (T)',     '⤴', true);
       // Node name labels                                 — key "N"
       makeToggle('nodepulse:togglenames',     'Toggle node names (N)',           '🏷', true);
        // Position history trails                          — key "H"
@@ -326,9 +283,6 @@ function createMap(elementId, mapType = DEFAULT_MAP_TYPE) {
      return container;
 };
 
-   // Map type glyph labels for button state matching.
-   const mapTypeKeyLabels = { dark: '◉', light: '☀', satellite: '🛰', topographical: '🗺' };
-
    setMapType(mapType);
 
    // Remove the existing tile layer and add the new one.
@@ -342,9 +296,9 @@ function createMap(elementId, mapType = DEFAULT_MAP_TYPE) {
          ? TILE_URL_LIGHT
          : TILE_URL_DARK;
 
-     // Rotate active class on the map type buttons.
-     document.querySelectorAll('.leaflet-control-maptype button').forEach((btn) => {
-       btn.classList.toggle('active', btn.textContent === mapTypeKeyLabels[mapTypeKey]);
+     // Rotate active class on the map type buttons in filter bar.
+     document.querySelectorAll('.map-type-btn').forEach((btn) => {
+       btn.classList.toggle('active', btn.dataset.mapType === mapTypeKey);
      });
 
      // Replace the tile layer.
@@ -362,36 +316,12 @@ const options = isSatellite
 localStorage.setItem('nodepulse-map-type', mapTypeKey);
   }
 
+  // Expose setMapType on the map instance for external access
+  map.setMapType = setMapType;
+
   toggleBar.addTo(map);
-   // --- Role legend (bottom-left) -----------------------------------------
-   const legend = L.control({ position: 'bottomleft' });
-   legend.onAdd = () => {
-     const div = L.DomUtil.create('div', 'map-legend');
-     div.innerHTML = `
-       <div class="map-legend-title">Node Roles</div>
-       <div class="map-legend-item">
-         <span class="map-legend-marker map-marker-router" style="display:inline-block;vertical-align:middle;"></span>
-         Router / Repeater
-       </div>
-       <div class="map-legend-item">
-         <span class="map-legend-marker map-marker-client" style="display:inline-block;vertical-align:middle;"></span>
-         Client
-       </div>
-       <div class="map-legend-item">
-         <span class="map-legend-marker map-marker-tracker" style="display:inline-block;vertical-align:middle;"></span>
-         Tracker
-       </div>
-       <div class="map-legend-divider"></div>
-       <div class="map-legend-heatmap" id="map-legend-heatmap" style="display:none">
-         <div class="map-legend-title">Signal Strength</div>
-         <div class="map-legend-gradient"></div>
-         <div class="map-legend-gradient-labels"><span>Weak</span><span>Strong</span></div>
-       </div>
-     `;
-     L.DomEvent.disableClickPropagation(div);
-     return div;
-   };
-   legend.addTo(map);
+   // --- Role legend moved to map filter bar -----------------------------------------
+   // Legend is now in the map filter bar, handled by app.js
 
    // Keyboard shortcut "C" to toggle.
    L.DomEvent.on(map.getContainer(), 'keydown', (e) => {

@@ -549,7 +549,7 @@ function renderNodesGrid(nodes) {
         </div>
         <div class="metric-item">
           <div class="metric-label">Role</div>
-          <div class="metric-value neutral" style="font-size:12px">${node.role || 'CLIENT'}</div>
+          <div class="metric-value neutral" style="font-size:12px">${escapeHtml(node.role || 'CLIENT')}</div>
         </div>
         <div class="metric-item">
           <div class="metric-label">Last Heard</div>
@@ -1754,6 +1754,16 @@ function switchView(viewName) {
   const tabBtn = document.querySelector(`.tab-btn[data-view="${viewName}"]`);
   if (tabBtn) tabBtn.classList.add('active');
 
+  // Show/hide header map overlays based on active view
+  const headerOverlays = document.getElementById('header-map-overlays');
+  if (headerOverlays) {
+    if (viewName === 'map') {
+      headerOverlays.classList.remove('hidden');
+    } else {
+      headerOverlays.classList.add('hidden');
+    }
+  }
+
   // Defer the heavy per-view work (map initialisation, marker rendering,
   // topology graph build, settings fetch) out of the click handler. The view
   // panel is already shown synchronously above, so by the time rAF fires the
@@ -2466,6 +2476,32 @@ async function init() {
       }
     });
   }
+
+  // Wire up map type buttons in map filter bar
+  document.querySelectorAll('.map-type-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const mapType = btn.dataset.mapType;
+      if (mapType) {
+        // Update active state
+        document.querySelectorAll('.map-type-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        
+        // Trigger map type change on both maps
+        if (dashMap._map && dashMap._map.setMapType) {
+          dashMap._map.setMapType(mapType);
+        }
+        if (fullMap._map && fullMap._map.setMapType) {
+          fullMap._map.setMapType(mapType);
+        }
+      }
+    });
+  });
+
+  // Initialize map type buttons to match saved preference
+  const savedMapType = localStorage.getItem('nodepulse-map-type') || 'satellite';
+  document.querySelectorAll('.map-type-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.mapType === savedMapType);
+  });
 
   // Wire up navigation clicks — both sidebar nav items and top tab buttons.
   document.querySelectorAll('.nav-item[data-view], .tab-btn[data-view]').forEach(el => {
@@ -3306,7 +3342,36 @@ const PORTNUM_COLORS = {
   NODEINFO_APP: '#ce93d8',     NEIGHBORINFO_APP: '#80cbc4', TRACEROUTE_APP: '#ff8a65',
   ROUTING_APP: '#90caf9',      ADMIN_APP: '#ef9a9a',       UNKNOWN: '#9e9e9e',
 };
+
+// Short human-readable descriptions for each Meshtastic portnum type.
+// Shown as a tooltip and subtitle in the Packet Inspector badge.
+const PORTNUM_DESCRIPTIONS = {
+  TEXT_MESSAGE_APP:  'Plain text chat message broadcast over the mesh',
+  TELEMETRY_APP:     'Device metrics — battery, voltage, environment sensors',
+  POSITION_APP:      'GPS coordinates and altitude broadcast from a node',
+  NODEINFO_APP:      'Node identity — short name, long name, hardware model',
+  NEIGHBORINFO_APP:  'SNR table of directly heard neighbouring nodes',
+  TRACEROUTE_APP:    'Hop-by-hop route trace across the mesh network',
+  ROUTING_APP:       'Low-level mesh routing and ACK control packets',
+  ADMIN_APP:         'Remote device configuration and admin commands',
+  WAYPOINT_APP:      'Named geographic waypoint shared over the mesh',
+  DETECTION_SENSOR_APP: 'Binary motion / detection sensor trigger events',
+  PAXCOUNTER_APP:    'Crowd-density (Bluetooth/Wi-Fi device) count packets',
+  MAP_REPORT_APP:    'Node info + GPS combined for mesh map aggregators',
+  STORE_FORWARD_APP: 'Message store-and-forward relay protocol packets',
+  RANGE_TEST_APP:    'Range and link-quality test payloads',
+  ATAK_FORWARDER:    'Android Team Awareness Kit (ATAK) CoT forwarding',
+  ATAK_PLUGIN:       'ATAK plugin CoT message packets',
+  AUDIO_APP:         'Compressed voice / audio data packets',
+  SERIAL_APP:        'Raw serial data tunnelled over the mesh',
+  IP_TUNNEL_APP:     'Raw IP packets tunnelled over the mesh',
+  ZPS_APP:           'Zero-Positioning System location packets',
+  PRIVATE_APP:       'Private / experimental application payload',
+  UNKNOWN:           'Unrecognised or reserved port number',
+};
+
 function _portnumColor(p) { return PORTNUM_COLORS[p] || '#9e9e9e'; }
+function _portnumDesc(p)  { return PORTNUM_DESCRIPTIONS[p] || ''; }
 function _fmtPacketTime(ts) {
   if (!ts) return '—';
   return new Date(ts * 1000).toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
@@ -3405,11 +3470,16 @@ function renderPacketTable() {
 
   for (const pkt of packets) {
     const color = _portnumColor(pkt.portnum);
+    // Compute description once to avoid calling _portnumDesc / escapeHtml twice.
+    const portnumLabel = pkt.portnum || 'UNKNOWN';
+    const portnumDesc  = _portnumDesc(portnumLabel);
+    const titleAttr    = portnumDesc ? ` title="${escapeHtml(portnumDesc)}"` : '';
+    const descSpan     = portnumDesc ? `<span class="portnum-badge-desc">${escapeHtml(portnumDesc)}</span>` : '';
     const tr = document.createElement('tr');
     tr.className = 'packet-row';
     tr.innerHTML = `
       <td class="packet-time">${_fmtPacketTime(pkt.timestamp)}</td>
-      <td><span class="portnum-badge" style="color:${color}">${escapeHtml(pkt.portnum||'UNKNOWN')}</span></td>
+      <td><span class="portnum-badge" style="color:${color}"${titleAttr}>${escapeHtml(portnumLabel)}${descSpan}</span></td>
       <td class="mono pkt-id">${escapeHtml(pkt.from_id||'\u2014')}${shortNameFor(pkt.from_id) ? ' <span class="pkt-name">'+escapeHtml(shortNameFor(pkt.from_id))+'</span>' : ''}</td>
       <td class="mono pkt-id">${escapeHtml(pkt.to_id||'\u2014')}${shortNameFor(pkt.to_id) ? ' <span class="pkt-name">'+escapeHtml(shortNameFor(pkt.to_id))+'</span>' : ''}</td>
       <td>${pkt.channel??'\u2014'}${flaggedChannels.has(pkt.channel) ? ' <span class="sec-pkt-badge" title="Weak or no encryption on this channel">\uD83D\uDD13</span>' : ''}</td>
@@ -3618,19 +3688,31 @@ function renderMeshDiscovery(data) {
 
 function exportPacketsJSON() {
   const packets = getVisiblePackets();
-  const blob = new Blob([JSON.stringify(packets,null,2)],{type:'application/json'});
+  const blob = new Blob([JSON.stringify(packets, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
-  const a = document.createElement('a'); a.href=url; a.download='nodepulse_packets.json'; a.click(); URL.revokeObjectURL(url);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'nodepulse_packets.json';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 100);
 }
 
 function exportPacketsCSV() {
   const packets = getVisiblePackets();
-  const cols = ['timestamp','from_id','to_id','portnum','channel','rx_snr','rx_rssi','hop_limit','want_ack','via_mqtt','decoded_ok'];
-  const rows = packets.map(p=>cols.map(c=>JSON.stringify(p[c]??'')).join(','));
-  const csv = [cols.join(','),...rows].join('\n');
-  const blob = new Blob([csv],{type:'text/csv'});
+  const cols = ['timestamp', 'from_id', 'to_id', 'portnum', 'channel', 'rx_snr', 'rx_rssi', 'hop_limit', 'want_ack', 'via_mqtt', 'decoded_ok'];
+  const rows = packets.map(p => cols.map(c => JSON.stringify(p[c] ?? '')).join(','));
+  const csv = [cols.join(','), ...rows].join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
   const url = URL.createObjectURL(blob);
-  const a = document.createElement('a'); a.href=url; a.download='nodepulse_packets.csv'; a.click(); URL.revokeObjectURL(url);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'nodepulse_packets.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 100);
 }
 
 function exportMessagesJSON() {
