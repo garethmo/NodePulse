@@ -466,6 +466,11 @@ class MeshtasticConnection:
         self._snr_lock = threading.Lock()
         self._snr_history: dict[str, collections.deque] = {}
 
+        # Rolling window of the last 10 rxRssi readings per node. The library's
+        # NodeDB does not expose rssi on node entries (only snr is stored there);
+        # we must capture it ourselves from each inbound packet.
+        self._rssi_history: dict[str, collections.deque] = {}
+
         # --- Feature: Packet inspector / sniffer ----------------------------
         # Shared ring buffer of all inbound decoded packets (newest first).
         # Capped at _PACKET_LOG_MAX. In-memory only; not persisted.
@@ -780,6 +785,7 @@ class MeshtasticConnection:
         with self._snr_lock:
             for cid in ids_to_clean:
                 self._snr_history.pop(cid, None)
+                self._rssi_history.pop(cid, None)
 
         pos_cleaned = False
         with self._pos_hist_lock:
@@ -1901,15 +1907,24 @@ class MeshtasticConnection:
             # Record every packet in the shared inspector/sniffer buffer.
             self._capture_packet_log(packet)
 
-            # Update per-node SNR history for signal-quality trending.
+            # Update per-node SNR and RSSI history for signal-quality trending.
+            # The library populates snr on its NodeDB entries but never rssi —
+            # rxRssi only appears on individual packet metadata, so we capture
+            # it here and inject it into node entries during the list build.
             from_num = packet.get("from")
             from_id_snr = _node_id_from_num(from_num)
             rx_snr = packet.get("rxSnr")
+            rx_rssi = packet.get("rxRssi")
             if from_id_snr and rx_snr is not None:
                 with self._snr_lock:
                     if from_id_snr not in self._snr_history:
                         self._snr_history[from_id_snr] = collections.deque(maxlen=10)
                     self._snr_history[from_id_snr].append(float(rx_snr))
+            if from_id_snr and rx_rssi is not None:
+                with self._snr_lock:
+                    if from_id_snr not in self._rssi_history:
+                        self._rssi_history[from_id_snr] = collections.deque(maxlen=10)
+                    self._rssi_history[from_id_snr].append(int(rx_rssi))
 
             # --- Neighbour info -------------------------------------------
             if portnum == "NEIGHBORINFO_APP":
@@ -3777,7 +3792,9 @@ class MeshtasticConnection:
                     "hw_model": user.get("hwModel", ""),
                     "last_heard": node_data.get("lastHeard"),
                     "snr": node_data.get("snr"),
-                    "rssi": node_data.get("rssi"),
+                    # rssi is not stored in the library's NodeDB — inject the
+                    # most recent rxRssi reading captured from inbound packets.
+                    "rssi": self._rssi_history.get(node_id) and int(self._rssi_history[node_id][-1]),
                     "hops_away": node_data.get("hopsAway"),
                     "is_licensed": user.get("isLicensed", False),
                     "latitude": lat,
@@ -4770,7 +4787,8 @@ class MeshtasticConnection:
             "hw_model": user.get("hwModel", ""),
             "last_heard": lib_node.get("lastHeard"),
             "snr": lib_node.get("snr"),
-            "rssi": lib_node.get("rssi"),
+            # rssi is not in the library's NodeDB — use last packet-captured value.
+            "rssi": self._rssi_history.get(canon_id) and int(self._rssi_history[canon_id][-1]),
             "hops_away": lib_node.get("hopsAway"),
             "is_licensed": user.get("isLicensed", False),
             "latitude": lat,
