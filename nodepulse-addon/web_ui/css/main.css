@@ -3319,6 +3319,10 @@ body.nav-open #sidebar-backdrop { display: block; }
     padding: 0 var(--space-sm);
     gap: var(--space-xs);
   }
+  #header-left {
+    flex: 0 0 auto;
+    min-width: max-content;
+  }
   #header-tabs {
     display: none;
   }
