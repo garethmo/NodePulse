@@ -22,10 +22,78 @@ from typing import Any
 import aiohttp
 from aiohttp import web
 
-from .connection import MeshtasticConnection
+from .connection import (
+    MeshtasticConnection,
+    register_sse_client,
+    unregister_sse_client,
+)
 from .terrain import TerrainService, analyze_link
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# SSE endpoint — real-time event stream for the Web UI
+# ---------------------------------------------------------------------------
+# Clients connect once and receive a continuous stream of named events so the
+# UI can update panels in real-time instead of polling every 15 seconds.
+_SSE_KEEPALIVE_INTERVAL = 30  # seconds between keepalive pings
+
+
+async def handle_events(request: web.Request) -> web.StreamResponse:
+    """GET /api/events — Server-Sent Events stream.
+
+    Each connected browser tab gets its own asyncio.Queue (maxsize=100).
+    The queue is populated by _broadcast_sse_event() in connection.py
+    whenever a Meshtastic packet arrives from the radio.
+
+    Protocol: standard SSE (text/event-stream).
+      event: <type>\\ndata: <json>\\n\\n
+
+    Keepalive: a comment line (: ping) is sent every 30 s so proxies and
+    HA Ingress don't time-out the idle stream.
+
+    On client disconnect the queue is deregistered; any buffered events are
+    discarded rather than kept in memory.
+
+    CORS note: aiohttp_cors injects headers post-handler, but StreamResponse
+    locks its headers after prepare() — so we inject CORS manually here,
+    before prepare() is called, to support cross-origin connections.
+    """
+    resp = web.StreamResponse()
+    resp.headers["Content-Type"] = "text/event-stream"
+    resp.headers["Cache-Control"] = "no-cache"
+    resp.headers["X-Accel-Buffering"] = "no"  # disable nginx buffering if present
+    # Inject CORS manually — aiohttp_cors cannot set headers on a StreamResponse
+    # after prepare() has been called (headers become read-only at that point).
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Access-Control-Allow-Headers"] = "*"
+    resp.headers["Access-Control-Expose-Headers"] = "*"
+    await resp.prepare(request)
+
+    queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+    register_sse_client(queue)
+    logger.debug("SSE client connected (remote=%s)", request.remote)
+    try:
+        while True:
+            try:
+                # Wait for the next event, but wake up periodically to send keepalives.
+                event = await asyncio.wait_for(queue.get(), timeout=_SSE_KEEPALIVE_INTERVAL)
+                # Serialize and send a named SSE frame.
+                event_type = event.get("type", "message")
+                data = json.dumps(event.get("data", {}), ensure_ascii=False)
+                await resp.write(
+                    f"event: {event_type}\ndata: {data}\n\n".encode()
+                )
+            except asyncio.TimeoutError:
+                # Send a keepalive comment to prevent proxy timeouts.
+                await resp.write(b": ping\n\n")
+    except (ConnectionError, asyncio.CancelledError):
+        # Browser navigated away or connection was reset — expected, not an error.
+        # ConnectionError covers ConnectionResetError, BrokenPipeError, etc.
+        logger.debug("SSE client disconnected (remote=%s)", request.remote)
+    finally:
+        unregister_sse_client(queue)
+    return resp
 
 _ADDON_VERSION = None
 

@@ -98,7 +98,7 @@ NodePulse is a Home Assistant addon and custom integration that gives you deep v
 | 🐳 **Standalone Docker** | Run NodePulse completely independently of Home Assistant using the `Dockerfile.standalone` container |
 | 🎚️ **Node Signal Filter** | Filter the nodes grid by signal strength (Excellent, Good, Fair, Poor) using a stable rolling `snr_avg` calculation |
 | ☁️ **MQTT Bridge** | Built-in bidirectional MQTT bridge. Ingests traffic from external brokers with a robust geospatial/portnum/node-ID filter pipeline. Optionally forwards packets to the local radio. Includes Web UI configuration. |
-| 🤖 **Telegram Bot** | Bidirectional Telegram Bot bridge. Inbound mesh text messages are automatically forwarded to an authorized Telegram chat. Send broadcasts or DMs back to the mesh from Telegram using bot commands. Includes `/status`, `/nodes`, `/channels`, `/send`, `/dm`, and `/help` commands. Zero extra dependencies — uses the built-in `aiohttp` library. |
+| 🤖 **Telegram Bot** | Bidirectional Telegram Bot bridge. Inbound mesh text messages (all channels and DMs) are automatically forwarded to an authorized Telegram chat. Native reply-routing allows you to swipe-to-reply in Telegram to send messages back to the exact originating channel or node. Also includes `/status`, `/nodes`, `/channels`, `/send`, `/dm`, and `/help` commands. Zero extra dependencies — uses the built-in `aiohttp` library. |
 | 🎛️ **Comprehensive Settings Page** | The Web UI Settings tab reflects every addon configuration option in real time — connection & mesh status, HA integration keys and token validation, the full MQTT bridge config (broker port, credential status, topic, geo filter, portnum allowlist, node blocklist), the Telegram bot (status, token, authorized chats, relay channels/DMs, commands), the auto responder, scan interval, and log level. Secrets are always masked |
 | ⚙️ **Remote Device Configuration** | Configure tab to view and edit the connected mesh radio's config (roles, LoRa, WiFi, MQTT, telemetry, owner names). Schema-driven forms, backend-validated ranges/enums, danger-zone confirmations (ROUTER role, TX disabled, region, credentials), LoRa preset gating, and reboot-required feedback |
 | 📢 **MeshBeacon Config (2.8+)** | New Mesh Beacon section: Listen/Broadcast/Legacy-Split toggles, beacon message (100 bytes), offer/TX channel-region-preset, broadcast interval (min 1h). Greyed out on firmware < 2.8.0 |
@@ -414,7 +414,7 @@ Set these options in the NodePulse addon configuration (HA UI → NodePulse → 
 | `telegram_enabled` | bool | `false` | Enable the Telegram Bot integration |
 | `telegram_bot_token` | string | _(empty)_ | Your BotFather-issued bot token |
 | `telegram_chat_id` | string | _(empty)_ | Numeric ID of the authorized chat or group |
-| `telegram_forward_channels` | string | `0` | Mesh channel indices whose messages are relayed to Telegram. Comma or space separated, e.g. `0, 1, 2` |
+| `telegram_forward_channels` | string | `0, 1, 2, 3, 4, 5, 6, 7` | Mesh channel indices whose messages are relayed to Telegram. Comma or space separated, e.g. `0, 1, 2` |
 | `telegram_forward_dms` | bool | `true` | Whether inbound mesh DMs are also relayed to Telegram |
 | `telegram_allow_commands` | bool | `true` | Allow sending commands from Telegram back to the mesh |
 

@@ -30,7 +30,7 @@ from .const import (
     PLATFORMS,
 )
 from .coordinator import NodePulseCoordinator
-from .api import NodePulseTrackView, NodePulseTrackedNodesView
+from .api import NodePulseTrackView, NodePulseTrackedNodesView, NodePulsePushView
 from .helpers import coordinator_for
 
 from .device_trigger import (
@@ -117,6 +117,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
     hass.http.register_view(NodePulseTrackView())
     hass.http.register_view(NodePulseTrackedNodesView())
+    # Real-time push receiver: the addon calls this after each radio packet
+    # so HA entity states update immediately instead of waiting for the poll.
+    hass.http.register_view(NodePulsePushView())
 
     return True
 

@@ -21,6 +21,15 @@ from .terrain import analyze_coverage, analyze_link
 logger = logging.getLogger(__name__)
 
 
+def _is_valid_text_message(text: Any) -> bool:
+    """Validate that text is a valid non-empty string without binary control characters."""
+    if not isinstance(text, str) or not text.strip():
+        return False
+    # Discard strings with >10% non-printable control characters (binary protobuf payloads)
+    control_chars = sum(1 for c in text if ord(c) < 32 and c not in ("\n", "\r", "\t"))
+    return (control_chars / len(text)) <= 0.10
+
+
 class TelegramBot:
     def __init__(
         self,
@@ -73,11 +82,11 @@ class TelegramBot:
         # call_soon_threadsafe instead of the non-thread-safe create_task().
         self._loop: asyncio.AbstractEventLoop | None = None
         # Map Telegram message_id -> forwarding metadata (channel / DM node)
-        # for every mesh message we relay to Telegram. Replies are routed by
-        # message_id so we never depend on parsing the displayed text (which
-        # Telegram's Markdown rendering can alter). Guarded by _forward_lock.
+        # for every mesh message we relay to Telegram.
         self._forwarded: dict[int, dict[str, Any]] = {}
         self._forward_lock = threading.Lock()
+        # Map clean chat_id (e.g. 12345678) -> live chat_id (e.g. -10012345678)
+        self._live_chat_map: dict[str, str] = {}
 
     async def start(self) -> None:
         if not self.enabled:
@@ -157,13 +166,23 @@ class TelegramBot:
         chat_id = str(message.get("chat", {}).get("id", ""))
         chat_type = message.get("chat", {}).get("type", "private")
         
-        # Security: only process messages from authorized chats
-        if chat_id not in self.authorized_chat_ids:
+        # Security: only process messages from authorized chats (flexible matching for -100 prefix)
+        def _match_chat(cid: str, authorized: set[str]) -> bool:
+            if cid in authorized:
+                return True
+            clean = cid.lstrip("-100").lstrip("-")
+            return any(a.lstrip("-100").lstrip("-") == clean for a in authorized)
+
+        if not _match_chat(chat_id, self.authorized_chat_ids):
             logger.warning(
                 "Rejected Telegram message from unauthorized chat %s (type: %s). Authorized: %s",
                 chat_id, chat_type, sorted(self.authorized_chat_ids)
             )
             return
+
+        # Record live chat_id format (e.g. -100123456789) so outgoing mesh forwards reach Telegram
+        clean_id = chat_id.lstrip("-100").lstrip("-")
+        self._live_chat_map[clean_id] = chat_id
             
         text = message.get("text", "").strip()
         if not text:
@@ -1113,41 +1132,57 @@ class TelegramBot:
         conversation context (e.g. a command response). When omitted (e.g. for
         proactive mesh-to-Telegram forwards), the configured default forward
         chat is used as a fallback.
-
-        The message_id is used to route native Telegram replies back to the
-        correct mesh channel / DM node.
         """
-        try:
-            # Prefer the explicitly-supplied chat_id; fall back to the
-            # configured default so proactive forwards still work.
-            target_chat_id = chat_id or self._default_forward_chat
-            result = await self._api_call("sendMessage", {
-                "chat_id": target_chat_id,
-                "text": text,
-                "parse_mode": "Markdown"
-            })
-            if result.get("ok"):
-                return result.get("result", {}).get("message_id")
-            # Telegram rejected the Markdown (most likely unparseable entities).
-            # Retry as plain text so the user still receives a response instead
-            # of a silent failure.
-            logger.warning(
-                "Telegram Markdown send rejected (%s); retrying as plain text",
-                result,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Failed to send Telegram response to chat %s: %s", target_chat_id, exc)
+        if not self._session:
             return None
-        try:
-            result = await self._api_call("sendMessage", {
-                "chat_id": target_chat_id,
-                "text": text
-            })
-            if result.get("ok"):
-                return result.get("result", {}).get("message_id")
-            logger.error("Telegram sendMessage rejected message: %s", result)
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Failed to send Telegram response to chat %s: %s", target_chat_id, exc)
+            
+        raw_target = chat_id or self._default_forward_chat
+        if not raw_target:
+            logger.warning("Telegram _send_text skipped: no target chat_id configured")
+            return None
+
+        clean_target = raw_target.lstrip("-100").lstrip("-")
+        target_chat_id = self._live_chat_map.get(clean_target, raw_target)
+
+        candidates = [target_chat_id]
+        if not target_chat_id.startswith("-100") and clean_target:
+            candidates.append(f"-100{clean_target}")
+        if not target_chat_id.startswith("-") and clean_target:
+            candidates.append(f"-{clean_target}")
+
+        for cid in candidates:
+            # Attempt 1: Markdown formatting
+            try:
+                url = f"https://api.telegram.org/bot{self.token}/sendMessage"
+                payload = {"chat_id": cid, "text": text, "parse_mode": "Markdown"}
+                async with self._session.post(url, json=payload) as resp:
+                    data = await resp.json() if resp.content_type == "application/json" else {}
+                    if resp.status == 200 and data.get("ok"):
+                        self._live_chat_map[clean_target] = cid
+                        return data.get("result", {}).get("message_id")
+                    description = data.get("description", "")
+                    if "chat not found" in description.lower():
+                        continue
+                    logger.warning("Telegram Markdown send to %s rejected (status %s: %s)", cid, resp.status, description)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Telegram Markdown send to %s failed (%s); retrying plain text", cid, exc)
+
+            # Attempt 2: Plain text fallback (robust if Markdown contained unescaped entities)
+            try:
+                url = f"https://api.telegram.org/bot{self.token}/sendMessage"
+                payload = {"chat_id": cid, "text": text}
+                async with self._session.post(url, json=payload) as resp:
+                    data = await resp.json() if resp.content_type == "application/json" else {}
+                    if resp.status == 200 and data.get("ok"):
+                        self._live_chat_map[clean_target] = cid
+                        return data.get("result", {}).get("message_id")
+                    description = data.get("description", "")
+                    if "chat not found" in description.lower():
+                        continue
+                    logger.error("Telegram plain text sendMessage rejected for %s: %s", cid, data)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Failed to send Telegram response to chat %s: %s", cid, exc)
+
         return None
 
     async def _send_document(self, content: str, filename: str, *, chat_id: str | None = None) -> bool:
@@ -1235,21 +1270,37 @@ class TelegramBot:
         if not self.enabled or not self._session or not self._task or not self._loop:
             return
 
-        # Ignore our own outgoing messages
-        if entry.get("outgoing"):
+        # Ignore messages originating from Telegram to prevent loopback echoes
+        from_name = str(entry.get("from_name") or "")
+        if entry.get("from_telegram") or from_name.startswith("📱"):
             return
 
         is_dm = entry.get("is_dm", False)
-        channel = entry.get("channel", 0)
+        raw_ch = entry.get("channel")
+        if raw_ch is None:
+            channel = 0
+        else:
+            try:
+                channel = int(raw_ch)
+            except (ValueError, TypeError):
+                channel = 0
 
         if is_dm and not self.forward_dms:
             return
 
-        if not is_dm and channel not in self.forward_channels:
+        forward_ch_set = {int(c) for c in (self.forward_channels or list(range(8))) if str(c).strip().isdigit()}
+        if forward_ch_set == {0}:
+            forward_ch_set = set(range(8))
+        if not is_dm and channel not in forward_ch_set:
+            logger.warning("Telegram forward skipped: channel %s not in %s", channel, forward_ch_set)
             return
 
         from_id = entry.get("from_id", "")
         text = entry.get("text", "")
+        if not _is_valid_text_message(text):
+            logger.debug("Telegram forward skipped for invalid/binary text payload: %r", text)
+            return
+
         snr = entry.get("rx_snr")
 
         snr_str = f" [SNR: {snr}]" if snr is not None else ""
@@ -1292,17 +1343,18 @@ class TelegramBot:
             )
 
     async def _send_forward(self, msg: str, metadata: dict[str, Any]) -> None:
-        """Send a forwarded mesh message and record its message_id so native
-        Telegram replies can be routed back to the originating channel/node."""
-        message_id = await self._send_text(msg)
-        if not message_id:
-            return
-        with self._forward_lock:
-            self._forwarded[message_id] = dict(metadata, ts=time.time())
-            # Cap the map so it can't grow unbounded over a long uptime.
-            if len(self._forwarded) > 500:
-                cutoff = time.time() - 24 * 3600
-                self._forwarded = {
-                    mid: meta for mid, meta in self._forwarded.items()
-                    if meta.get("ts", 0) >= cutoff
-                }
+        """Send a forwarded mesh message to all authorized chats and record message_id."""
+        targets = self._authorized_list or ([self._default_forward_chat] if self._default_forward_chat else [])
+        for cid in targets:
+            if not cid:
+                continue
+            message_id = await self._send_text(msg, chat_id=cid)
+            if message_id:
+                with self._forward_lock:
+                    self._forwarded[message_id] = dict(metadata, ts=time.time())
+                if len(self._forwarded) > 500:
+                    cutoff = time.time() - 24 * 3600
+                    self._forwarded = {
+                        mid: meta for mid, meta in self._forwarded.items()
+                        if meta.get("ts", 0) >= cutoff
+                    }

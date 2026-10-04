@@ -2,6 +2,22 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.32.1] - 2026-10-04
+### Fixed
+- **SSE Fallback for HA Companion App** — Implemented a graceful fallback for Server-Sent Events (SSE). When using the Home Assistant Companion App (or routing through Nabu Casa/Cloudflare), which often drops or buffers SSE streams, NodePulse now detects persistent connection failures, suppresses the "Reconnecting" badge, and automatically shifts back to a 15-second polling interval to keep the UI fully responsive.
+
+## [1.32.0] - 2026-10-03
+### Added
+- **Full Multi-Channel Telegram Forwarding & Reply Bridge** — Expanded Telegram forwarding to cover all mesh channels (`0` through `7`) by default. Swiping to reply in Telegram automatically routes back to the originating channel or DM node ID.
+- **Conversations Date & Time Display** — Added full date and time formatting (e.g. `3 Oct 06:04`) for the last message in conversation sidebar items.
+- **Real-Time Delivery ACK Ticks** — Integrated mesh routing ACK matching (`decoded.requestId`) with live `ack_update` SSE events for instant UI delivery checkmarks.
+
+### Fixed
+- **Home Assistant Memory Leak & Crash Prevention** — Fixed dynamic entity purging in `NodeDiscovery` where missing nodes caused continuous destruction (`force_remove=True`) and re-creation of 27+ entities per node on every poll, flooding HA's Entity Registry and task loop. Fixed `TypeError` on single-entity returns in `NodeDiscovery.run()`.
+- **Spurious Startup Broadcast Discard** — Expired scheduled messages (>5 minutes old) are automatically discarded on addon startup to prevent old messages from re-firing upon restart.
+- **HA Ingress Auth Relay** — Fixed supervisor token validation imports in `custom_components/nodepulse/api.py` and added local private IP network fallbacks for local HA Core-to-Addon communication.
+- **Conversations Sidebar Real-Time Sync** — Enforced static channel keys (`ch:0` to `ch:7`) and wired SSE message events to update sidebar previews, sender prefixes, and unread badges in real time.
+
 ## [1.31.0] - 2026-09-22
 ### Added
 - **Meshtastic Application Port Descriptions** — Added human-readable Descriptions and tooltips for port numbers (TELEMETRY_APP, NODEINFO_APP, ADMIN_APP, etc.) in the Packet Inspector view.

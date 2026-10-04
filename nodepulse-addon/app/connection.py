@@ -32,6 +32,86 @@ import meshtastic.protobuf.config_pb2 as config_pb2
 import meshtastic.tcp_interface
 from pubsub import pub
 
+# ---------------------------------------------------------------------------
+# SSE (Server-Sent Events) client registry
+# ---------------------------------------------------------------------------
+# Each connected browser holds one asyncio.Queue here. When a packet arrives
+# from the radio on the meshtastic thread, _broadcast_sse_event() fans it out
+# to every registered queue. The queue is owned by the SSE route handler
+# (routes.py:handle_events) which reads from it and streams SSE frames to the
+# browser. On disconnect the handler calls unregister_sse_client().
+#
+# Thread-safety: the set is always mutated / iterated while holding
+# _sse_lock so it is safe to call from both the asyncio thread (route
+# handlers) and the meshtastic pubsub thread.
+_sse_queues: set = set()
+_sse_lock = threading.Lock()
+# Event loop reference set by main.py once the loop is running. Used to
+# schedule coroutines from the meshtastic receive thread.
+_event_loop: asyncio.AbstractEventLoop | None = None
+
+
+def set_event_loop(loop: asyncio.AbstractEventLoop) -> None:
+    """Store a reference to the running event loop for cross-thread use."""
+    global _event_loop
+    _event_loop = loop
+
+
+def _is_valid_text_message(text: Any) -> bool:
+    """Validate that text is a valid non-empty string without binary control characters."""
+    if not isinstance(text, str) or not text.strip():
+        return False
+    # Discard strings with >10% non-printable control characters (binary protobuf payloads)
+    control_chars = sum(1 for c in text if ord(c) < 32 and c not in ("\n", "\r", "\t"))
+    return (control_chars / len(text)) <= 0.10
+
+
+def register_sse_client(queue: asyncio.Queue) -> None:
+    """Register a per-connection SSE queue so it receives broadcast events."""
+    with _sse_lock:
+        _sse_queues.add(queue)
+    logger.debug("SSE client registered (total=%s)", len(_sse_queues))
+
+
+def unregister_sse_client(queue: asyncio.Queue) -> None:
+    """Remove a queue when the browser disconnects."""
+    with _sse_lock:
+        _sse_queues.discard(queue)
+    logger.debug("SSE client unregistered (total=%s)", len(_sse_queues))
+
+
+def _broadcast_sse_event(event_type: str, payload: dict) -> None:
+    """Fan-out a typed SSE event to all registered client queues.
+
+    Runs on the meshtastic receive thread. Uses put_nowait() so it never
+    blocks. If a client's queue is full (browser too slow to consume events),
+    we evict the oldest item first then insert the new one — this ensures slow
+    clients always receive the *latest* state rather than being permanently
+    blocked after a single overflow.
+    """
+    if not _sse_queues:
+        return
+    event = {"type": event_type, "data": payload}
+    with _sse_lock:
+        queues = list(_sse_queues)
+    evicted = 0
+    for q in queues:
+        try:
+            q.put_nowait(event)
+        except asyncio.QueueFull:
+            # Evict the oldest stale event and make room for the fresh one.
+            try:
+                q.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            try:
+                q.put_nowait(event)
+            except asyncio.QueueFull:
+                pass  # extremely unlikely — discard rather than block
+            evicted += 1
+    if evicted:
+        logger.debug("SSE broadcast: evicted oldest event for %s slow client(s) (type=%s)", evicted, event_type)
+
 # Characters that would break out of an HTML/JS context if echoed verbatim.
 # Waypoint text arrives from the mesh (untrusted), so we strip these at the
 # ingest boundary as defense-in-depth on top of frontend escaping.
@@ -800,6 +880,21 @@ class MeshtasticConnection:
             logger.info("Removed node %s from the store", node_id)
 
         return (removed > 0) or device_removed
+
+    def get_my_node_id(self) -> str | None:
+        """Return the formatted node ID (e.g. '!12345678') of the connected local node, or None."""
+        with self._lock:
+            iface = self._interface
+        if iface is None:
+            return None
+        my_info = getattr(iface, "myInfo", None)
+        my_node_num = getattr(my_info, "my_node_num", None)
+        if my_node_num is not None:
+            try:
+                return "!" + format(int(my_node_num) & 0xFFFFFFFF, "08x")
+            except (ValueError, TypeError):
+                return None
+        return None
 
     async def get_channels(self) -> list[dict[str, Any]]:
         """Return the channel configuration from the connected node."""
@@ -1926,6 +2021,16 @@ class MeshtasticConnection:
                         self._rssi_history[from_id_snr] = collections.deque(maxlen=10)
                     self._rssi_history[from_id_snr].append(int(rx_rssi))
 
+            # Broadcast a signal_update SSE event whenever fresh SNR/RSSI
+            # arrives so the Web UI can refresh the node row in real-time.
+            if from_id_snr and (rx_snr is not None or rx_rssi is not None):
+                _broadcast_sse_event("signal_update", {
+                    "node_id": from_id_snr,
+                    "rx_snr": rx_snr,
+                    "rx_rssi": rx_rssi,
+                    "timestamp": int(time.time()),
+                })
+
             # --- Neighbour info -------------------------------------------
             if portnum == "NEIGHBORINFO_APP":
                 self._capture_neighborinfo(packet)
@@ -1934,11 +2039,25 @@ class MeshtasticConnection:
             # --- Traceroute replies ---------------------------------------
             if portnum == "TRACEROUTE_APP":
                 self._capture_traceroute(packet)
+                # Notify SSE clients and HA that a traceroute completed.
+                _broadcast_sse_event("traceroute", {
+                    "node_id": from_id_snr,
+                    "timestamp": int(time.time()),
+                })
+                self._trigger_ha_push()
                 return
 
             # --- Position replies -----------------------------------------
             if portnum == "POSITION_APP":
                 self._capture_position(packet)
+                pos = decoded.get("position") or {}
+                _broadcast_sse_event("position", {
+                    "node_id": from_id_snr,
+                    "lat": pos.get("latitudeI", 0) / 1e7 if pos.get("latitudeI") else None,
+                    "lng": pos.get("longitudeI", 0) / 1e7 if pos.get("longitudeI") else None,
+                    "altitude": pos.get("altitude"),
+                    "timestamp": int(time.time()),
+                })
                 return
 
             # --- Routing ACKs (delivery confirmation) --------------------
@@ -1949,16 +2068,35 @@ class MeshtasticConnection:
             # --- Waypoints ------------------------------------------------
             if portnum == "WAYPOINT_APP":
                 self._capture_waypoint(packet)
+                _broadcast_sse_event("waypoint", {"timestamp": int(time.time())})
                 return
 
             # --- Device telemetry (2.8 Signal Quality: noise floor) -------
             if portnum == "DEVICE_METRICS_APP":
                 self._capture_telemetry(packet)
+                _broadcast_sse_event("telemetry", {
+                    "node_id": from_id_snr,
+                    "timestamp": int(time.time()),
+                })
                 return
 
             # --- Text messages ------------------------------------------
+            # Only process packets explicitly meant for text messaging (or packets
+            # where meshtastic library already populated a clean decoded['text'] field).
+            is_text_port = portnum in ("TEXT_MESSAGE_APP", 1, "TEXT_MESSAGE_COMPACT_APP", 69)
             text = decoded.get("text")
-            if not text:
+
+            if not text and is_text_port and "payload" in decoded:
+                payload = decoded.get("payload")
+                if isinstance(payload, bytes):
+                    try:
+                        text = payload.decode("utf-8")
+                    except UnicodeDecodeError:
+                        text = None
+                elif isinstance(payload, str):
+                    text = payload
+
+            if not _is_valid_text_message(text):
                 return
 
             from_num = packet.get("from")
@@ -2021,7 +2159,15 @@ class MeshtasticConnection:
                 else:
                     logger.debug("Node not found in persistent store: %s", from_id)
 
-            channel = packet.get("channel", 0)
+            channel_raw = packet.get("channel")
+            if channel_raw is None:
+                channel = 0
+            else:
+                try:
+                    channel = int(channel_raw)
+                except (ValueError, TypeError):
+                    channel = 0
+
             # A packet is a DM if it is addressed to a specific node (not the
             # broadcast address). Meshtastic uses a high-bit marker for broadcast.
             is_dm = to_id is not None and to_id != from_id and to_num not in (0xFFFFFFFF, None)
@@ -2059,6 +2205,28 @@ class MeshtasticConnection:
             # writes — _save_messages takes _persist_lock).
             self._schedule_save(self._messages, _MESSAGES_FILE)
 
+            # Broadcast new message to SSE clients in real-time so the Web UI
+            # updates within milliseconds instead of waiting for the next poll.
+            _broadcast_sse_event("message", {
+                "id": entry["id"],
+                "from_id": from_id,
+                "to_id": to_id,
+                "from_name": entry["from_name"],
+                "from_short": entry["from_short"],
+                "text": text,
+                "channel": channel,
+                "conversation": entry["conversation"],
+                "is_dm": is_dm,
+                "outgoing": entry["outgoing"],
+                "rx_snr": entry["rx_snr"],
+                "rx_rssi": entry["rx_rssi"],
+                "timestamp": entry["timestamp"],
+            })
+
+            # Push a lightweight refresh trigger to the HA coordinator so HA
+            # entity states update immediately (bypasses the polling interval).
+            self._trigger_ha_push()
+
             # Forward inbound messages to the Telegram bot if configured.
             # The callback is set by main.py after both objects are created.
             # We call it synchronously here (it's a fire-and-forget scheduler
@@ -2071,6 +2239,93 @@ class MeshtasticConnection:
                     logger.debug("Telegram forward callback error (ignored): %s", exc)
         except Exception as exc:  # pragma: no cover - defensive  # noqa: BLE001
             logger.debug("Error handling received packet (ignored): %s", exc)
+
+    def _trigger_ha_push(self) -> None:
+        """Schedule a lightweight HTTP push to the HA coordinator from any thread.
+
+        Calls the HA integration's /api/nodepulse/push endpoint so the
+        coordinator skips its next polling interval and refreshes immediately.
+        The actual HTTP call runs as an asyncio task on the event loop to keep
+        this method non-blocking on the meshtastic receive thread.
+
+        A short debounce (3 s) prevents a burst of packets from triggering
+        dozens of parallel refreshes.
+        """
+        now = time.monotonic()
+        # Debounce: skip if we already triggered a push recently.
+        last = getattr(self, "_last_ha_push", 0.0)
+        if now - last < 3.0:
+            return
+        self._last_ha_push = now
+
+        loop = _event_loop
+        if loop is None or not loop.is_running():
+            return
+        # Schedule the coroutine on the asyncio event loop from this thread.
+        asyncio.run_coroutine_threadsafe(self._async_ha_push(), loop)
+
+    async def _async_ha_push(self) -> None:
+        """Perform the HTTP POST to the HA NodePulse push endpoint.
+
+        Reuses the same candidate-URL discovery logic as the addon's relay
+        helper but keeps it lightweight — we only care about triggering a
+        refresh, not about the response body.
+        """
+        import aiohttp
+
+        config = getattr(self, "_config", None)
+        supervisor_token = os.environ.get("SUPERVISOR_TOKEN", "").strip()
+        ha_access_token = (getattr(config, "ha_access_token", None) or "").strip()
+
+        tokens = []
+        if supervisor_token:
+            tokens.append(supervisor_token)
+        if ha_access_token and ha_access_token not in tokens:
+            tokens.append(ha_access_token)
+
+        if not tokens:
+            logger.debug("HA push skipped: no SUPERVISOR_TOKEN or ha_access_token configured")
+            return
+
+        candidates = [
+            "http://homeassistant:8123",
+            "http://supervisor:8123",
+            "http://hassio:8123",
+            "http://localhost:8123",
+            "http://127.0.0.1:8123",
+            "http://172.17.0.1:8123",
+        ]
+        # Try the last known working host first to avoid a full scan each time.
+        _last_good = getattr(self, "_ha_push_working_host", None)
+        if _last_good and _last_good in candidates:
+            candidates = [_last_good] + [c for c in candidates if c != _last_good]
+
+        timeout = aiohttp.ClientTimeout(total=2)
+        try:
+            async with aiohttp.ClientSession() as session:
+                for token in tokens:
+                    headers = {
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json",
+                    }
+                    for base in candidates:
+                        url = f"{base}/api/nodepulse/push"
+                        try:
+                            async with session.post(url, headers=headers, json={}, timeout=timeout) as resp:
+                                if resp.status in (200, 201):
+                                    self._ha_push_working_host = base
+                                    logger.debug("HA push succeeded (host=%s)", base)
+                                    return
+                                if resp.status == 503:
+                                    logger.debug("HA push: 503 not_ready from %s (integration loading)", base)
+                                    return
+                                if resp.status in (401, 403, 404):
+                                    continue
+                        except Exception:  # noqa: BLE001
+                            continue
+        except Exception as exc:  # noqa: BLE001
+            # Outer failure (e.g. DNS error, ClientSession creation failure).
+            logger.debug("HA push: ClientSession error (non-fatal): %s", exc)
 
     # ----------------------------------------------------------------
     # Packet inspector / sniffer helpers
@@ -2184,9 +2439,8 @@ class MeshtasticConnection:
         try:
             decoded = packet.get("decoded", {}) or {}
             routing = decoded.get("routing") or {}
-            # requestId may sit at the top level or inside the routing sub-dict,
-            # depending on the meshtastic library version.
-            request_id = routing.get("requestId") or packet.get("requestId")
+            # requestId may sit at decoded level, routing sub-dict, or top level.
+            request_id = decoded.get("requestId") or routing.get("requestId") or packet.get("requestId")
             if not request_id:
                 return
             try:
@@ -2197,6 +2451,7 @@ class MeshtasticConnection:
             error_reason = routing.get("errorReason", "NONE")
             status = "delivered" if error_reason in ("NONE", 0, "", None) else "failed"
 
+            conv_key = None
             with self._msg_lock:
                 msg_id = self._pending_acks.pop(request_id, None)
                 self._pending_ack_times.pop(request_id, None)
@@ -2206,8 +2461,16 @@ class MeshtasticConnection:
                     if msg.get("id") == msg_id:
                         msg["ack_status"] = status
                         msg["ack_at"] = int(time.time())
+                        conv_key = msg.get("conversation")
                         break
             self._schedule_save(self._messages, _MESSAGES_FILE)
+            if msg_id:
+                _broadcast_sse_event("ack_update", {
+                    "id": msg_id,
+                    "conversation": conv_key,
+                    "ack_status": status,
+                    "ack_at": int(time.time()),
+                })
             logger.debug("ACK received for msg_id=%s: status=%s", msg_id, status)
         except Exception as exc:  # defensive  # noqa: BLE001
             logger.debug("Error handling routing ACK (ignored): %s", exc)
@@ -2224,6 +2487,7 @@ class MeshtasticConnection:
         lock). Taking the snapshot outside the lock was a TOCTOU bug.
         """
         now = time.time()
+        expired_updates = []
         with self._msg_lock:
             # Snapshot under lock to avoid racing with _capture_routing_ack.
             timed_out = [
@@ -2241,8 +2505,16 @@ class MeshtasticConnection:
                     if msg.get("id") == msg_id and msg.get("ack_status") == "sending":
                         msg["ack_status"] = "failed"
                         msg["ack_at"] = int(time.time())
+                        expired_updates.append((msg_id, msg.get("conversation")))
                         break
         self._schedule_save(self._messages, _MESSAGES_FILE)
+        for msg_id, conv_key in expired_updates:
+            _broadcast_sse_event("ack_update", {
+                "id": msg_id,
+                "conversation": conv_key,
+                "ack_status": "failed",
+                "ack_at": int(time.time()),
+            })
         logger.debug("Expired %s timed-out pending ACKs", len(timed_out))
 
     # ----------------------------------------------------------------
@@ -2676,6 +2948,9 @@ class MeshtasticConnection:
                 unique_messages = []
                 for msg in all_messages:
                     msg_id = msg.get("id")
+                    msg_text = msg.get("text")
+                    if not _is_valid_text_message(msg_text):
+                        continue
                     if msg_id and msg_id not in seen_ids:
                         seen_ids.add(msg_id)
                         unique_messages.append(msg)
@@ -2690,14 +2965,20 @@ class MeshtasticConnection:
 
     
     def _load_scheduled_messages(self) -> None:
-        """Restore scheduled messages from disk."""
+        """Restore scheduled messages from disk, discarding expired ones."""
         try:
             if os.path.exists(_SCHEDULED_MESSAGES_FILE):
                 with self._persist_lock, open(_SCHEDULED_MESSAGES_FILE, encoding="utf-8") as fh:
-                        data = json.load(fh)
+                    data = json.load(fh)
                 if isinstance(data, list):
+                    now = time.time()
+                    # Discard expired entries whose scheduled time was more than 5 min ago
+                    valid = [tuple(x) for x in data if isinstance(x, (list, tuple)) and len(x) >= 4 and x[0] > (now - 300)]
                     with self._scheduled_messages_lock:
-                        self._scheduled_messages = [tuple(x) for x in data]
+                        self._scheduled_messages = valid
+                    if len(valid) != len(data):
+                        logger.info("Purged %d expired scheduled message(s) on startup", len(data) - len(valid))
+                        self._schedule_save(self._scheduled_messages, _SCHEDULED_MESSAGES_FILE)
         except Exception as exc:  # noqa: BLE001
             logger.debug("Could not load persisted scheduled messages (ignored): %s", exc)
     def _save_messages(self) -> None:
@@ -4217,8 +4498,20 @@ class MeshtasticConnection:
         local_config = getattr(iface, "localConfig", None)
         ch_from_config = getattr(local_config, "channel_settings", None) if local_config else None
 
+        def _to_channel_list(src: Any) -> list[Any]:
+            if not src:
+                return []
+            if isinstance(src, dict):
+                return list(src.values())
+            if isinstance(src, (list, tuple, set)):
+                return list(src)
+            return []
+
+        ch_node_list = _to_channel_list(ch_from_node)
+        ch_config_list = _to_channel_list(ch_from_config)
+
         # Pick the primary source: prefer localNode.channels for structure.
-        primary = ch_from_node or ch_from_config or []
+        primary = ch_node_list or ch_config_list
         if not primary:
             return []
 
@@ -4226,7 +4519,7 @@ class MeshtasticConnection:
         name_by_idx: dict[int, str] = {}
         # Build a public/unencrypted flag per channel index (no PSK == public).
         public_by_idx: dict[int, bool] = {}
-        for src in (ch_from_node, ch_from_config):
+        for src in (ch_node_list, ch_config_list):
             if not src:
                 continue
             for ch in src:
@@ -4424,6 +4717,7 @@ class MeshtasticConnection:
                 # Relay messages are shown as incoming in the UI so they are
                 # clearly distinguishable from the local user's own messages.
                 "outgoing": not is_relay,
+                "from_telegram": is_relay,
                 "rx_snr": None,
                 "rx_rssi": None,
                 "timestamp": int(time.time()),
@@ -4438,6 +4732,33 @@ class MeshtasticConnection:
                 "Message added to store: id=%s, conversation=%s, text=%s, outgoing=%s, timestamp=%s",
                 entry["id"], conversation, text[:50], entry["outgoing"], entry["timestamp"]
             )
+
+            # Broadcast to SSE clients so Web UI tabs update immediately for sent/relayed messages
+            _broadcast_sse_event("message", {
+                "id": entry["id"],
+                "from_id": entry["from_id"],
+                "to_id": entry["to_id"],
+                "destination": entry.get("destination"),
+                "from_name": entry["from_name"],
+                "from_short": "",
+                "text": entry["text"],
+                "channel": entry["channel"],
+                "conversation": entry["conversation"],
+                "is_dm": entry["is_dm"],
+                "outgoing": entry["outgoing"],
+                "rx_snr": entry["rx_snr"],
+                "rx_rssi": entry["rx_rssi"],
+                "timestamp": entry["timestamp"],
+            })
+
+            # Forward outbound Web UI messages to Telegram if configured
+            callback = getattr(self, "_telegram_forward_callback", None)
+            if callback is not None:
+                try:
+                    callback(entry)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("Telegram forward callback error on send (ignored): %s", exc)
+
             # Register pending ACK only for DMs with a valid packet ID.
             if is_dm and packet_id is not None:
                 self._pending_acks[packet_id] = entry["id"]

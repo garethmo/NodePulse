@@ -1,6 +1,6 @@
 {
   "name": "NodePulse",
-  "version": "1.31.1",
+  "version": "1.32.1",
   "slug": "nodepulse",
   "description": "Comprehensive dashboard and integration for monitoring Meshtastic networks directly within Home Assistant",
   "url": "https://github.com/garethmo/NodePulse",
@@ -49,7 +49,7 @@
     "telegram_bot_token": "",
     "telegram_chat_id": "",
     "telegram_authorized_chat_ids": [],
-    "telegram_forward_channels": "0",
+    "telegram_forward_channels": "0, 1, 2, 3, 4, 5, 6, 7",
     "telegram_forward_dms": true,
     "telegram_allow_commands": true,
     "auto_responder_enabled": false,

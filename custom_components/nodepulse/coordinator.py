@@ -280,6 +280,26 @@ class NodePulseCoordinator(DataUpdateCoordinator):
         )
         return bool(result.get("dispatched"))
 
+    async def async_request_push_refresh(self) -> None:
+        """Trigger an immediate coordinator refresh in response to an addon push.
+
+        Called by NodePulsePushView when the addon notifies HA that new data
+        has arrived from the radio. A 3-second debounce ensures that a rapid
+        burst of packets (e.g. node beacon + message in the same second) only
+        triggers one coordinator refresh rather than a parallel flood.
+        """
+        import time as _time
+
+        now = _time.monotonic()
+        last = getattr(self, "_last_push_refresh", 0.0)
+        # Allow at most one push-triggered refresh per 3 seconds.
+        if now - last < 3.0:
+            logger.debug("Push refresh debounced (last=%.1fs ago)", now - last)
+            return
+        self._last_push_refresh = now
+        logger.debug("Push refresh: triggering coordinator refresh")
+        await self.async_refresh()
+
     async def _async_update_data(self) -> Dict[str, Any]:
         """
         Fetch a fresh snapshot from the addon.

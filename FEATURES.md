@@ -75,7 +75,7 @@ The default view served under HA Ingress, with a responsive 3-column grid on des
 |-----------|-------------|
 | **Map (mini)** | Leaflet dark-theme map centred on Durban, SA; shows all GPS-fixed nodes with teal markers, self node in blue; permanent name labels; distance-labelled self→node links; peer proximity links; traceroute paths; position history trails |
 | **Node list** | Sidebar list sorted by distance from self; per-node SNR bar, battery %, last heard; click to select and drive charts |
-| **Message feed** | Conversation tabs (per-channel + per-DM) with unread badges; message bubbles with sender name, time, channel indicator; send status (sending/sent/failed); click-to-retry failed messages; export any conversation as JSON or CSV |
+| **Message feed** | Conversation tabs (per-channel + per-DM) with unread badges (including date & time of last message); message bubbles with sender name, time, channel indicator; send status (sending/sent/failed/delivered with real-time ACK ticks); click-to-retry failed messages; export any conversation as JSON or CSV |
 | **Compose box** | Channel selector (broadcast) or implicit DM destination; auto-growing textarea; Enter to send |
 | **Charts row** | 5 rolling charts — SNR (dB), RSSI (dBm), Node Count, Channel Utilization (%), Airtime Utilization (%). Signal charts: 30-point window (~7.5 min). Utilization charts: 120-point window (~30 min) |
 
@@ -365,7 +365,7 @@ Setup validates by hitting the addon's `/api/status` endpoint. The working host 
 - **Relay views always require auth** — The integration's `/api/nodepulse/track` and `/api/nodepulse/tracked-nodes` views accept either a matching `Authorization: Bearer <SUPERVISOR_TOKEN>` (constant-time comparison) or valid Home Assistant authentication (a long-lived access token or session), even when a Supervisor token is set on HA core. The addon tries the Supervisor token first and falls back to its `ha_access_token` option when the token is missing or rejected — there is no anonymous/fail-open path. The legacy `X-NodePulse-Skip-Token` bypass and the `disable_token_validation` option are removed/deprecated.
 - **Waypoint content is sanitized** — Waypoint `name`, `description`, and `icon` (mesh-controlled data) are stripped of HTML/JS-significant and control characters server-side (`_sanitize_mesh_text`) and HTML-escaped in the Web UI, closing stored-XSS vectors from malicious mesh nodes.
 - **Access key** — An optional `access_key` is forwarded as the `X-NodePulse-Access-Key` header to authenticate with the Meshtastic node; it travels in plaintext over HTTP, so prefer a trusted/supervisor network (see threat-model note in README).
-- **Telegram** — All incoming bot messages are filtered against the configured authorized chat IDs; unauthorized chats are silently dropped.
+- **Telegram** — Full bidirectional forwarding with native reply-routing (swiping to reply in Telegram routes back to the original channel or DM). All incoming bot messages are filtered against the configured authorized chat IDs; unauthorized chats are silently dropped.
 
 ---
 

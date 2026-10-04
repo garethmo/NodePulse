@@ -50,23 +50,31 @@ def parse_int_list(value, default) -> list[int]:
     telegram_forward_channels uses a plain string, but we still accept the
     legacy list form so existing installs are unaffected. Accepts:
       - "0, 1, 2" / "0 1 2"  (comma or whitespace separated)
+      - "0-7" / "all" / "*"  (range or wildcard)
       - [0, 1, 2] / [0, "1", None]  (legacy list form, optional nulls skipped)
       - "" / None  (falls back to default)
     """
     if value is None:
         return list(default)
     if isinstance(value, str):
-        parts = [p for p in re.split(r"[,\s]+", value.strip()) if p]
-        if not parts:
-            return list(default)
+        val_str = value.strip().lower()
+        if not val_str or val_str in ("0", "all", "*"):
+            return list(range(8))
+        m = re.match(r"^(\d+)\s*-\s*(\d+)$", val_str)
+        if m:
+            start, end = int(m.group(1)), int(m.group(2))
+            return list(range(min(start, end), max(start, end) + 1))
+        parts = [p for p in re.split(r"[,\s]+", val_str) if p]
         try:
             return [int(p) for p in parts]
         except (TypeError, ValueError) as exc:
             raise RuntimeError(
                 f"Invalid telegram_forward_channels value {value!r}: "
-                "expected channel indices like '0, 1, 2'."
+                "expected channel indices like '0, 1, 2' or '0-7' or 'all'."
             ) from exc
     if isinstance(value, (list, tuple)):
+        if list(value) == [0]:
+            return list(range(8))
         channels = []
         for item in value:
             if item is None or (isinstance(item, str) and not item.strip()):
@@ -137,7 +145,7 @@ class Config:
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""  # Deprecated: use telegram_authorized_chat_ids
     telegram_authorized_chat_ids: list[str] = field(default_factory=list)  # List of authorized chat IDs (private and groups)
-    telegram_forward_channels: list[int] = field(default_factory=lambda: [0])
+    telegram_forward_channels: list[int] = field(default_factory=lambda: list(range(8)))
     telegram_forward_dms: bool = True
     telegram_allow_commands: bool = True
 

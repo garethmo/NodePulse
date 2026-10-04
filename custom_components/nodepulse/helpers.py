@@ -83,10 +83,10 @@ class NodeDiscovery:
         visible_ids = {n.get("id") for n in nodes if n.get("id")}
         tracked = self.coordinator.tracked_nodes
 
-        # Remove entities for nodes that are no longer tracked (or gone).
+        # Remove entities for nodes that are no longer tracked.
         for entity in list(self._registered_entities):
             nid = getattr(entity, "_node_id", None)
-            if nid is not None and (nid not in tracked or nid not in visible_ids):
+            if nid is not None and nid not in tracked:
                 self._registered_entities.remove(entity)
                 self._registered_node_ids.discard(nid)
                 hass.async_create_task(entity.async_remove(force_remove=True))
@@ -100,9 +100,11 @@ class NodeDiscovery:
                 continue
             if not should_create(node):
                 continue
-            added = make_entities(node) or []
+            added = make_entities(node)
             if not added:
                 continue
+            if not isinstance(added, (list, tuple, set)):
+                added = [added]
             self._registered_node_ids.add(node_id)
             self._registered_entities.extend(added)
             new_entities.extend(added)

@@ -20,16 +20,17 @@ import { TopologyManager } from './topology.js';
 import { setTerrainNodes, initTerrainPanel, initCoveragePanel, toggle3DView, destroy3DView } from './terrain.js';
 import { escapeHtml, haversineKm, formatDistance, buildKml, buildGpx, downloadFile } from './util.js';
 
-// How often (ms) to poll the backend for fresh node/status/message data.
- // Matches the scan_interval default from config.json (30s) but we use a
- // faster default here so the UI feels live from the first load.
- const POLL_INTERVAL_MS = 15_000;
+// How often (ms) to poll the backend for a full-state reconciliation.
+ // This is now a slow fallback — primary updates come through the SSE stream
+ // (GET /api/events). Reduced from 15 s to 60 s now that SSE pushes deltas
+ // in real-time. The full poll catches any state drift if SSE misses a packet.
+ let POLL_INTERVAL_MS = 60_000;
  
  // How many fast poll cycles to skip between tracked-nodes refreshes.
  // fetchTrackedNodes() relays to HA (potentially slow); we only need it to
- // stay accurate, not be real-time — once every 5 minutes (20 × 15s) is
- // plenty. A value of 0 means "refresh on every poll" (previous behaviour).
- const TRACKED_NODES_POLL_EVERY_N = 20;
+ // stay accurate, not be real-time — once every 5 minutes is plenty.
+ // At 60 s/cycle that is 5 cycles.
+ const TRACKED_NODES_POLL_EVERY_N = 5;
  
  // ============================================================================
  // App State — all mutable state lives here, not scattered in closures.
@@ -1027,19 +1028,63 @@ function conversationForKey(key) {
     const nodeId = key.slice(3);
     return { key, kind: 'dm', name: nodeName(nodeId), nodeId };
   }
-  const ch = parseInt(key.slice(3), 10) || 0;
+  const chParsed = parseInt(key.slice(3), 10);
+  const ch = isNaN(chParsed) ? 0 : chParsed;
   // Use the channel's real name when known (from the node config), falling
   // back to the generic Primary / Channel N labels.
-  const cfg = (state.channels || []).find(c => c && c.index === ch);
+  const cfg = (state.channels || []).find(c => c && Number(c.index) === ch);
   const name = cfg && cfg.name ? cfg.name : (ch === 0 ? 'Primary' : `Channel ${ch}`);
   return { key, kind: 'channel', name, channel: ch };
 }
 
 function _ensureConversation(key) {
+  const current = conversationForKey(key);
   if (!state.conversations[key]) {
-    state.conversations[key] = { ...conversationForKey(key), unread: 0 };
+    state.conversations[key] = { ...current, unread: 0 };
+  } else {
+    // Keep display name continuously in sync with state.channels & state.nodes
+    state.conversations[key].name = current.name;
+    state.conversations[key].kind = current.kind;
+    if (current.channel != null) state.conversations[key].channel = current.channel;
+    if (current.nodeId != null) state.conversations[key].nodeId = current.nodeId;
   }
   return state.conversations[key];
+}
+
+// Return a static, sorted array of channel keys (ch:0, ch:1, ch:2, ...)
+// representing all configured channels on the node (always including at least 0..7
+// or all indices from state.channels / messages).
+function getStaticChannelKeys() {
+  const keys = new Set();
+  
+  // Standard Meshtastic supports channels 0..7. Always include at minimum ch:0 through ch:7
+  for (let i = 0; i <= 7; i++) {
+    keys.add(`ch:${i}`);
+  }
+  
+  // Also include any channels explicitly configured in state.channels
+  if (Array.isArray(state.channels)) {
+    for (const c of state.channels) {
+      if (c && c.index != null) {
+        const idx = Number(c.index);
+        if (!isNaN(idx) && idx >= 0) keys.add(`ch:${idx}`);
+      }
+    }
+  }
+  
+  // Also include any ch: keys present in conversations or messagesByConv
+  for (const k of Object.keys(state.conversations)) {
+    if (k.startsWith('ch:')) keys.add(k);
+  }
+  for (const k of Object.keys(state.messagesByConv)) {
+    if (k.startsWith('ch:')) keys.add(k);
+  }
+  
+  return [...keys].sort((a, b) => {
+    const idxA = parseInt(a.slice(3), 10) || 0;
+    const idxB = parseInt(b.slice(3), 10) || 0;
+    return idxA - idxB;
+  });
 }
 
 // Render the conversation tab bar (channels + DM threads) with unread badges.
@@ -1047,25 +1092,24 @@ function renderConversationTabs() {
   const bar = document.getElementById('conversation-tabs');
   if (!bar) return;
 
-  // Always include the Primary channel; add any channel/DM seen in messages,
-  // plus every configured channel from the node so the tabs appear immediately
-  // (not only after a message arrives on that channel).
-  const keys = new Set(['ch:0']);
-  for (const k of Object.keys(state.conversations)) keys.add(k);
-  for (const k of Object.keys(state.messagesByConv)) {
-    if (state.messagesByConv[k].length) keys.add(k);
-  }
-  for (const ch of (state.channels || [])) {
-    if (ch && ch.index != null) keys.add(`ch:${ch.index}`);
-  }
+  const channelKeys = getStaticChannelKeys();
 
-  const ordered = [...keys].sort((a, b) => {
-    // Channels first (by number), then DMs.
-    const ca = a.startsWith('ch:') ? 0 : 1;
-    const cb = b.startsWith('ch:') ? 0 : 1;
-    if (ca !== cb) return ca - cb;
-    return a.localeCompare(b);
+  const dmKeysSet = new Set();
+  for (const k of Object.keys(state.conversations)) {
+    if (k.startsWith('dm:')) dmKeysSet.add(k);
+  }
+  for (const k of Object.keys(state.messagesByConv)) {
+    if (k.startsWith('dm:') && state.messagesByConv[k].length) dmKeysSet.add(k);
+  }
+  const dmKeys = [...dmKeysSet].sort((a, b) => {
+    const threadA = state.messagesByConv[a] || [];
+    const threadB = state.messagesByConv[b] || [];
+    const lastA = threadA.length ? threadA[threadA.length - 1].timestamp : 0;
+    const lastB = threadB.length ? threadB[threadB.length - 1].timestamp : 0;
+    return lastB - lastA;
   });
+
+  const ordered = [...channelKeys, ...dmKeys];
 
   bar.innerHTML = '';
   for (const key of ordered) {
@@ -1096,6 +1140,7 @@ function selectConversation(key) {
   syncChannelSelect();
 
   renderConversationTabs();
+  renderMessagesSidebar();
   renderMessagesThread();
   updateMessagesBadge();
 }
@@ -1107,22 +1152,18 @@ function renderChannelSelect() {
   if (!sel) return;
   const prev = sel.value;
 
-  const chans = (state.channels || []).filter(c => c && c.index != null);
-  // Always ensure channel 0 (Primary) is present.
-  const hasPrimary = chans.some(c => c.index === 0);
-  const list = hasPrimary ? chans : [{ index: 0, name: 'Primary' }, ...chans];
-
+  const staticKeys = getStaticChannelKeys();
   sel.innerHTML = '';
-  for (const c of list) {
+  for (const key of staticKeys) {
+    const conv = _ensureConversation(key);
     const opt = document.createElement('option');
-    opt.value = String(c.index);
-    opt.textContent = c.name ? `${c.name} (ch ${c.index})` : `Channel ${c.index}`;
+    opt.value = String(conv.channel);
+    opt.textContent = `${conv.name} (ch ${conv.channel})`;
     sel.appendChild(opt);
   }
 
-  // Restore previous selection if still present, else default to Primary.
-  if (prev && list.some(c => String(c.index) === prev)) sel.value = prev;
-  else sel.value = '0';
+  if (prev && staticKeys.some(k => String(_ensureConversation(k).channel) === prev)) sel.value = prev;
+  else sel.value = String(conversationForKey(state.activeConversation || 'ch:0').channel ?? 0);
 
   syncChannelSelect();
 }
@@ -1142,25 +1183,40 @@ function syncChannelSelect() {
 
 // Append a message object to its conversation thread + (optionally) to the UI.
 function storeMessage(msg, { skipUnread } = {}) {
-  const key = msg.conversation || (msg.is_dm ? `dm:${msg.from_id}` : `ch:${msg.channel ?? 0}`);
+  const chIdx = Number(msg.channel ?? 0);
+  const key = msg.conversation || (msg.is_dm ? `dm:${msg.from_id}` : `ch:${isNaN(chIdx) ? 0 : chIdx}`);
   if (!state.messagesByConv[key]) state.messagesByConv[key] = [];
   const thread = state.messagesByConv[key];
-  // Dedupe by id to avoid double-adding on poll repeats.
+  // Dedupe by id to avoid double-adding on poll or SSE repeats.
   if (thread.some(m => m.id === msg.id)) return;
-  // Meshtastic broadcasts our own sent packets back to us, so a DM we just
-  // sent also arrives as an "outgoing" server echo. Drop it if we already
-  // have an optimistic bubble with the same text sent within the last 3 seconds
-  // — this suppresses the firmware echo without silently dropping legitimately
-  // repeated messages (e.g. a user sending "OK" twice).
-  const THREE_SECONDS = 3;
+
+  // Check if an optimistic local bubble exists for this outgoing message.
+  // If so, upgrade the optimistic local entry in-place rather than appending a duplicate bubble.
+  if (msg.outgoing) {
+    const echoKey = `${key}:${msg.text || ''}`;
+    state._pendingEchoes = state._pendingEchoes || {};
+    const pending = state._pendingEchoes[echoKey];
+    if (pending) {
+      pending.id = msg.id;
+      pending.ack_status = msg.ack_status || pending.ack_status || 'delivered';
+      pending.ack_at = msg.ack_at ?? pending.ack_at;
+      state.seenMessageIds.add(msg.id);
+      delete state._pendingEchoes[echoKey];
+      return;
+    }
+  }
+
+  // Fallback deduplication for outgoing messages: compare text, destination, channel, and timestamp window.
+  const THREE_SECONDS = 5;
   const now = Date.now() / 1000;
   if (msg.outgoing && thread.some(m =>
     m.outgoing &&
     m.text === msg.text &&
-    m.destination === msg.destination &&
-    m.channel === msg.channel &&
+    (m.destination || null) === (msg.destination || null) &&
+    Number(m.channel ?? 0) === Number(msg.channel ?? 0) &&
     Math.abs((m.timestamp || 0) - (msg.timestamp || now)) < THREE_SECONDS
   )) return;
+
   thread.push(msg);
 
   if (skipUnread) return;
@@ -1272,32 +1328,41 @@ function renderMessagesSidebar() {
   const list = document.getElementById('messages-conv-list');
   if (!list) return;
 
-  const keys = new Set(['ch:0']);
-  for (const k of Object.keys(state.conversations)) keys.add(k);
+  const channelKeys = getStaticChannelKeys();
+
+  const dmKeysSet = new Set();
+  for (const k of Object.keys(state.conversations)) {
+    if (k.startsWith('dm:')) dmKeysSet.add(k);
+  }
   for (const k of Object.keys(state.messagesByConv)) {
-    if (state.messagesByConv[k].length) keys.add(k);
-  }
-  for (const ch of (state.channels || [])) {
-    if (ch && ch.index != null) keys.add(`ch:${ch.index}`);
+    if (k.startsWith('dm:') && state.messagesByConv[k].length) dmKeysSet.add(k);
   }
 
-  // Filter out dismissed conversations (except the active one)
-  const filtered = [...keys].filter(k => k === state.activeConversation || !state.dismissedConvs.has(k));
+  const filterText = (state.messageFilter || '').toLowerCase().trim();
 
-  // Separate keys into Channels and Direct Messages
-  const channelKeys = filtered.filter(k => k.startsWith('ch:')).sort((a, b) => {
-    const idxA = parseInt(a.slice(3), 10) || 0;
-    const idxB = parseInt(b.slice(3), 10) || 0;
-    return idxA - idxB;
-  });
-
-  const dmKeys = filtered.filter(k => k.startsWith('dm:')).sort((a, b) => {
+  // Filter DMs by dismissed status & search filter
+  const filteredDmKeys = [...dmKeysSet].filter(k => {
+    if (k !== state.activeConversation && state.dismissedConvs.has(k)) return false;
+    if (filterText) {
+      const conv = _ensureConversation(k);
+      return conv.name.toLowerCase().includes(filterText);
+    }
+    return true;
+  }).sort((a, b) => {
     const threadA = state.messagesByConv[a] || [];
     const threadB = state.messagesByConv[b] || [];
     const lastA = threadA.length ? threadA[threadA.length - 1].timestamp : 0;
     const lastB = threadB.length ? threadB[threadB.length - 1].timestamp : 0;
     return lastB - lastA;
   });
+
+  // Filter channels by search filter if present (static channels never dismissed)
+  const filteredChannelKeys = filterText
+    ? channelKeys.filter(k => {
+        const conv = _ensureConversation(k);
+        return conv.name.toLowerCase().includes(filterText);
+      })
+    : channelKeys;
 
   list.innerHTML = '';
 
@@ -1313,7 +1378,7 @@ function renderMessagesSidebar() {
       const thread = (state.messagesByConv[key] || []);
       const lastMsg = thread.length > 0 ? thread[thread.length - 1] : null;
       const time = lastMsg
-        ? new Date(lastMsg.timestamp * 1000).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+        ? formatMessageTime(lastMsg.timestamp)
         : '';
 
       const item = document.createElement('div');
@@ -1344,7 +1409,8 @@ function renderMessagesSidebar() {
       if (lastMsg) {
         const lastMsgEl = document.createElement('div');
         lastMsgEl.className = 'messages-conv-last-msg';
-        lastMsgEl.textContent = lastMsg.text || '(media)';
+        const senderPrefix = (conv.kind === 'channel' && lastMsg.from_name) ? `${lastMsg.from_name}: ` : '';
+        lastMsgEl.textContent = `${senderPrefix}${lastMsg.text || '(media)'}`;
         content.appendChild(lastMsgEl);
       }
 
@@ -1374,8 +1440,8 @@ function renderMessagesSidebar() {
     }
   };
 
-  renderSection('📡 Channels', channelKeys);
-  renderSection('💬 Direct Messages', dmKeys);
+  renderSection('📡 Channels', filteredChannelKeys);
+  renderSection('💬 Direct Messages', filteredDmKeys);
 }
 
 function selectMessagesConversation(key) {
@@ -1641,20 +1707,18 @@ function populateMessagesChannelSelect() {
   if (!sel) return;
   const prev = sel.value;
 
-  const chans = (state.channels || []).filter(c => c && c.index != null);
-  const hasPrimary = chans.some(c => c.index === 0);
-  const list = hasPrimary ? chans : [{ index: 0, name: 'Primary' }, ...chans];
-
+  const staticKeys = getStaticChannelKeys();
   sel.innerHTML = '';
-  for (const c of list) {
+  for (const key of staticKeys) {
+    const conv = _ensureConversation(key);
     const opt = document.createElement('option');
-    opt.value = String(c.index);
-    opt.textContent = c.name ? `${c.name} (ch ${c.index})` : `Channel ${c.index}`;
+    opt.value = String(conv.channel);
+    opt.textContent = `${conv.name} (ch ${conv.channel})`;
     sel.appendChild(opt);
   }
 
-  if (prev && list.some(c => String(c.index) === prev)) sel.value = prev;
-  else sel.value = '0';
+  if (prev && staticKeys.some(k => String(_ensureConversation(k).channel) === prev)) sel.value = prev;
+  else sel.value = String(conversationForKey(state.activeConversation || 'ch:0').channel ?? 0);
 }
 
 // ============================================================================
@@ -2289,10 +2353,10 @@ async function pollData() {
     }
   }
 
-  // Fetch position history for map trails — first poll, then every 120s (8 cycles).
+  // Fetch position history for map trails — first poll, then every 120s (2 × 60s cycles).
   // If the heatmap is currently visible, refresh every poll so it stays current.
   const heatmapVisible = fullMap._heatmapVisible || dashMap._heatmapVisible;
-  if (isFirstPoll || state._pollCount % 8 === 0 || heatmapVisible || fullMap._rulerActive) {
+  if (isFirstPoll || state._pollCount % 2 === 0 || heatmapVisible || fullMap._rulerActive) {
     fetchPositionHistory().then(data => {
       state.posHistory = data;
       dashMap.updateTrails(data, state.nodes);
@@ -2304,8 +2368,8 @@ async function pollData() {
     });
   }
 
-  // Fetch waypoints every poll when the map view is active; every 8 polls otherwise.
-  if (state.currentView === 'map' || isFirstPoll || state._pollCount % 8 === 0) {
+  // Fetch waypoints every poll when the map view is active; every 2 polls (120s) otherwise.
+  if (state.currentView === 'map' || isFirstPoll || state._pollCount % 2 === 0) {
     fetchWaypoints().then(wps => {
       fullMap.updateWaypoints(wps, handleDeleteWaypoint, handleUpdateWaypoint);
     }).catch(err => {
@@ -2313,8 +2377,8 @@ async function pollData() {
     });
   }
 
-  // Fetch hop distribution for the Hops chart — first poll, then every 4 polls.
-  if (isFirstPoll || state._pollCount % 4 === 0) {
+  // Fetch hop distribution for the Hops chart — first poll, then every 60s (every poll).
+  if (isFirstPoll || state._pollCount % 1 === 0) {
     fetchHops().then(data => charts.renderHops(data)).catch(err => {
       console.warn('Hops fetch failed:', err);
     });
@@ -2379,7 +2443,8 @@ function renderIncomingMessages(messages) {
     // This handles the case where the server echo arrives on the next poll
     // (~15 s later), well outside the 3-second firmware-echo dedup window.
     if (msg.outgoing) {
-      const echoKey = `${msg.conversation || ''}:${msg.text || ''}`;
+      const key = msg.conversation || (msg.is_dm ? `dm:${msg.from_id}` : `ch:${msg.channel ?? 0}`);
+      const echoKey = `${key}:${msg.text || ''}`;
       const pending = state._pendingEchoes[echoKey];
       if (pending) {
         // Upgrade the existing optimistic entry to the real server-confirmed one.
@@ -3153,7 +3218,11 @@ async function init() {
   // NOTE: we intentionally do NOT auto-fit to markers on first load so the map
   // stays centred on its default view (Durban, South Africa). Users can still
   // pan/zoom, and the fitToMarkers() helper remains available if needed.
-  // The recursive pollData setTimeout handles subsequent polling.
+  // The recursive pollData setTimeout handles subsequent slow-reconciliation polls.
+
+  // Start the real-time SSE stream. This replaces the 15 s poll as the primary
+  // update mechanism — the poll above is now just a slow full-reconciliation.
+  initEventSource();
 }
 
 // ============================================================================
@@ -3765,3 +3834,202 @@ async function handleUpdateWaypoint(waypointId, lat, lng) {
 }
 
 document.addEventListener('DOMContentLoaded', init);
+
+// ============================================================================
+// Real-Time SSE — Server-Sent Events client
+// ============================================================================
+
+/**
+ * Update the live-connection badge in the UI header.
+ * @param {'live'|'reconnecting'|'off'} state
+ */
+function _updateSseBadge(sseState) {
+  const badge = document.getElementById('sse-status-badge');
+  if (!badge) return;
+  if (sseState === 'live') {
+    badge.textContent = '● Live';
+    badge.title = 'Real-time updates active';
+    badge.className = 'sse-badge sse-live';
+  } else if (sseState === 'reconnecting') {
+    badge.textContent = '◌ Reconnecting…';
+    badge.title = 'SSE connection lost — retrying';
+    badge.className = 'sse-badge sse-reconnecting';
+  } else if (sseState === 'polling') {
+    badge.textContent = '○ Polling';
+    badge.title = 'Real-time push unavailable — using fallback polling';
+    badge.className = 'sse-badge sse-off';
+  } else {
+    badge.textContent = '○ Offline';
+    badge.title = 'Real-time updates unavailable';
+    badge.className = 'sse-badge sse-off';
+  }
+}
+
+/**
+ * Open a Server-Sent Events connection to GET /api/events.
+ *
+ * Handles named events pushed by the addon whenever a Meshtastic packet
+ * arrives. Updates only the affected UI panel instead of triggering a full
+ * poll, so the UI refreshes within ~100 ms of the radio receiving a packet.
+ *
+ * Reconnects automatically with exponential backoff (1 s → 2 s → … → 30 s)
+ * if the connection drops (network blip, addon restart, HA ingress timeout).
+ *
+ * Fallback: the existing pollData() setTimeout loop still runs every 60 s
+ * to catch any state that SSE may have missed.
+ */
+function initEventSource() {
+  // SSE reconnect backoff state.
+  let _retryDelayMs = 1_000;
+  let _es = null;
+  let _sseErrors = 0;
+
+  function _connect() {
+    if (_es) {
+      _es.close();
+      _es = null;
+    }
+
+    if (_sseErrors <= 2) {
+      _updateSseBadge('reconnecting');
+    }
+
+    // Derive the base URL using the same logic as api.js (strip trailing slash
+    // from pathname). This produces the correct absolute path under HA Ingress
+    // where a relative './api/events' can mis-resolve if the path has no trailing slash.
+    const _sseBase = window.location.pathname.replace(/\/+$/, '');
+    const es = new EventSource(`${_sseBase}/api/events`);
+    _es = es;
+
+    es.addEventListener('open', () => {
+      _retryDelayMs = 1_000; // reset backoff on successful open
+      _sseErrors = 0;
+      POLL_INTERVAL_MS = 60_000;
+      _updateSseBadge('live');
+    });
+
+    // --- Named event handlers ---
+
+    // New mesh text message: add to the conversation thread immediately.
+    es.addEventListener('message', (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (!msg || !msg.id) return;
+        // Reuse the same pipeline as the poll: storeMessage handles deduplication.
+        if (!state.seenMessageIds.has(msg.id)) {
+          state.seenMessageIds.add(msg.id);
+          storeMessage(msg, { skipUnread: false });
+          renderMessagesThread();
+          renderConversationTabs();
+          renderMessagesSidebar();
+          updateMessagesBadge();
+          _fireNewMessageNotification(msg);
+        }
+      } catch (err) {
+        console.warn('[SSE] message parse error:', err);
+      }
+    });
+
+    // Delivery ACK status update: update message delivery status in real-time.
+    es.addEventListener('ack_update', (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data && data.id && data.conversation) {
+          const thread = state.messagesByConv[data.conversation];
+          if (thread) {
+            const stored = thread.find(m => m.id === data.id);
+            if (stored) {
+              stored.ack_status = data.ack_status;
+              stored.ack_at = data.ack_at;
+              if (state.activeConversation === data.conversation) {
+                renderMessagesThread();
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[SSE] ack_update parse error:', err);
+      }
+    });
+
+    // Signal quality update: patch SNR/RSSI on the matching node row.
+    es.addEventListener('signal_update', (e) => {
+      try {
+        const { node_id, rx_snr, rx_rssi } = JSON.parse(e.data);
+        const node = state.nodes.find(n => n.id === node_id);
+        if (node) {
+          if (rx_snr != null) node.rx_snr = rx_snr;
+          if (rx_rssi != null) node.rx_rssi = rx_rssi;
+          // Trigger the reactive setter to re-render the nodes grid.
+          state.nodes = [...state.nodes];
+        }
+      } catch (err) {
+        console.warn('[SSE] signal_update parse error:', err);
+      }
+    });
+
+    // Position update: queue a targeted position-history refresh.
+    es.addEventListener('position', (e) => {
+      try {
+        const { node_id } = JSON.parse(e.data);
+        // Re-fetch position history only — cheaper than a full poll.
+        fetchPositionHistory().then(data => {
+          state.posHistory = data;
+          dashMap.updateTrails(data, state.nodes);
+          fullMap.updateTrails(data, state.nodes);
+          fullMap.setPosHistory(data);
+        }).catch(() => {});
+      } catch (err) {
+        console.warn('[SSE] position parse error:', err);
+      }
+    });
+
+    // Telemetry update: trigger a node-list refresh to pick up new battery/metrics.
+    es.addEventListener('telemetry', () => {
+      // Full node list re-fetch is lightweight (<50 ms local) and ensures
+      // battery voltage / device metrics are current.
+      fetchNodes().then(raw => {
+        if (!Array.isArray(raw)) return;
+        state.nodes = raw;
+      }).catch(() => {});
+    });
+
+    // Traceroute completed: fetch only the hops chart data which changes after
+    // a traceroute. Do NOT call pollData() — that would fork a new recursive
+    // poll loop on every traceroute event, causing unbounded parallel polling.
+    es.addEventListener('traceroute', () => {
+      fetchHops().then(data => charts.renderHops(data)).catch(() => {});
+      // Also refresh the full node list once so hop-count badges update.
+      fetchNodes().then(raw => { if (Array.isArray(raw)) state.nodes = raw; }).catch(() => {});
+    });
+
+    // Waypoint received from mesh: refresh the map layer.
+    es.addEventListener('waypoint', () => {
+      fetchWaypoints().then(wps => {
+        fullMap.updateWaypoints(wps, handleDeleteWaypoint, handleUpdateWaypoint);
+      }).catch(() => {});
+    });
+
+    es.onerror = () => {
+      // onerror fires on connection loss; the browser may retry automatically,
+      // but we take control with our own backoff to surface status to the user.
+      es.close();
+      _es = null;
+      _sseErrors++;
+
+      if (_sseErrors > 2) {
+        POLL_INTERVAL_MS = 15_000; // Accelerate fallback polling
+        _updateSseBadge('polling');
+      } else {
+        _updateSseBadge('reconnecting');
+      }
+
+      const delay = _retryDelayMs;
+      _retryDelayMs = Math.min(_retryDelayMs * 2, 60_000);
+      console.info(`[SSE] connection lost — reconnecting in ${delay}ms (Fallback polling at ${POLL_INTERVAL_MS}ms)`);
+      setTimeout(_connect, delay);
+    };
+  }
+
+  _connect();
+}

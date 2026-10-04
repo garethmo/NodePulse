@@ -70,6 +70,7 @@ from .routes import (
     handle_track_node,
     handle_tracked_nodes,
     handle_update_waypoint,
+    handle_events,
 )
 from .telegram_bot import TelegramBot
 from .terrain import TerrainService
@@ -103,6 +104,13 @@ async def _on_startup(app: web.Application) -> None:
     conn: MeshtasticConnection = app["connection"]
 
     logger.debug("NodePulse addon starting up")
+
+    # Capture the running event loop so connection.py can schedule coroutines
+    # from the synchronous meshtastic receive thread via run_coroutine_threadsafe.
+    # Use get_running_loop() (not get_event_loop()) — we are inside an async
+    # function so the loop is guaranteed to be running already.
+    from .connection import set_event_loop as _set_loop
+    _set_loop(asyncio.get_running_loop())
 
     # Launch the background health monitor. We store the Task reference on
     # the app so we can cancel it cleanly on shutdown.
@@ -261,11 +269,20 @@ async def _no_cache_middleware(request: web.Request, handler):
     that caches an old JS module breaks the whole UI (e.g. app.js imports an
     export the cached api.js doesn't provide -> module parse error -> stuck on
     "Loading nodes…"). no-store forces a full re-fetch on every load.
+
+    Note: StreamResponse (used by the SSE /api/events endpoint) locks its
+    headers as a CIMultiDictProxy after prepare() is called. Attempting to
+    set headers after that raises TypeError. SSE already sets its own
+    cache-control headers before prepare(), so we skip the write safely.
     """
     response = await handler(request)
-    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-    response.headers["Pragma"] = "no-cache"
-    response.headers["Expires"] = "0"
+    try:
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    except (TypeError, RuntimeError):
+        # Headers already sent — this is expected for streaming responses (SSE).
+        pass
     return response
 
 
@@ -377,6 +394,8 @@ def build_app(config) -> web.Application:
     app.router.add_post("/api/admin/{node_id}/action/{action}", handle_admin_action)
     # Security scanner
     app.router.add_get("/api/security/scan", handle_get_security_scan)
+    # Real-time SSE event stream (replaces polling for the Web UI)
+    app.router.add_get("/api/events", handle_events)
     # Terrain link analysis
     app.router.add_get("/api/terrain/elevation", handle_terrain_elevation)
     app.router.add_post("/api/terrain/link", handle_terrain_link)
