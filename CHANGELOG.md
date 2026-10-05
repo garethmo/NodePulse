@@ -2,6 +2,11 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.32.2] - 2026-10-05
+### Fixed
+- **Traceroute RTT Attribution** — Fixed an edge case where RTT (round-trip time) could be reported as blank when an intermediate hop answered the `RouteDiscovery` request instead of the target node itself. The `pending_traceroute_times` lookup now falls back to `from_id` when the `target_id` key is missing, ensuring RTT is always calculated when timing data is available.
+- **Traceroute Hop Limit Logging** — Added debug log of the actual hop limit used per traceroute dispatch, making it easier to diagnose failed traceroutes on networks with constrained hop limits.
+
 ## [1.32.1] - 2026-10-04
 ### Fixed
 - **SSE Fallback for HA Companion App** — Implemented a graceful fallback for Server-Sent Events (SSE). When using the Home Assistant Companion App (or routing through Nabu Casa/Cloudflare), which often drops or buffers SSE streams, NodePulse now detects persistent connection failures, suppresses the "Reconnecting" badge, and automatically shifts back to a 15-second polling interval to keep the UI fully responsive.

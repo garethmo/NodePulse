@@ -3541,7 +3541,12 @@ class MeshtasticConnection:
                 elif self._pending_traceroute_dests:
                     target_id = self._pending_traceroute_dests.pop(0)
 
+                # Try target_id first (common case: node answered its own request),
+                # then fall back to from_id (FIFO fallback: intermediate hop answered
+                # and target_id was already removed or never registered separately).
                 queued_time = self._pending_traceroute_times.pop(target_id, None)
+                if queued_time is None and target_id != from_id:
+                    queued_time = self._pending_traceroute_times.pop(from_id, None)
                 if queued_time is not None:
                     rtt_ms = int((time.time() - queued_time) * 1000)
 
@@ -4822,6 +4827,11 @@ class MeshtasticConnection:
                         hop_limit = getattr(lora_config, "hop_limit", 7)
                 except Exception:  # noqa: BLE001
                     pass
+
+                logger.debug(
+                    "Dispatching traceroute to %s with hop_limit=%d",
+                    destination, hop_limit,
+                )
 
                 # The call blocks until the RouteDiscovery reply arrives (the
                 # library waits internally for the acknowledgment flag).
