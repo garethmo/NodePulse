@@ -18,6 +18,8 @@ The addon runs as a Home Assistant addon (Docker container) serving a REST API a
 | **Single-TCP-slot handling** | Detect and log the Meshtastic firmware's single-client limit with a clear upgrade path (serial/BLE for the official integration, TCP slot for NodePulse) |
 | **Thread-safe Lock Architecture (1.22.0+)** | Deadlock-free concurrency model enforcing strict `_lock` → `_nodes_lock` ordering, snapshotting interface and message state during I/O operations, and thread-safe scheduled message processing |
 | **Robust Location Sync (1.23.0+)** | Direct Home Assistant state machine injection bypassing cached property conflicts for instant `device_tracker` and `geo_location` coordinate resolution |
+| **Real-Time SSE Push (1.33.0+)** | Persistent `GET /api/events` Server-Sent Events stream pushes new messages, delivery ACKs, traceroute completions, position fixes, telemetry, and waypoints to the browser within ~100 ms of radio reception. The background poll runs every 60 s as a state-reconciliation fallback only. |
+| **SSE Companion App Fallback (1.33.0+)** | After 2+ consecutive SSE failures (common on HA Companion App / Nabu Casa remote access), NodePulse silently shifts to a 15-second polling mode and shows a quiet "Polling" badge instead of flashing "Reconnecting". Reverts to SSE automatically when the connection recovers. |
 
 ### REST API
 
@@ -53,6 +55,7 @@ The addon runs as a Home Assistant addon (Docker container) serving a REST API a
 | `/api/admin/{node_id}/config` | GET | Read a remote node's full configuration (over the admin channel / admin keys) |
 | `/api/admin/{node_id}/config/{section}` | PUT | Patch one config section on a remote node |
 | `/api/admin/{node_id}/action/{action}` | POST | Run an admin action (reboot/shutdown/factory reset/NodeDB reset/fixed position/clock/evict) on a remote node |
+| `/api/events` | GET | **SSE stream** — persistent event stream pushing `message`, `ack_update`, `signal_update`, `position`, `telemetry`, `traceroute`, and `waypoint` events to the browser in real time |
 
 ### Persistence
 
@@ -87,7 +90,7 @@ Each card shows:
 - **Header**: Long name, node ID, hardware model, stale/cached badge, **Favorite star (★)** — click to pin/unpin; favorites appear at top of list
 - **Tags**: Comma-separated user-defined labels with inline editor
 - **Metrics grid**: SNR, RSSI, hops away, battery, distance, GPS fix, **Role** (CLIENT, ROUTER, REPEATER, TRACKER, etc.), **Last Heard** (relative time, e.g. "2m ago"), temperature, humidity, pressure
-- **Traceroute**: Forward and return path with hop-by-hop resolved names and timing; shows "⏱ Timed out — no route discovered" when the 300s window expires. Path construction properly handles different firmware versions that may or may not include self/target nodes in the route array, preventing duplicate nodes and ensuring correct multi-hop visualization.
+- **Traceroute**: Forward and return path with hop-by-hop resolved names, per-hop SNR chips, RTT (round-trip time with per-hop average), and total hop count; shows "⏱ Timed out — no route discovered" when the 300s window expires. RTT is correctly attributed even when an intermediate hop answers (FIFO fallback). Path construction properly handles different firmware versions preventing duplicate nodes and ensuring correct multi-hop visualization.
 - **Neighbors**: Per-peer SNR chips when NEIGHBORINFO_APP data is available
 - **Actions**: Traceroute, Request Position, Message, Track in HA, Notify, Delete (red button with confirmation prompt)
 - **Traceroute All (Staggered Sweep)** — A dedicated "⛓ Traceroute All" button in the toolbar dispatches traceroutes to every visible remote node sequentially with a 5-second inter-node pause, live progress tracking, and instant cancellation (`✕`).

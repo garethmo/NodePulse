@@ -2,6 +2,15 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.33.0] - 2026-10-05
+### Added
+- **Real-Time Server-Sent Events (SSE) Push** — The Web UI now maintains a persistent SSE connection to `GET /api/events`. All time-sensitive events — new messages, delivery ACKs, traceroute completions, position updates, telemetry, and waypoints — are pushed instantly to the browser within ~100 ms of the radio receiving a packet. The background poll loop has been reduced to a 60-second slow reconciliation fallback.
+- **Graceful SSE Fallback for HA Companion App** — When the HA Companion App or remote Nabu Casa/Cloudflare proxy drops the SSE stream (more than 2 consecutive failures), NodePulse automatically suppresses the "Reconnecting" badge, shows a quiet "Polling" status, and accelerates the fallback poll interval to 15 seconds for a seamless experience without UI flashing.
+
+### Fixed
+- **Traceroute RTT Attribution** — Fixed an edge case where RTT (round-trip time) displayed blank when an intermediate hop answered the `RouteDiscovery` request instead of the target node. The `pending_traceroute_times` lookup now falls back to `from_id` when the `target_id` key is missing, ensuring RTT is always calculated when timing data is available.
+- **Traceroute Hop Limit Logging** — Added debug-level logging of the actual hop limit dispatched per traceroute request, making it easier to diagnose failed traceroutes on constrained networks.
+
 ## [1.32.2] - 2026-10-05
 ### Fixed
 - **Traceroute RTT Attribution** — Fixed an edge case where RTT (round-trip time) could be reported as blank when an intermediate hop answered the `RouteDiscovery` request instead of the target node itself. The `pending_traceroute_times` lookup now falls back to `from_id` when the `target_id` key is missing, ensuring RTT is always calculated when timing data is available.
