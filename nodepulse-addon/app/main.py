@@ -38,6 +38,7 @@ from .routes import (
     handle_delete_node,
     handle_delete_waypoint,
     handle_download_data_file,
+    handle_events,
     handle_export_messages,
     handle_favorites,
     handle_get_device_config,
@@ -70,7 +71,6 @@ from .routes import (
     handle_track_node,
     handle_tracked_nodes,
     handle_update_waypoint,
-    handle_events,
 )
 from .telegram_bot import TelegramBot
 from .terrain import TerrainService

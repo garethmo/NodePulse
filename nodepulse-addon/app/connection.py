@@ -100,14 +100,11 @@ def _broadcast_sse_event(event_type: str, payload: dict) -> None:
             q.put_nowait(event)
         except asyncio.QueueFull:
             # Evict the oldest stale event and make room for the fresh one.
-            try:
+            with contextlib.suppress(asyncio.QueueEmpty):
                 q.get_nowait()
-            except asyncio.QueueEmpty:
-                pass
-            try:
+            with contextlib.suppress(asyncio.QueueFull):
+                # extremely unlikely — discard rather than block
                 q.put_nowait(event)
-            except asyncio.QueueFull:
-                pass  # extremely unlikely — discard rather than block
             evicted += 1
     if evicted:
         logger.debug("SSE broadcast: evicted oldest event for %s slow client(s) (type=%s)", evicted, event_type)

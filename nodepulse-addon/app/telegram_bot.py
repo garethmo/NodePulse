@@ -170,8 +170,8 @@ class TelegramBot:
         def _match_chat(cid: str, authorized: set[str]) -> bool:
             if cid in authorized:
                 return True
-            clean = cid.lstrip("-100").lstrip("-")
-            return any(a.lstrip("-100").lstrip("-") == clean for a in authorized)
+            clean = cid.removeprefix("-100").lstrip("-")
+            return any(a.removeprefix("-100").lstrip("-") == clean for a in authorized)
 
         if not _match_chat(chat_id, self.authorized_chat_ids):
             logger.warning(
@@ -181,7 +181,7 @@ class TelegramBot:
             return
 
         # Record live chat_id format (e.g. -100123456789) so outgoing mesh forwards reach Telegram
-        clean_id = chat_id.lstrip("-100").lstrip("-")
+        clean_id = chat_id.removeprefix("-100").lstrip("-")
         self._live_chat_map[clean_id] = chat_id
             
         text = message.get("text", "").strip()
@@ -1141,7 +1141,7 @@ class TelegramBot:
             logger.warning("Telegram _send_text skipped: no target chat_id configured")
             return None
 
-        clean_target = raw_target.lstrip("-100").lstrip("-")
+        clean_target = raw_target.removeprefix("-100").lstrip("-")
         target_chat_id = self._live_chat_map.get(clean_target, raw_target)
 
         candidates = [target_chat_id]

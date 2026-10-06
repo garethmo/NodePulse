@@ -20,6 +20,7 @@ The addon runs as a Home Assistant addon (Docker container) serving a REST API a
 | **Robust Location Sync (1.23.0+)** | Direct Home Assistant state machine injection bypassing cached property conflicts for instant `device_tracker` and `geo_location` coordinate resolution |
 | **Real-Time SSE Push (1.33.0+)** | Persistent `GET /api/events` Server-Sent Events stream pushes new messages, delivery ACKs, traceroute completions, position fixes, telemetry, and waypoints to the browser within ~100 ms of radio reception. The background poll runs every 60 s as a state-reconciliation fallback only. |
 | **SSE Companion App Fallback (1.33.0+)** | After 2+ consecutive SSE failures (common on HA Companion App / Nabu Casa remote access), NodePulse silently shifts to a 15-second polling mode and shows a quiet "Polling" badge instead of flashing "Reconnecting". Reverts to SSE automatically when the connection recovers. |
+| **Telegram Chat-ID Prefix Matching (1.33.1+)** | Supergroup ID normalisation now uses `str.removeprefix("-100")` instead of `str.lstrip("-100")`. The previous character-set stripping could silently mangle IDs whose digits after `-` began with `1` or `0`, causing authorization mismatches for some users. |
 
 ### REST API
 

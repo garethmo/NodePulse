@@ -2,6 +2,12 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.33.1] - 2026-10-06
+### Fixed
+- **Code Quality — SSE Eviction Logic** — Replaced bare `try/except/pass` blocks in the SSE broadcast eviction path with `contextlib.suppress()` (`SIM105`).
+- **Code Quality — Import Ordering** — Moved `handle_events` to its correct alphabetical position in the `routes` import block (`I001`).
+- **Code Quality — Telegram Chat-ID Prefix Stripping** — Replaced `lstrip("-100")` (character-set stripping, semantically wrong) with `removeprefix("-100")` at all four call-sites (`B005`). Fixes a subtle bug where numeric-leading chat IDs could be incorrectly mangled.
+
 ## [1.33.0] - 2026-10-05
 ### Added
 - **Real-Time Server-Sent Events (SSE) Push** — The Web UI now maintains a persistent SSE connection to `GET /api/events`. All time-sensitive events — new messages, delivery ACKs, traceroute completions, position updates, telemetry, and waypoints — are pushed instantly to the browser within ~100 ms of the radio receiving a packet. The background poll loop has been reduced to a 60-second slow reconciliation fallback.
