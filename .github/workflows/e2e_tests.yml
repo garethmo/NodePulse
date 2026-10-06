@@ -36,6 +36,13 @@ jobs:
         pip install -r requirements.txt
         pip install -r requirements-test.txt
 
+    - name: Cache Playwright browsers
+      uses: actions/cache@v4
+      id: playwright-cache
+      with:
+        path: ~/.cache/ms-playwright
+        key: playwright-chromium-${{ hashFiles('nodepulse-addon/requirements-test.txt') }}
+
     - name: Lint
       working-directory: ./nodepulse-addon
       run: |
@@ -48,6 +55,8 @@ jobs:
 
     - name: Install Playwright Browsers
       working-directory: ./nodepulse-addon
+      # Only download when the cache missed — saves ~2 min on cache hits.
+      if: steps.playwright-cache.outputs.cache-hit != 'true'
       run: playwright install chromium --with-deps
 
     - name: Run E2E tests
