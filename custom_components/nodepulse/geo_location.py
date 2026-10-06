@@ -1,15 +1,11 @@
 """
 NodePulse — Geo Location Platform.
 
-Registers a geo_location entity for each tracked node with GPS coordinates.
-HA renders these on the built-in map card natively.
-
-Each entity exposes:
-  - Current lat/lng (matching the node's latest position)
-  - Node metadata (SNR, hops, short name, position-fix count) as extra
-    attributes.
-
-The HA Map card natively plots ``geo_location`` entities.
+Registers a geo_location entity for every tracked node. The HA map card
+natively plots these entities. When a node has valid GPS coordinates the pin
+appears immediately; nodes without a fix are registered but hold no position,
+so they appear on the map as soon as their first GPS update arrives without
+needing a re-discovery cycle.
 """
 import logging
 from typing import Any, Dict, Optional
@@ -32,21 +28,19 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Dynamic geo_location discovery — shared NodeDiscovery helper (Q12)."""
-    coordinator: NodePulseCoordinator = hass.data[DOMAIN][entry.entry_id]
+    """Dynamic geo_location discovery — shared NodeDiscovery helper (Q12).
 
-    def _has_gps_fix(node: Dict[str, Any]) -> bool:
-        lat = node.get("latitude")
-        lon = node.get("longitude")
-        if lat is None or lon is None:
-            return False
-        return not (abs(lat) < 1e-9 and abs(lon) < 1e-9)
+    A geo_location entity is created for every tracked node regardless of
+    whether it currently has a GPS fix. Coordinates are updated on each
+    coordinator refresh; None coordinates mean unknown location.
+    """
+    coordinator: NodePulseCoordinator = hass.data[DOMAIN][entry.entry_id]
 
     discovery = NodeDiscovery(coordinator, entry)
     discovery.attach(
         hass,
         async_add_entities,
-        should_create=_has_gps_fix,
+        should_create=lambda node: True,
         make_entities=lambda node: [NodeGeoLocation(coordinator, entry, node["id"])],
     )
 

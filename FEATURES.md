@@ -21,6 +21,8 @@ The addon runs as a Home Assistant addon (Docker container) serving a REST API a
 | **Real-Time SSE Push (1.33.0+)** | Persistent `GET /api/events` Server-Sent Events stream pushes new messages, delivery ACKs, traceroute completions, position fixes, telemetry, and waypoints to the browser within ~100 ms of radio reception. The background poll runs every 60 s as a state-reconciliation fallback only. |
 | **SSE Companion App Fallback (1.33.0+)** | After 2+ consecutive SSE failures (common on HA Companion App / Nabu Casa remote access), NodePulse silently shifts to a 15-second polling mode and shows a quiet "Polling" badge instead of flashing "Reconnecting". Reverts to SSE automatically when the connection recovers. |
 | **Telegram Chat-ID Prefix Matching (1.33.1+)** | Supergroup ID normalisation now uses `str.removeprefix("-100")` instead of `str.lstrip("-100")`. The previous character-set stripping could silently mangle IDs whose digits after `-` began with `1` or `0`, causing authorization mismatches for some users. |
+| **Instant HA Map Appearance (1.33.1+)** | `device_tracker` and `geo_location` entities are registered for every tracked node at discovery time (no GPS-fix gate). Nodes with no GPS fix report unknown location and appear on the HA map immediately when their first position update arrives — no re-discovery cycle needed. |
+| **Ghost Entity Prevention (1.33.1+)** | When a node is removed from the tracked set, `NodeDiscovery` now also removes its entry from the HA Entity Registry, preventing it from ghosting back after an addon restart. |
 
 ### REST API
 

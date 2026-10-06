@@ -1,17 +1,11 @@
 """
 NodePulse — Device Tracker Platform.
 
-Registers a device_tracker entity for each node that has GPS coordinates.
-HA renders these on the native map card, giving a live view of node locations
-alongside any other tracked devices (phones, vehicles, etc.) in the system.
-
-Nodes without a GPS fix are registered but reported as "not_home" / unknown
-location — HA handles this gracefully by not pinning them to a map position.
-
-Design decision: We extend CoordinatorEntity + TrackerEntity rather than
-implementing a full ScannerEntity because we are not scanning a local network —
-we are receiving position data from the mesh. TrackerEntity is the correct
-choice for externally-reported GPS coordinates.
+Registers a device_tracker entity for every tracked node. When a node has a
+valid GPS fix, HA plots it on the native map card alongside other tracked
+devices. Nodes without a fix are registered but report an unknown location,
+so they appear on the map the moment their first position update arrives
+without needing a re-discovery cycle.
 """
 import logging
 from typing import Any, Dict, Optional
@@ -38,24 +32,20 @@ async def async_setup_entry(
     """
     Dynamic tracker discovery — shared NodeDiscovery helper (Q12).
 
-    We only create a tracker for nodes that actually report GPS coordinates.
-    Nodes without GPS still appear in the node list panel and sensors but
-    do not clutter the HA map with unknown-location pins.
+    A device_tracker entity is created for every tracked node regardless of
+    whether it has a GPS fix at discovery time. Coordinates are populated (and
+    updated) on every coordinator refresh. When no fix is available, latitude
+    and longitude are None and HA reports the device as an unknown location —
+    the entity is already registered, so it will appear on the map immediately
+    once a GPS fix arrives without requiring a new discovery cycle.
     """
     coordinator: NodePulseCoordinator = hass.data[DOMAIN][entry.entry_id]
-
-    def _has_gps_fix(node: Dict[str, Any]) -> bool:
-        lat = node.get("latitude")
-        lon = node.get("longitude")
-        if lat is None or lon is None:
-            return False
-        return not (abs(lat) < 1e-9 and abs(lon) < 1e-9)
 
     discovery = NodeDiscovery(coordinator, entry)
     discovery.attach(
         hass,
         async_add_entities,
-        should_create=_has_gps_fix,
+        should_create=lambda node: True,
         make_entities=lambda node: [NodeTracker(coordinator, entry, node["id"])],
     )
 

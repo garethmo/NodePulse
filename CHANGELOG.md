@@ -7,6 +7,8 @@ All notable changes to NodePulse are documented here.
 - **Code Quality — SSE Eviction Logic** — Replaced bare `try/except/pass` blocks in the SSE broadcast eviction path (`connection.py`) with `contextlib.suppress()`, satisfying the `SIM105` lint rule and making the intent clearer.
 - **Code Quality — Import Ordering** — Moved `handle_events` to its correct alphabetical position in the `routes` import block in `main.py` (`I001`).
 - **Code Quality — Telegram Chat-ID Prefix Stripping** — Replaced `lstrip("-100")` (which incorrectly treated the argument as a *character set*) with `removeprefix("-100")` across all four call-sites in `telegram_bot.py` (`B005`). This fixes a subtle semantic bug where IDs beginning with digits `1` or `0` after the dash could be silently mangled.
+- **HA Integration — Device Tracker & Geo-Location Entity Registration** — Removed the GPS-fix gate (`_has_gps_fix`) from `device_tracker.py` and `geo_location.py`. Entities are now registered for every tracked node on first discovery; when no GPS fix is available HA reports unknown location, and the entity appears on the map immediately once coordinates arrive — no re-discovery cycle required.
+- **HA Integration — Ghost Entity Prevention** — `NodeDiscovery` in `helpers.py` now removes stale entities from the HA Entity Registry (via `entity_registry.async_remove()`) in addition to the live state machine, preventing ghost entities from being recreated after an addon restart.
 
 ## [1.33.0] - 2026-10-05
 ### Added

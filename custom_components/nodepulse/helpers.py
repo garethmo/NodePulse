@@ -9,6 +9,7 @@ centralised the coordinator lookup that used to be copy-pasted into
 from typing import Optional
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 
 from .const import DOMAIN
 from .coordinator import NodePulseCoordinator
@@ -84,11 +85,27 @@ class NodeDiscovery:
         tracked = self.coordinator.tracked_nodes
 
         # Remove entities for nodes that are no longer tracked.
+        # We must also remove the entity registry entry — async_remove() alone
+        # only drops the entity from the live state machine, but the registry
+        # entry in core.entity_registry persists across restarts and would
+        # cause the entity to ghost back the next time HA boots.
+        registry = er.async_get(hass)
         for entity in list(self._registered_entities):
             nid = getattr(entity, "_node_id", None)
             if nid is not None and nid not in tracked:
                 self._registered_entities.remove(entity)
                 self._registered_node_ids.discard(nid)
+                # Remove from the persistent entity registry first so HA
+                # does not recreate it on the next restart.
+                unique_id = getattr(entity, "unique_id", None)
+                if unique_id:
+                    registry_entry = registry.async_get_entity_id(
+                        entity.platform.domain if hasattr(entity, "platform") and entity.platform else "",
+                        entity.platform.platform_name if hasattr(entity, "platform") and entity.platform else "",
+                        unique_id,
+                    )
+                    if registry_entry:
+                        registry.async_remove(registry_entry)
                 hass.async_create_task(entity.async_remove(force_remove=True))
 
         new_entities = []
