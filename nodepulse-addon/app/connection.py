@@ -2055,6 +2055,10 @@ class MeshtasticConnection:
                     "altitude": pos.get("altitude"),
                     "timestamp": int(time.time()),
                 })
+                # Treat every position packet as real-time priority: push HA
+                # immediately so device_tracker entities update without waiting
+                # for the next polling cycle.
+                self._trigger_ha_push()
                 return
 
             # --- Routing ACKs (delivery confirmation) --------------------
