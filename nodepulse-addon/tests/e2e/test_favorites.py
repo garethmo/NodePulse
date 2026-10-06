@@ -16,17 +16,21 @@ pytestmark = pytest.mark.asyncio
 
 
 async def _wait_for_poll(async_page: Page):
-    """Wait for the initial pollData() to complete and render nodes."""
-    await async_page.wait_for_timeout(3000)
+    """Wait for the initial pollData() to complete and render nodes.
+
+    Uses wait_for_selector rather than a fixed sleep so the test proceeds
+    as soon as the first round-trip finishes (typically <500 ms) instead
+    of always burning 3 seconds.
+    """
+    await async_page.wait_for_selector(".node-card", timeout=8000)
 
 
 async def _goto_nodes_tab(async_page: Page, server_url: str):
-    """Navigate to the Nodes tab."""
+    """Navigate to the Nodes tab and wait for node cards to render."""
     await async_page.goto(server_url, wait_until="domcontentloaded")
     await _wait_for_poll(async_page)
     await async_page.click("#header-tabs .tab-btn[data-view='nodes']")
-    await _wait_for_poll(async_page)
-    # Wait for node cards to render
+    # node-card is already in DOM from the initial poll; just confirm visible.
     await async_page.wait_for_selector(".node-card", timeout=5000)
 
 
@@ -75,11 +79,9 @@ async def test_favorite_nodes_sorted_to_top(async_page: Page, aio_server):
     # Click favorite on the first node
     first_fav = node_cards.first.locator(".node-fav-btn")
     await first_fav.click()
-    
-    # Wait for re-render
-    await _wait_for_poll(async_page)
-    
-    # The first node should still be first (now with active favorite)
+
+    # The first node should still be first (now with active favourite).
+    # expect() auto-retries until the class appears — no sleep needed.
     fav_button_first = node_cards.first.locator(".node-fav-btn")
     await expect(fav_button_first).to_have_class(re.compile(r".*active.*"))
 
@@ -96,11 +98,11 @@ async def test_favorites_persist_in_localstorage(async_page: Page, aio_server):
     # Verify it's active
     await expect(fav_button).to_have_class(re.compile(r".*active.*"))
     
-    # Reload the page
+    # Reload the page and wait for nodes to re-render
     await async_page.reload(wait_until="domcontentloaded")
     await _wait_for_poll(async_page)
     await async_page.click("#header-tabs .tab-btn[data-view='nodes']")
-    await _wait_for_poll(async_page)
+    await async_page.wait_for_selector(".node-card", timeout=5000)
     
     # Verify favorite is still active
     fav_button = async_page.locator(".node-fav-btn").first
