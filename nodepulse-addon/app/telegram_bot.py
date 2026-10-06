@@ -1133,55 +1133,37 @@ class TelegramBot:
         proactive mesh-to-Telegram forwards), the configured default forward
         chat is used as a fallback.
         """
-        if not self._session:
-            return None
-            
-        raw_target = chat_id or self._default_forward_chat
-        if not raw_target:
+        target = chat_id or self._default_forward_chat
+        if not target:
             logger.warning("Telegram _send_text skipped: no target chat_id configured")
             return None
 
-        clean_target = raw_target.removeprefix("-100").lstrip("-")
-        target_chat_id = self._live_chat_map.get(clean_target, raw_target)
+        # Attempt 1: Markdown formatting
+        try:
+            payload = {"chat_id": target, "text": text, "parse_mode": "Markdown"}
+            data = await self._api_call("sendMessage", payload)
+            if data.get("ok"):
+                return data.get("result", {}).get("message_id")
+            description = data.get("description", "")
+            if not any(kw in description.lower() for kw in ("parse", "entities", "markdown")):
+                # Non-markdown error (e.g. chat not found, rate limit) — don't retry as plain text
+                logger.warning("Telegram sendMessage to %s rejected: %s", target, description)
+                return None
+            logger.warning(
+                "Telegram Markdown send rejected (%s); retrying as plain text", description
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Telegram Markdown send failed (%s); retrying plain text", exc)
 
-        candidates = [target_chat_id]
-        if not target_chat_id.startswith("-100") and clean_target:
-            candidates.append(f"-100{clean_target}")
-        if not target_chat_id.startswith("-") and clean_target:
-            candidates.append(f"-{clean_target}")
-
-        for cid in candidates:
-            # Attempt 1: Markdown formatting
-            try:
-                url = f"https://api.telegram.org/bot{self.token}/sendMessage"
-                payload = {"chat_id": cid, "text": text, "parse_mode": "Markdown"}
-                async with self._session.post(url, json=payload) as resp:
-                    data = await resp.json() if resp.content_type == "application/json" else {}
-                    if resp.status == 200 and data.get("ok"):
-                        self._live_chat_map[clean_target] = cid
-                        return data.get("result", {}).get("message_id")
-                    description = data.get("description", "")
-                    if "chat not found" in description.lower():
-                        continue
-                    logger.warning("Telegram Markdown send to %s rejected (status %s: %s)", cid, resp.status, description)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Telegram Markdown send to %s failed (%s); retrying plain text", cid, exc)
-
-            # Attempt 2: Plain text fallback (robust if Markdown contained unescaped entities)
-            try:
-                url = f"https://api.telegram.org/bot{self.token}/sendMessage"
-                payload = {"chat_id": cid, "text": text}
-                async with self._session.post(url, json=payload) as resp:
-                    data = await resp.json() if resp.content_type == "application/json" else {}
-                    if resp.status == 200 and data.get("ok"):
-                        self._live_chat_map[clean_target] = cid
-                        return data.get("result", {}).get("message_id")
-                    description = data.get("description", "")
-                    if "chat not found" in description.lower():
-                        continue
-                    logger.error("Telegram plain text sendMessage rejected for %s: %s", cid, data)
-            except Exception as exc:  # noqa: BLE001
-                logger.error("Failed to send Telegram response to chat %s: %s", cid, exc)
+        # Attempt 2: Plain text fallback (robust if Markdown contained unescaped entities)
+        try:
+            payload = {"chat_id": target, "text": text}
+            data = await self._api_call("sendMessage", payload)
+            if data.get("ok"):
+                return data.get("result", {}).get("message_id")
+            logger.error("Telegram plain text sendMessage rejected for %s: %s", target, data)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Failed to send Telegram response to chat %s: %s", target, exc)
 
         return None
 
@@ -1275,6 +1257,10 @@ class TelegramBot:
         if entry.get("from_telegram") or from_name.startswith("📱"):
             return
 
+        # Do not forward our own outgoing messages back to Telegram
+        if entry.get("outgoing"):
+            return
+
         is_dm = entry.get("is_dm", False)
         raw_ch = entry.get("channel")
         if raw_ch is None:
@@ -1288,9 +1274,14 @@ class TelegramBot:
         if is_dm and not self.forward_dms:
             return
 
-        forward_ch_set = {int(c) for c in (self.forward_channels or list(range(8))) if str(c).strip().isdigit()}
-        if forward_ch_set == {0}:
-            forward_ch_set = set(range(8))
+        # Build the set of channels to forward.  When forward_channels is None
+        # (unconfigured) we default to all 8 channels; when it is an explicit list
+        # (including [0]) we honour it exactly — channel 0 alone is a valid choice.
+        forward_ch_set = {
+            int(c)
+            for c in (self.forward_channels if self.forward_channels is not None else list(range(8)))
+            if str(c).strip().isdigit()
+        }
         if not is_dm and channel not in forward_ch_set:
             logger.warning("Telegram forward skipped: channel %s not in %s", channel, forward_ch_set)
             return

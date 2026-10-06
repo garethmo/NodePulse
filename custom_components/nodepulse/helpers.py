@@ -81,32 +81,58 @@ class NodeDiscovery:
     def run(self, hass, async_add_entities, should_create, make_entities) -> None:
         """Sync this platform's entities to the current tracked node list."""
         nodes = (self.coordinator.data or {}).get("nodes", [])
-        visible_ids = {n.get("id") for n in nodes if n.get("id")}
         tracked = self.coordinator.tracked_nodes
 
-        # Remove entities for nodes that are no longer tracked.
-        # We must also remove the entity registry entry — async_remove() alone
-        # only drops the entity from the live state machine, but the registry
-        # entry in core.entity_registry persists across restarts and would
-        # cause the entity to ghost back the next time HA boots.
-        registry = er.async_get(hass)
-        for entity in list(self._registered_entities):
-            nid = getattr(entity, "_node_id", None)
-            if nid is not None and nid not in tracked:
-                self._registered_entities.remove(entity)
-                self._registered_node_ids.discard(nid)
-                # Remove from the persistent entity registry first so HA
-                # does not recreate it on the next restart.
-                unique_id = getattr(entity, "unique_id", None)
-                if unique_id:
-                    registry_entry = registry.async_get_entity_id(
-                        entity.platform.domain if hasattr(entity, "platform") and entity.platform else "",
-                        entity.platform.platform_name if hasattr(entity, "platform") and entity.platform else "",
-                        unique_id,
-                    )
-                    if registry_entry:
-                        registry.async_remove(registry_entry)
-                hass.async_create_task(entity.async_remove(force_remove=True))
+        # Determine which node IDs were tracked previously but no longer are.
+        newly_untracked = self._registered_node_ids - tracked
+
+        if newly_untracked:
+            registry = er.async_get(hass)
+
+            # 1. Remove in-memory entity objects and their registry entries.
+            #    _registered_entities may be incomplete (the sensor platform
+            #    skips sensors with None native_value at creation time, so
+            #    those never entered this list). We handle both paths:
+            #      a) entities we hold a reference to — remove from state machine
+            #      b) orphaned registry entries — sweep by unique_id prefix
+            for entity in list(self._registered_entities):
+                nid = getattr(entity, "_node_id", None)
+                if nid in newly_untracked:
+                    self._registered_entities.remove(entity)
+                    unique_id = getattr(entity, "unique_id", None)
+                    if unique_id:
+                        platform_domain = (
+                            entity.platform.domain
+                            if hasattr(entity, "platform") and entity.platform
+                            else ""
+                        )
+                        platform_name = (
+                            entity.platform.platform_name
+                            if hasattr(entity, "platform") and entity.platform
+                            else ""
+                        )
+                        reg_entity_id = registry.async_get_entity_id(
+                            platform_domain, platform_name, unique_id
+                        )
+                        if reg_entity_id:
+                            registry.async_remove(reg_entity_id)
+                    hass.async_create_task(entity.async_remove(force_remove=True))
+
+            # 2. Sweep the registry for any orphaned entries belonging to
+            #    newly-untracked nodes that we don't hold a live reference to
+            #    (e.g. sensors skipped at creation, entities from a previous
+            #    HA session that survived a restart before this fix was in place).
+            #    Unique IDs are formatted as "{entry_id}_{node_id}_{suffix}".
+            for nid in newly_untracked:
+                prefix = f"{self.entry.entry_id}_{nid}_"
+                for reg_entry in registry.entities.get_entries_for_config_entry_id(
+                    self.entry.entry_id
+                ):
+                    if reg_entry.unique_id.startswith(prefix):
+                        registry.async_remove(reg_entry.entity_id)
+
+            # Update the bookkeeping set now that all removals are in flight.
+            self._registered_node_ids -= newly_untracked
 
         new_entities = []
         for node in nodes:

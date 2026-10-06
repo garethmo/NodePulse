@@ -58,7 +58,11 @@ def parse_int_list(value, default) -> list[int]:
         return list(default)
     if isinstance(value, str):
         val_str = value.strip().lower()
-        if not val_str or val_str in ("0", "all", "*"):
+        # Empty string means "use the default" — not "all channels"
+        if not val_str:
+            return list(default)
+        # Explicit wildcards that mean "every channel"
+        if val_str in ("all", "*", "0-7"):
             return list(range(8))
         m = re.match(r"^(\d+)\s*-\s*(\d+)$", val_str)
         if m:
