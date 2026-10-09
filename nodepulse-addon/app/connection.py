@@ -3415,7 +3415,6 @@ class MeshtasticConnection:
                 with self._nodes_lock:
                     self._nodes = []
                     seen: set[str] = set()
-                    seen_coords_for_load: set[tuple[float, float]] = set()
                     for n in data:
                         if isinstance(n, dict):
                             nid = normalize_node_id(n.get("id"))
@@ -3423,24 +3422,21 @@ class MeshtasticConnection:
                                 continue
                             n["id"] = nid
 
+                            # Validate coordinates from persisted data and mark
+                            # as None if suspicious. NOTE: we deliberately do NOT
+                            # skip nodes with duplicate coordinates here — dropping
+                            # the node makes it look "newly discovered" on the next
+                            # poll, which wrongly re-triggers auto-traceroute sweeps
+                            # after every restart. Map de-stacking is handled at
+                            # render time by _apply_coordinate_offset on a copy.
                             lat = n.get("latitude")
                             lng = n.get("longitude")
-                            is_dup = False
-                            
-                            # Validate coordinates from persisted data and mark as None if suspicious
                             lat, lng = self._validate_and_correct_coordinates(nid, lat, lng)
-                            
-                            # Check for duplicates based on exact same coordinates
-                            if lat is not None and lng is not None:
-                                coord_tuple = (lat, lng)
-                                if coord_tuple in seen_coords_for_load:
-                                    is_dup = True
-                            
-                            if not is_dup:
-                                seen.add(nid)
-                                if lat is not None and lng is not None:
-                                    seen_coords_for_load.add((lat, lng))
-                                self._nodes.append(n)
+                            n["latitude"] = lat
+                            n["longitude"] = lng
+
+                            seen.add(nid)
+                            self._nodes.append(n)
                 logger.debug(
                     "Restored %s persisted nodes from %s",
                     len(self._nodes), _NODES_FILE,
@@ -3634,6 +3630,8 @@ class MeshtasticConnection:
                 )
                 if node is not None:
                     node["traceroute"] = record
+                    # A completed traceroute proves the node is live — bump.
+                    node["last_heard"] = int(time.time())
             with self._traceroutes_lock:
                 # Persist so the result survives addon restarts.
                 self._traceroutes[target_id] = record
@@ -3785,6 +3783,8 @@ class MeshtasticConnection:
                 )
                 if node is not None:
                     node["noise_floor"] = nf
+                    # Any metric update implies the node was heard — bump.
+                    node["last_heard"] = int(time.time())
         except Exception:  # noqa: BLE001 - never crash the receive thread
             return
 
@@ -3838,6 +3838,8 @@ class MeshtasticConnection:
                 )
                 if node is not None:
                     node.update(updates)
+                    # Any metric update implies the node was heard — bump.
+                    node["last_heard"] = int(time.time())
                     logger.info(
                         "Updated environmental telemetry for %s: %s",
                         from_id, updates
@@ -3861,6 +3863,8 @@ class MeshtasticConnection:
                             "short_name": user.get("shortName", ""),
                             "hw_model": user.get("hwModel", ""),
                             "hops_away": lib_node.get("hopsAway"),
+                            # The telemetry packet itself proves the node is live.
+                            "last_heard": int(time.time()),
                         }
                         new_node.update(updates)
                         self._nodes.append(new_node)
@@ -3918,6 +3922,8 @@ class MeshtasticConnection:
                 if node is not None:
                     node["neighbors"] = neighbors
                     node["neighbor_info_updated"] = int(time.time())
+                    # Any metric update implies the node was heard — bump.
+                    node["last_heard"] = node["neighbor_info_updated"]
         except Exception as exc:  # pragma: no cover - defensive  # noqa: BLE001
             logger.debug("Error capturing neighbor info (ignored): %s", exc)
 
@@ -4604,6 +4610,14 @@ class MeshtasticConnection:
 
                 # Auto Traceroute Logic
                 if self._config and getattr(self._config, "auto_traceroute_enabled", False):
+                    # Skip nodes we already hold a traceroute record for —
+                    # without this, every restart (or cache reload) re-sweeps
+                    # every rediscovered node even though we have their route.
+                    with self._traceroutes_lock:
+                        has_route = node_id in self._traceroutes
+                    if has_route:
+                        logger.debug("Skipping auto-traceroute for %s: route already recorded", node_id)
+                        continue
                     if len(self._pending_traceroute_dests) >= _MAX_PENDING_TRACEROUTES:
                         logger.debug("Skipping auto-traceroute for %s: queue full", node_id)
                         continue
