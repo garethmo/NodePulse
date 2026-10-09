@@ -62,6 +62,19 @@ class NodeGeoLocation(CoordinatorEntity, GeolocationEvent):
     # state write because the cached_property resolver raises before HA can catch it.
     _attr_source = "nodepulse"
 
+    @property
+    def state(self) -> Optional[str]:
+        """Return the current state (GPS location for geo_location entity)."""
+        node = self._get_node()
+        if not node:
+            return None
+        try:
+            lat = float(node.get("latitude"))
+            lng = float(node.get("longitude"))
+            return f"{lat:.6f}, {lng:.6f}"
+        except (TypeError, ValueError):
+            return None
+
     def __init__(
         self,
         coordinator: NodePulseCoordinator,
@@ -117,10 +130,6 @@ class NodeGeoLocation(CoordinatorEntity, GeolocationEvent):
             self._attr_latitude = None
             self._attr_longitude = None
         super()._handle_coordinator_update()
-
-    @property
-    def distance(self) -> Optional[float]:
-        return 0.0
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:

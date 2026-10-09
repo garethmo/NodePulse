@@ -1663,11 +1663,12 @@ class TestCapturePosition:
                 "from": 0x1234,
                 "decoded": {"payload": self._position_payload()},
             })
-        # History is still recorded for trails, but the cache is not updated
-        # because we never asked for this position.
-        node = conn._nodes[0]
-        assert node.get("latitude") is None
+        # History is still recorded for trails
         assert "!00001234" in conn._pos_history
+        # Cache is now updated for periodic broadcasts too (for position fix count)
+        node = conn._nodes[0]
+        assert node.get("latitude") == 40.0
+        assert node.get("position_fix_count") == 1  # Incremented for periodic broadcast
 
     def test_missing_payload_ignored(self):
         conn = create_conn()
@@ -1785,6 +1786,10 @@ class TestConnection28Features:
                 "uptime": 3600,
                 "last_heard": 2000,
                 "position_fix_count": 12,
+                "temperature": 22.5,
+                "relative_humidity": 65.0,
+                "barometric_pressure": 1013.25,
+                "gas_resistance": 12345.0,
             }
         ]
         conn._snr_history[nid] = collections.deque([3.0, 4.0])
@@ -1793,6 +1798,39 @@ class TestConnection28Features:
         assert sig["signal_quality"] == "good"
         assert sig["battery_level"] == 80
         assert sig["noise_floor"] is None  # not captured without 2.8 telemetry
+        assert sig["temperature"] == 22.5
+        assert sig["relative_humidity"] == 65.0
+        assert sig["barometric_pressure"] == 1013.25
+        assert sig["gas_resistance"] == 12345.0
+
+    def test_environmental_metrics_preserved_in_cache(self):
+        """Test that environmental metrics captured via packets are preserved when the library node DB doesn't have them."""
+        conn = self._conn()
+        nid = "!00abc123"
+        
+        # Add a node to the cache first
+        conn._nodes = [{"id": nid}]
+        
+        # Then capture environmental metrics via a TELEMETRY_APP packet
+        from meshtastic.protobuf.telemetry_pb2 import Telemetry
+        tel = Telemetry()
+        env = tel.environment_metrics
+        env.temperature = 25.0
+        env.relative_humidity = 70.0
+        env.barometric_pressure = 1020.0
+        env.gas_resistance = 13000.0
+        
+        packet = {
+            "from": int("abc123", 16),
+            "decoded": {"portnum": "TELEMETRY_APP", "payload": tel.SerializeToString()},
+        }
+        conn._capture_environment_telemetry(packet)
+        
+        # Verify metrics are in the cache
+        assert conn._nodes[0].get("temperature") == 25.0
+        assert conn._nodes[0].get("relative_humidity") == 70.0
+        assert conn._nodes[0].get("barometric_pressure") == 1020.0
+        assert conn._nodes[0].get("gas_resistance") == 13000.0
 
     def test_get_node_signal_unknown(self):
         conn = self._conn()
@@ -1839,6 +1877,50 @@ class TestConnection28Features:
         }
         conn._capture_telemetry(packet)
         assert conn._nodes[0].get("noise_floor") is None
+
+    def test_capture_environment_telemetry(self):
+        # Test environmental telemetry capture (temperature, humidity, pressure, gas).
+        conn = self._conn()
+        conn._nodes = [{"id": "!00abc123"}]  # Use padded 8-digit hex ID
+        # Build a valid TELEMETRY_APP protobuf with environmental metrics.
+        from meshtastic.protobuf.telemetry_pb2 import Telemetry
+        tel = Telemetry()
+        env = tel.environment_metrics
+        env.temperature = 22.5
+        env.relative_humidity = 65.0
+        env.barometric_pressure = 1013.25
+        env.gas_resistance = 12345.0
+        packet = {
+            "from": int("abc123", 16),
+            "decoded": {"portnum": "TELEMETRY_APP", "payload": tel.SerializeToString()},
+        }
+        conn._capture_environment_telemetry(packet)
+        # All values are non-zero, so they should be captured
+        assert conn._nodes[0].get("temperature") == 22.5
+        assert conn._nodes[0].get("relative_humidity") == 65.0
+        assert conn._nodes[0].get("barometric_pressure") == 1013.25
+        assert conn._nodes[0].get("gas_resistance") == 12345.0
+
+    def test_capture_environment_telemetry_partial(self):
+        # Test with only some environmental metrics present (non-zero values).
+        conn = self._conn()
+        conn._nodes = [{"id": "!00abc123"}]  # Use padded 8-digit hex ID
+        from meshtastic.protobuf.telemetry_pb2 import Telemetry
+        tel = Telemetry()
+        env = tel.environment_metrics
+        env.temperature = 20.0
+        env.relative_humidity = 50.0
+        # Pressure and gas resistance not set (default to 0)
+        packet = {
+            "from": int("abc123", 16),
+            "decoded": {"portnum": "TELEMETRY_APP", "payload": tel.SerializeToString()},
+        }
+        conn._capture_environment_telemetry(packet)
+        assert conn._nodes[0].get("temperature") == 20.0
+        assert conn._nodes[0].get("relative_humidity") == 50.0
+        # Pressure and gas are 0 (default), so they should not be captured
+        assert conn._nodes[0].get("barometric_pressure") is None
+        assert conn._nodes[0].get("gas_resistance") is None
 
     def test_channel_public_flag(self):
         conn = self._conn()
@@ -1925,8 +2007,7 @@ class TestStabilityRemediations:
 
     def test_request_traceroute_sync_returns_bool(self):
         conn = self._conn()
-        conn._interface.sendTraceRoute = MagicMock()
-        conn._nodes = [{"id": "!12345678"}]
+        conn._interface.sendTraceRoute = MagicMock()        conn._nodes = [{"id": "!12345678"}]
         res = conn._request_traceroute_sync("!12345678")
         assert res is True
 

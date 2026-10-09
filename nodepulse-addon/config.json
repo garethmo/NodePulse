@@ -16,6 +16,8 @@
   "init": false,
   "ingress": true,
   "ingress_port": 8099,
+  "homeassistant_api": true,
+  "hassio_api": true,
   "panel_icon": "mdi:radio-tower",
   "panel_title": "NodePulse",
   "options": {

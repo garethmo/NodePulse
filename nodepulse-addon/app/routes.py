@@ -146,6 +146,11 @@ def _validate_destination(body: dict[str, Any]):
 # FIRST, before the user-configured value, because a misconfigured ha_base_url
 # (e.g. an ingress URL) would fail with 401/403 and waste time.
 _HA_CANDIDATES = (
+    # Supervisor proxy: the ONLY endpoint where the SUPERVISOR_TOKEN env var is
+    # valid. The Supervisor authenticates the addon and forwards the request to
+    # HA core with trusted auth. Calling HA core directly (homeassistant:8123)
+    # with the Supervisor token fails 401 and triggers HA's IP-ban subsystem.
+    "http://supervisor/core",
     "http://homeassistant:8123",      # Standard HAOS supervisor hostname
     "http://supervisor:8123",         # Legacy/alternative
     "http://hassio:8123",             # Legacy
@@ -261,6 +266,12 @@ async def _relay_to_integration(request: web.Request, method: str, path: str, js
     async with aiohttp.ClientSession() as session:
         for token_label, token in tokens:
             for base in candidates:
+                # The SUPERVISOR_TOKEN is only valid through the Supervisor's
+                # /core proxy — HA core itself rejects it with 401, and each
+                # failed attempt is logged by HA's http.ban subsystem. Skip
+                # non-proxy candidates for this credential entirely.
+                if token_label == "SUPERVISOR_TOKEN" and not base.rstrip("/").endswith("supervisor/core"):
+                    continue
                 url = f"{base}{path}"
                 try:
                     kwargs: dict = {

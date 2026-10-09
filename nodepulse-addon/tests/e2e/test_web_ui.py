@@ -20,7 +20,7 @@ async def test_web_ui_loads(async_page: Page, aio_server):
     server_url = f"http://{aio_server.host}:{aio_server.port}"
     await async_page.goto(server_url, wait_until="domcontentloaded")
     # Wait for the first pollData() round-trip to finish rather than sleeping.
-    await async_page.wait_for_selector(".node-card", timeout=8000)
+    await async_page.wait_for_selector(".node-card", state="attached", timeout=8000)
 
     await expect(async_page).to_have_title(re.compile("NodePulse"))
 
@@ -40,7 +40,7 @@ async def test_web_ui_messages_tab(async_page: Page, aio_server):
     """Click the Messages tab and verify the thread panel is rendered."""
     server_url = f"http://{aio_server.host}:{aio_server.port}"
     await async_page.goto(server_url, wait_until="domcontentloaded")
-    await async_page.wait_for_selector(".node-card", timeout=8000)
+    await async_page.wait_for_selector(".node-card", state="attached", timeout=8000)
 
     # Use header tab button — only one element matches this precise selector.
     await async_page.click("#header-tabs .tab-btn[data-view='messages']")
@@ -51,7 +51,7 @@ async def test_web_ui_position_request_feedback(async_page: Page, aio_server):
     """Test that position request button shows loading state and feedback."""
     server_url = f"http://{aio_server.host}:{aio_server.port}"
     await async_page.goto(server_url, wait_until="domcontentloaded")
-    await async_page.wait_for_selector(".node-card", timeout=8000)
+    await async_page.wait_for_selector(".node-card", state="attached", timeout=8000)
 
     # Navigate to nodes view
     await async_page.click("#header-tabs .tab-btn[data-view='nodes']")
@@ -73,7 +73,7 @@ async def test_web_ui_last_heard_metric_display(async_page: Page, aio_server):
     """Test that last heard metric is displayed in node cards."""
     server_url = f"http://{aio_server.host}:{aio_server.port}"
     await async_page.goto(server_url, wait_until="domcontentloaded")
-    await async_page.wait_for_selector(".node-card", timeout=8000)
+    await async_page.wait_for_selector(".node-card", state="attached", timeout=8000)
 
     # Navigate to nodes view
     await async_page.click("#header-tabs .tab-btn[data-view='nodes']")
@@ -96,7 +96,7 @@ async def test_web_ui_pending_position_requests_state(async_page: Page, aio_serv
     """Test that pending position requests show visual feedback."""
     server_url = f"http://{aio_server.host}:{aio_server.port}"
     await async_page.goto(server_url, wait_until="domcontentloaded")
-    await async_page.wait_for_selector(".node-card", timeout=8000)
+    await async_page.wait_for_selector(".node-card", state="attached", timeout=8000)
 
     # Navigate to nodes view
     await async_page.click("#header-tabs .tab-btn[data-view='nodes']")
@@ -114,7 +114,7 @@ async def test_web_ui_settings_tab(async_page: Page, aio_server):
     """Click the Settings tab and verify the connection status reflects the mock."""
     server_url = f"http://{aio_server.host}:{aio_server.port}"
     await async_page.goto(server_url, wait_until="domcontentloaded")
-    await async_page.wait_for_selector(".node-card", timeout=8000)
+    await async_page.wait_for_selector(".node-card", state="attached", timeout=8000)
 
     await async_page.click("#header-tabs .tab-btn[data-view='settings']")
     await expect(async_page.locator("#view-settings")).to_be_visible()

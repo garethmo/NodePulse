@@ -504,7 +504,9 @@ class TestRelayWaterfall:
         with _patch_session(session), patch.dict("os.environ", {}, clear=True):
             await routes._relay_to_integration(request, "GET", "/api/nodepulse/tracked-nodes")
         assert session.urls
-        assert session.urls[0].startswith("http://homeassistant:8123")
+        # The supervisor /core proxy is tried first — it is the only endpoint
+        # where the SUPERVISOR_TOKEN credential is valid.
+        assert session.urls[0].startswith("http://supervisor/core")
 
     @pytest.mark.asyncio
     async def test_advances_until_success(self):
@@ -517,9 +519,9 @@ class TestRelayWaterfall:
         session = _RecordingSession(status_for_url=status_for_url)
         with _patch_session(session), patch.dict("os.environ", {}, clear=True):
             await routes._relay_to_integration(request, "GET", "/api/nodepulse/tracked-nodes")
-        assert session.urls[0].startswith("http://homeassistant:8123")
-        assert session.urls[1].startswith("http://supervisor:8123")
-        assert session.urls[2].startswith("http://hassio:8123")
+        assert session.urls[0].startswith("http://supervisor/core")
+        assert session.urls[1].startswith("http://homeassistant:8123")
+        assert session.urls[2].startswith("http://supervisor:8123")
         assert session.urls[2].endswith("/api/nodepulse/tracked-nodes")
 
     @pytest.mark.asyncio
@@ -529,14 +531,14 @@ class TestRelayWaterfall:
         session1 = _RecordingSession()
         with _patch_session(session1), patch.dict("os.environ", {}, clear=True):
             await routes._relay_to_integration(request, "GET", "/api/nodepulse/tracked-nodes")
-        assert routes._working_ha_base == "http://homeassistant:8123"
+        assert routes._working_ha_base == "http://supervisor/core"
 
         # Second call should go straight to the cached URL (single request).
         session2 = _RecordingSession()
         with _patch_session(session2), patch.dict("os.environ", {}, clear=True):
             await routes._relay_to_integration(request, "GET", "/api/nodepulse/tracked-nodes")
         assert len(session2.urls) == 1
-        assert session2.urls[0].startswith("http://homeassistant:8123")
+        assert session2.urls[0].startswith("http://supervisor/core")
 
     @pytest.mark.asyncio
     async def test_cache_reset_when_cached_url_fails(self):

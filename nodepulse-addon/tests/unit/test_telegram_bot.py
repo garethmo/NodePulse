@@ -849,6 +849,10 @@ class TestTelegramBot28Commands(TestTelegramBotMeshCommands):
                 "signal_quality": "good",
                 "noise_floor": -95,
                 "position_fix_count": 12,
+                "temperature": 22.5,
+                "relative_humidity": 65.0,
+                "barometric_pressure": 1013.25,
+                "gas_resistance": 12345.0,
             }
         )
         nodes = [
@@ -870,20 +874,36 @@ class TestTelegramBot28Commands(TestTelegramBotMeshCommands):
         assert "3.5dB" in args
         assert "-95dBm" in args
         assert "80%" in args
+        assert "22.5°C" in args
+        assert "65.0%" in args  # fval formats floats with decimal places
+        assert "1013.25hPa" in args
+        assert "12345.0MΩ" in args
         conn.get_node_signal.assert_called_once_with("!abc123")
 
     @pytest.mark.asyncio
     async def test_diag_noise_floor_absent(self):
         conn = Mock()
         conn.get_node_signal = AsyncMock(
-            return_value={"snr_avg": None, "signal_quality": "no_signal", "noise_floor": None}
+            return_value={
+                "snr_avg": None,
+                "signal_quality": "no_signal",
+                "noise_floor": None,
+                "temperature": None,
+                "relative_humidity": None,
+                "barometric_pressure": None,
+                "gas_resistance": None,
+            }
         )
         nodes = [{"id": "!abc123", "long_name": "NodeA"}]
         bot = self._bot(conn=conn, nodes=AsyncMock(return_value=nodes))
         await bot._handle_command("/diag !abc123")
         args = bot._send_text.call_args[0][0]
-        # Graceful 'n/a' when the library/firmware doesn't expose noise floor.
+        # Graceful 'n/a' when the library/firmware doesn't expose metrics.
         assert "Noise floor: n/a" in args
+        assert "Temperature: n/a" in args
+        assert "Humidity: n/a" in args
+        assert "Pressure: n/a" in args
+        assert "Gas resistance: n/a" in args
 
     @pytest.mark.asyncio
     async def test_gpx_exports_track(self):

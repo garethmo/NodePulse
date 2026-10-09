@@ -904,7 +904,6 @@ function renderDiagnosticRows(sig) {
     `<div class="diag-row"><span class="diag-row-label">${label}</span><span class="diag-row-value">${value}</span></div>`;
   const q = sig.signal_quality || 'n/a';
   const qColor = { excellent: '#00e5ff', good: '#69f0ae', fair: '#ffeb3b', poor: '#ff5252', no_signal: '#9e9e9e' }[q] || '#9e9e9e';
-  const env = sig.environment || {};
   const rows = [
     row('Hops away', _fmtVal(sig.hops_away)),
     row('SNR', _fmtVal(sig.snr, ' dB')),
@@ -917,9 +916,10 @@ function renderDiagnosticRows(sig) {
     row('Channel util', _fmtVal(sig.channel_utilization, ' %')),
     row('Air util (TX)', _fmtVal(sig.air_util_tx, ' %')),
     row('Noise floor', _fmtVal(sig.noise_floor, ' dBm')),
-    row('Temperature', _fmtVal(env.temperature, ' °C')),
-    row('Humidity', _fmtVal(env.relative_humidity, ' %')),
-    row('Pressure', _fmtVal(env.barometric_pressure, ' hPa')),
+    row('Temperature', _fmtVal(sig.temperature, ' °C')),
+    row('Humidity', _fmtVal(sig.relative_humidity, ' %')),
+    row('Pressure', _fmtVal(sig.barometric_pressure, ' hPa')),
+    row('Gas resistance', _fmtVal(sig.gas_resistance, ' MΩ')),
     row('Position fixes', _fmtVal(sig.position_fixes)),
   ];
   return `<div class="diag-grid">${rows.join('')}</div>` +

@@ -847,6 +847,10 @@ class TelegramBot:
                     f"Chan util: {fval(node.get('channel_utilization'), '%')}\n"
                     f"Air util TX: {fval(node.get('air_util_tx'), '%')}\n"
                     f"Noise floor: {fval(sig.get('noise_floor'), 'dBm')}\n"
+                    f"Temperature: {fval(sig.get('temperature'), '°C')}\n"
+                    f"Humidity: {fval(sig.get('relative_humidity'), '%')}\n"
+                    f"Pressure: {fval(sig.get('barometric_pressure'), 'hPa')}\n"
+                    f"Gas resistance: {fval(sig.get('gas_resistance'), 'MΩ')}\n"
                     f"Pos fixes: {fval(node.get('position_fix_count'))}\n"
                     f"Last heard: {lh}"
                 )

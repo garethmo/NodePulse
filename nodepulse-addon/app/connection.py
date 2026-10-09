@@ -519,6 +519,14 @@ class MeshtasticConnection:
         # treat every broadcast position as a response to our request.
         self._pending_position_dests: set = set()
         
+        # Last (lat, lng) the meshtastic library's node DB reported per node,
+        # tracked across _get_nodes_sync polls. Used to decide whether the
+        # library position is fresher than our own _capture_position cache
+        # entry: if the library coords changed between polls the library got a
+        # new fix; if they are unchanged while our cache moved, our captured
+        # broadcast fix is newer and must win the merge.
+        self._last_lib_pos: dict = {}  # node_id -> (lat, lng)
+        
         # Rate limiting for position requests to avoid TX queue overflow
         self._position_request_times: dict = {}  # destination -> last request timestamp
 
@@ -1175,6 +1183,10 @@ class MeshtasticConnection:
             "last_heard": node.get("last_heard"),
             "position_fix_count": node.get("position_fix_count"),
             "noise_floor": node.get("noise_floor"),
+            "temperature": node.get("temperature"),
+            "relative_humidity": node.get("relative_humidity"),
+            "barometric_pressure": node.get("barometric_pressure"),
+            "gas_resistance": node.get("gas_resistance"),
         }
 
     # ------------------------------------------------------------------
@@ -1996,6 +2008,33 @@ class MeshtasticConnection:
             decoded = packet.get("decoded", {}) or {}
             portnum = decoded.get("portnum")
 
+            now_ts = int(time.time())
+
+            # Update last_heard for the sending node on EVERY packet received.
+            # This ensures the UI/integration shows fresh "last heard" times.
+            from_num = packet.get("from")
+            from_id_snr = _node_id_from_num(from_num)
+            if from_id_snr:
+                with self._nodes_lock:
+                    node = next(
+                        (n for n in self._nodes if normalize_node_id(n.get("id")) == from_id_snr), None
+                    )
+                    if node is not None:
+                        node["last_heard"] = now_ts
+
+            # Also update last_heard for the destination node if present.
+            # This ensures bidirectional communication updates the "last heard"
+            # timestamp for both ends of a direct message.
+            to_num = packet.get("to")
+            to_id_snr = _node_id_from_num(to_num) if to_num else None
+            if to_id_snr:
+                with self._nodes_lock:
+                    node = next(
+                        (n for n in self._nodes if normalize_node_id(n.get("id")) == to_id_snr), None
+                    )
+                    if node is not None:
+                        node["last_heard"] = now_ts
+
             # Record every packet in the shared inspector/sniffer buffer.
             self._capture_packet_log(packet)
 
@@ -2079,6 +2118,20 @@ class MeshtasticConnection:
                     "node_id": from_id_snr,
                     "timestamp": int(time.time()),
                 })
+                return
+
+            # --- Environmental telemetry (temperature, humidity, pressure, gas) -------
+            if portnum == "TELEMETRY_APP":
+                logger.debug("TELEMETRY_APP packet received from %s", from_id_snr)
+                self._capture_environment_telemetry(packet)
+                _broadcast_sse_event("telemetry", {
+                    "node_id": from_id_snr,
+                    "timestamp": int(time.time()),
+                })
+                # Note: We do NOT trigger HA push here. Environmental metrics change
+                # slowly and are already included in the regular /api/nodes poll.
+                # Triggering a push on every telemetry packet would overwhelm HA.
+                # The Web UI gets real-time updates via SSE above.
                 return
 
             # --- Text messages ------------------------------------------
@@ -2278,17 +2331,22 @@ class MeshtasticConnection:
         supervisor_token = os.environ.get("SUPERVISOR_TOKEN", "").strip()
         ha_access_token = (getattr(config, "ha_access_token", None) or "").strip()
 
-        tokens = []
+        # (token, is_supervisor_token). The SUPERVISOR_TOKEN is only valid via
+        # the Supervisor's /core proxy; HA core itself returns 401 for it, and
+        # each failed call is logged by HA's http.ban subsystem — so it must
+        # never be sent to a direct HA-core URL.
+        tokens: list[tuple[str, bool]] = []
         if supervisor_token:
-            tokens.append(supervisor_token)
-        if ha_access_token and ha_access_token not in tokens:
-            tokens.append(ha_access_token)
+            tokens.append((supervisor_token, True))
+        if ha_access_token and ha_access_token != supervisor_token:
+            tokens.append((ha_access_token, False))
 
         if not tokens:
             logger.debug("HA push skipped: no SUPERVISOR_TOKEN or ha_access_token configured")
             return
 
         candidates = [
+            "http://supervisor/core",     # Supervisor proxy — only valid target for SUPERVISOR_TOKEN
             "http://homeassistant:8123",
             "http://supervisor:8123",
             "http://hassio:8123",
@@ -2304,12 +2362,16 @@ class MeshtasticConnection:
         timeout = aiohttp.ClientTimeout(total=2)
         try:
             async with aiohttp.ClientSession() as session:
-                for token in tokens:
+                for token, is_supervisor_token in tokens:
                     headers = {
                         "Authorization": f"Bearer {token}",
                         "Content-Type": "application/json",
                     }
                     for base in candidates:
+                        # Never send the Supervisor token to a direct HA-core
+                        # URL — it always 401s and trips the IP-ban logger.
+                        if is_supervisor_token and not base.rstrip("/").endswith("supervisor/core"):
+                            continue
                         url = f"{base}/api/nodepulse/push"
                         try:
                             async with session.post(url, headers=headers, json={}, timeout=timeout) as resp:
@@ -3590,27 +3652,56 @@ class MeshtasticConnection:
         Position" button would appear to do nothing. We parse the protobuf
         directly (latitude_i / longitude_i are integer microdegrees) and update
         the destination node's cached coordinates so the map + UI reflect it.
+
+        Also captures periodic position broadcasts from nodes, updating the
+        node cache incrementing the position fix count.
         """
         try:
             from meshtastic.protobuf.mesh_pb2 import Position
             decoded = packet.get("decoded", {}) or {}
             payload = decoded.get("payload")
-            if not payload:
-                return
-            pos = Position()
-            pos.ParseFromString(payload)
 
             from_num = packet.get("from")
             from_id = _node_id_from_num(from_num)
             if not from_id:
                 return
 
-            # Integer microdegrees -> decimal degrees. 0 means "not set".
-            lat = pos.latitude_i * 1e-7 if pos.latitude_i else None
-            lng = pos.longitude_i * 1e-7 if pos.longitude_i else None
-            alt = pos.altitude if pos.altitude else None
+            if payload:
+                # Raw protobuf path (typical for on-air packets).
+                pos = Position()
+                pos.ParseFromString(payload)
+                # Integer microdegrees -> decimal degrees. 0 means "not set".
+                lat = pos.latitude_i * 1e-7 if pos.latitude_i else None
+                lng = pos.longitude_i * 1e-7 if pos.longitude_i else None
+                alt = pos.altitude if pos.altitude else None
+            else:
+                # Library-decoded path: some firmware/library versions deliver
+                # POSITION_APP pre-decoded into decoded["position"] with no raw
+                # payload. Without this fallback the packet would be skipped
+                # entirely — no position update AND no last_heard bump.
+                posd = decoded.get("position") or {}
+                lat_i = posd.get("latitudeI") or 0
+                lng_i = posd.get("longitudeI") or 0
+                lat = posd.get("latitude")
+                lng = posd.get("longitude")
+                if lat is None and lng is None and lat_i and lng_i:
+                    lat = lat_i * 1e-7
+                    lng = lng_i * 1e-7
+                alt = posd.get("altitude") or None
+
             snr = packet.get("rxSnr")
             rssi = packet.get("rxRssi")
+
+            # A POSITION_APP packet from this node is by definition node
+            # activity — refresh last_heard even when the fix itself is empty
+            # (lat/lng may be None for "no fix" beacons).
+            now_ts = int(time.time())
+            with self._nodes_lock:
+                node = next(
+                    (n for n in self._nodes if normalize_node_id(n.get("id")) == from_id), None
+                )
+                if node is not None:
+                    node["last_heard"] = now_ts
 
             # Always record the fix in position history for trails and heatmaps.
             if lat is not None and lng is not None:
@@ -3619,19 +3710,19 @@ class MeshtasticConnection:
                 t = threading.Thread(target=self._save_position_history, daemon=True)
                 t.start()
 
-            # Only treat this as a reply to a position request we actually made.
+            # Check if this is a reply to a position request we made.
             # POSITION_APP packets also arrive as periodic broadcasts from nodes
-            # we didn't ask. If there's no matching pending request, ignore the packet.
-            with self._lock:
-                if from_id not in self._pending_position_dests:
-                    return
-                self._pending_position_dests.discard(from_id)
+            # we didn't ask. We handle both cases. A packet with no decodable
+            # fix is "ignored" for reply-attribution purposes so it does not
+            # consume the pending request (matches historical behaviour).
+            is_requested_reply = False
+            if lat is not None or lng is not None:
+                with self._lock:
+                    if from_id in self._pending_position_dests:
+                        is_requested_reply = True
+                        self._pending_position_dests.discard(from_id)
 
-            logger.debug(
-                "Captured requested position for %s: lat=%s lng=%s alt=%s",
-                from_id, lat, lng, alt,
-            )
-
+            # Update the node cache with the position data
             with self._nodes_lock:
                 node = next(
                     (n for n in self._nodes if normalize_node_id(n.get("id")) == from_id), None
@@ -3645,7 +3736,21 @@ class MeshtasticConnection:
                         node["altitude"] = alt
                     if lat is not None or lng is not None:
                         node["last_position_fix"] = int(time.time())
+                        # Increment position fix count for periodic broadcasts
+                        if not is_requested_reply:
+                            node["position_fix_count"] = node.get("position_fix_count", 0) + 1
                     node["last_heard"] = int(time.time())
+
+            if is_requested_reply:
+                logger.debug(
+                    "Captured requested position for %s: lat=%s lng=%s alt=%s",
+                    from_id, lat, lng, alt,
+                )
+            else:
+                logger.debug(
+                    "Captured periodic position broadcast from %s: lat=%s lng=%s alt=%s",
+                    from_id, lat, lng, alt,
+                )
         except Exception as exc:  # pragma: no cover - defensive  # noqa: BLE001
             logger.debug("Error capturing position (ignored): %s", exc)
 
@@ -3681,6 +3786,93 @@ class MeshtasticConnection:
                 if node is not None:
                     node["noise_floor"] = nf
         except Exception:  # noqa: BLE001 - never crash the receive thread
+            return
+
+    def _capture_environment_telemetry(self, packet: dict[str, Any]) -> None:
+        """Capture TELEMETRY_APP environmental telemetry (temperature, humidity, pressure, gas resistance).
+
+        Meshtastic nodes broadcast environmental sensor data via TELEMETRY_APP packets.
+        The meshtastic library may not always decode these fields into the node database,
+        so we parse the protobuf directly and update the node cache in real-time.
+        Old libraries simply yield nothing here — no error.
+        """
+        try:
+            from meshtastic.protobuf.telemetry_pb2 import Telemetry
+            decoded = packet.get("decoded", {}) or {}
+            payload = decoded.get("payload")
+            if not payload:
+                return
+            tel = Telemetry()
+            tel.ParseFromString(payload)
+            env = getattr(tel, "environment_metrics", None)
+            if env is None:
+                logger.debug("TELEMETRY_APP packet received but no environment_metrics field")
+                return
+
+            from_id = _node_id_from_num(packet.get("from"))
+            if not from_id:
+                return
+
+            # Extract environmental metrics if present
+            # Use ListFields() to check which fields are actually set in the protobuf
+            updates = {}
+            for field_desc, value in env.ListFields():
+                field_name = field_desc.name
+                if field_name == "temperature":
+                    updates["temperature"] = value
+                elif field_name == "relative_humidity":
+                    updates["relative_humidity"] = value
+                elif field_name == "barometric_pressure":
+                    updates["barometric_pressure"] = value
+                elif field_name == "gas_resistance":
+                    updates["gas_resistance"] = value
+
+            if not updates:
+                logger.debug("TELEMETRY_APP packet for %s had no environmental fields set", from_id)
+                return
+
+            # First, try to find the node in our persistent cache
+            with self._nodes_lock:
+                node = next(
+                    (n for n in self._nodes if n.get("id") == from_id), None
+                )
+                if node is not None:
+                    node.update(updates)
+                    logger.info(
+                        "Updated environmental telemetry for %s: %s",
+                        from_id, updates
+                    )
+                    return
+
+            # If not in persistent cache, check the live interface's node DB
+            # (similar to how text messages resolve node names)
+            with self._lock:
+                iface = self._interface
+            if iface is not None:
+                lib_node = self._lookup_node(iface, packet.get("from"))
+                if lib_node:
+                    # Node exists in library but not in our cache yet.
+                    # Create a minimal entry in our cache so the telemetry is captured.
+                    with self._nodes_lock:
+                        user = lib_node.get("user", {})
+                        new_node = {
+                            "id": from_id,
+                            "long_name": user.get("longName", ""),
+                            "short_name": user.get("shortName", ""),
+                            "hw_model": user.get("hwModel", ""),
+                            "hops_away": lib_node.get("hopsAway"),
+                        }
+                        new_node.update(updates)
+                        self._nodes.append(new_node)
+                        logger.info(
+                            "Created new node entry from telemetry for %s: %s",
+                            from_id, updates
+                        )
+                        return
+
+            logger.debug("Node %s not found in cache or live interface for environmental telemetry", from_id)
+        except Exception as exc:  # noqa: BLE001 - never crash the receive thread
+            logger.debug("Error capturing environmental telemetry: %s", exc)
             return
 
     def _capture_neighborinfo(self, packet: dict[str, Any]) -> None:
@@ -4042,6 +4234,14 @@ class MeshtasticConnection:
                 device_metrics = node_data.get("deviceMetrics", {})
                 environment = node_data.get("environmentMetrics", {}) or {}
 
+                # The library's environmentMetrics uses camelCase keys, but our
+                # cache and sensors use snake_case. Map them here, supporting
+                # both conventions so any library version works.
+                env_temp = environment.get("temperature")
+                env_hum = environment.get("relativeHumidity") or environment.get("relative_humidity")
+                env_pres = environment.get("barometricPressure") or environment.get("barometric_pressure")
+                env_gas = environment.get("gasResistance") or environment.get("gas_resistance")
+
                 # Extract short name, falling back to truncated long name if not provided
                 long_name = user.get("longName", "")
                 short_name = user.get("shortName", "")
@@ -4060,7 +4260,8 @@ class MeshtasticConnection:
                 lng_i = position.get("longitudeI")
                 
                 # Use integer microdegrees if available, but only if we have both
-                if lat is None and lng is None and lat_i is not None and lng_i is not None:
+                # and they are non-zero (0 means not set in protobuf)
+                if lat is None and lng is None and lat_i not in (None, 0) and lng_i not in (None, 0):
                     lat = lat_i * 1e-7
                     lng = lng_i * 1e-7
                 
@@ -4068,9 +4269,9 @@ class MeshtasticConnection:
                 if lat is None or lng is None:
                     lat = None
                     lng = None
-
-                # Validate coordinates and attempt to correct if suspicious
-                lat, lng = self._validate_and_correct_coordinates(node_id, lat, lng)
+                else:
+                    # Validate coordinates and attempt to correct if suspicious
+                    lat, lng = self._validate_and_correct_coordinates(node_id, lat, lng)
 
                 entry = {
                     "id": node_id,
@@ -4092,10 +4293,10 @@ class MeshtasticConnection:
                     "channel_utilization": device_metrics.get("channelUtilization"),
                     "air_util_tx": device_metrics.get("airUtilTx"),
                     "uptime": device_metrics.get("uptimeSeconds"),
-                    "temperature": environment.get("temperature"),
-                    "relative_humidity": environment.get("relativeHumidity"),
-                    "barometric_pressure": environment.get("barometricPressure"),
-                    "gas_resistance": environment.get("gasResistance"),
+                    "temperature": env_temp,
+                    "relative_humidity": env_hum,
+                    "barometric_pressure": env_pres,
+                    "gas_resistance": env_gas,
                     "role": MeshtasticConnection._normalize_role(user.get("role")),
                     "has_remote_config": node_id in remote_cache,
                     # 2.8: nodes may broadcast a status text and/or carry a public
@@ -4118,7 +4319,20 @@ class MeshtasticConnection:
                     prev_lng       = prev.get("longitude")
                     prev_alt       = prev.get("altitude")
                     prev_fix       = prev.get("last_position_fix")
+                    prev_fix_count = prev.get("position_fix_count")
                     prev_traceroute = prev.get("traceroute")
+                    # Snapshot environmental metrics - the library doesn't populate
+                    # environmentMetrics in its node DB, so we preserve our captured values
+                    prev_temp = prev.get("temperature")
+                    prev_hum = prev.get("relative_humidity")
+                    prev_pres = prev.get("barometric_pressure")
+                    prev_gas = prev.get("gas_resistance")
+                    # MUST be snapshotted BEFORE update(): prev is the SAME dict
+                    # object as cached[node_id], so after update() every
+                    # prev.get(...) returns the freshly-written library value
+                    # — reading it afterwards would compare the value against
+                    # itself (this was the "last_heard stuck hours behind" bug).
+                    prev_last_heard = prev.get("last_heard")
 
                     # Merge fresh radio data over the cached entry. This is the
                     # authoritative source for all fields the radio reports.
@@ -4130,6 +4344,21 @@ class MeshtasticConnection:
                     if prev_traceroute is not None:
                         cached[node_id]["traceroute"] = prev_traceroute
 
+                    # Restore position fix count - incremented by periodic broadcasts
+                    if prev_fix_count is not None and entry.get("position_fix_count") is None:
+                        cached[node_id]["position_fix_count"] = prev_fix_count
+
+                    # Restore environmental metrics from our cache if the library
+                    # didn't provide them (it never does - they only come via TELEMETRY_APP)
+                    if prev_temp is not None and entry.get("temperature") is None:
+                        cached[node_id]["temperature"] = prev_temp
+                    if prev_hum is not None and entry.get("relative_humidity") is None:
+                        cached[node_id]["relative_humidity"] = prev_hum
+                    if prev_pres is not None and entry.get("barometric_pressure") is None:
+                        cached[node_id]["barometric_pressure"] = prev_pres
+                    if prev_gas is not None and entry.get("gas_resistance") is None:
+                        cached[node_id]["gas_resistance"] = prev_gas
+
                     # For every nullable metric: use the fresh value when the
                     # radio reported it; fall back to the last known value when
                     # it didn't. This prevents brief poll cycles where the radio
@@ -4140,11 +4369,21 @@ class MeshtasticConnection:
                         "channel_utilization", "air_util_tx", "uptime",
                         "temperature", "relative_humidity",
                         "barometric_pressure", "gas_resistance",
-                        "last_heard",
+                        "position_fix_count",
                     )
                     for field in nullable_fields:
                         if entry.get(field) is None and prev.get(field) is not None:
                             cached[node_id][field] = prev[field]
+
+                    # last_heard must never move backwards. The library's
+                    # ``lastHeard`` is only refreshed for a subset of packets
+                    # (directly-heard NODEINFO etc.) and can be hours stale,
+                    # while _on_mesh_receive/_capture_position set a fresh
+                    # timestamp on EVERY packet we see from the node. Always
+                    # keep the newer of the two.
+                    lib_last = entry.get("last_heard") or 0
+                    our_last = prev_last_heard or 0
+                    cached[node_id]["last_heard"] = max(lib_last, our_last) or None
 
                     # String fields: preserve the last known non-empty value when
                     # the fresh entry is empty (e.g. user info not re-broadcast).
@@ -4153,37 +4392,47 @@ class MeshtasticConnection:
                         if not entry.get(field) and prev.get(field):
                             cached[node_id][field] = prev[field]
 
-                    # Last-known-position retention: a node that loses GPS (or
-                    # stops reporting) sends position=None. Instead of dropping
-                    # the fix and making the marker vanish from the map, keep
-                    # the most recent good coordinates so the node stays put
-                    # until a newer fix (or a manual position request) arrives.
-                    # Priority: freshly-captured POSITION_APP reply (written
-                    # directly into self._nodes by _capture_position) > raw
-                    # library fix this cycle > previously retained last-known fix.
-                    # IMPORTANT: Only restore coordinates when we have a complete
-                    # pair from previous data. Never restore partial coordinates.
-                    # With the improved coordinate handling above, lat/lng will only
-                    # be set when we have a complete pair, so we can safely check for None.
-                    
-                    needs_restore = (entry["latitude"] is None and entry["longitude"] is None and 
-                                    prev_lat is not None and prev_lng is not None)
-                    
-                    if needs_restore:
-                        # Restore complete coordinate pair from previous good data
+                    # Position merge: whichever source moved most recently wins.
+                    # The library's node DB can lag or miss periodic POSITION_APP
+                    # broadcasts that _capture_position already wrote into our
+                    # cache — a blind update() would overwrite the fresher fix
+                    # with the library's stale one, freezing the map marker.
+                    # We detect "library got a new fix" by its coords changing
+                    # between polls (tracked in self._last_lib_pos).
+                    entry_lat = entry.get("latitude")
+                    entry_lng = entry.get("longitude")
+                    lib_moved = (
+                        entry_lat is not None and entry_lng is not None
+                        and (entry_lat, entry_lng) != self._last_lib_pos.get(node_id)
+                    )
+                    if entry_lat is not None and entry_lng is not None:
+                        self._last_lib_pos[node_id] = (entry_lat, entry_lng)
+
+                    if lib_moved:
+                        # Library got a genuinely new fix this cycle — the
+                        # coords from update() stand; refresh the timestamp.
+                        cached[node_id]["last_position_fix"] = int(time.time())
+                    elif (
+                        prev_lat is not None and prev_lng is not None
+                        and (prev_lat, prev_lng) != (entry_lat, entry_lng)
+                    ):
+                        # Library unchanged (or empty) this cycle but _capture_position
+                        # captured a broadcast fix — our cache is fresher, keep it.
                         cached[node_id]["latitude"] = prev_lat
                         cached[node_id]["longitude"] = prev_lng
-                        # Use the previous timestamp since we're restoring old data
-                        cached[node_id]["last_position_fix"] = prev_fix
-                    elif entry["latitude"] is not None and entry["longitude"] is not None:
-                        # Fresh complete fix arrived — update the timestamp
-                        cached[node_id]["last_position_fix"] = int(time.time())
+                        if prev_fix is not None:
+                            cached[node_id]["last_position_fix"] = prev_fix
+                        if prev_fix_count is not None:
+                            cached[node_id]["position_fix_count"] = prev_fix_count
 
                     if entry["altitude"] is None and prev_alt is not None:
                         cached[node_id]["altitude"] = prev_alt
                     
-                    # Apply coordinate offset if duplicates exist to prevent stacking
-                    node_to_add = self._apply_coordinate_offset(cached[node_id], seen_coords)
+                    # Apply coordinate offset if duplicates exist to prevent stacking.
+                    # Operate on a shallow copy so the offset never pollutes the
+                    # persistent cache (it would corrupt the next poll's
+                    # "did the library position change" comparison).
+                    node_to_add = self._apply_coordinate_offset(dict(cached[node_id]), seen_coords)
                     result.append(node_to_add)
                     result_ids.add(node_id)
                 else:
@@ -4194,8 +4443,14 @@ class MeshtasticConnection:
                         entry["last_position_fix"] = int(time.time())
                     cached[node_id] = entry
                     
-                    # Apply coordinate offset if duplicates exist to prevent stacking
-                    entry = self._apply_coordinate_offset(entry, seen_coords)
+                    # Record the library's initial position to detect changes on
+                    # subsequent polls (see cached-branch merge logic above).
+                    if entry["latitude"] is not None and entry["longitude"] is not None:
+                        self._last_lib_pos[node_id] = (entry["latitude"], entry["longitude"])
+                    
+                    # Apply coordinate offset if duplicates exist to prevent stacking.
+                    # Copy so the offset never pollutes the persistent cache.
+                    entry = self._apply_coordinate_offset(dict(entry), seen_coords)
                     result.append(entry)
                     result_ids.add(node_id)
                     newly_discovered.append(node_id)
@@ -4265,6 +4520,18 @@ class MeshtasticConnection:
                 restored = dict(node)
                 restored["id"] = nid
                 restored["stale"] = True
+                
+                # Re-validate coordinates when restoring stale nodes to prevent
+                # restoring invalid coordinates (e.g., 0,0) from persistent cache.
+                restored_lat = restored.get("latitude")
+                restored_lng = restored.get("longitude")
+                if restored_lat is not None and restored_lng is not None:
+                    validated_lat, validated_lng = self._validate_and_correct_coordinates(nid, restored_lat, restored_lng)
+                    if validated_lat is None or validated_lng is None:
+                        restored["latitude"] = None
+                        restored["longitude"] = None
+                        restored["altitude"] = None
+                        logger.debug("Dropped suspicious coordinates when restoring stale node %s: lat=%s lng=%s", nid, restored_lat, restored_lng)
                 
                 # Apply coordinate offset if duplicates exist to prevent stacking
                 restored = self._apply_coordinate_offset(restored, seen_coords)
@@ -4645,6 +4912,19 @@ class MeshtasticConnection:
             iface = self._interface
             self_num = getattr(getattr(iface, "myInfo", None), "my_node_num", None)
             self_id = ("!" + format(self_num, "08x")) if self_num is not None else None
+
+        # Update last_heard for the local node when sending a message.
+        # This ensures the UI/integration shows fresh "last heard" times
+        # for outbound activity (not just received packets).
+        # NOTE: done outside `self._lock` (only `_nodes_lock` held here) to
+        # preserve the /-single-lock-at-a-time ordering used elsewhere.
+        if self_num is not None:
+            with self._nodes_lock:
+                node = next(
+                    (n for n in self._nodes if normalize_node_id(n.get("id")) == self_id), None
+                )
+                if node is not None:
+                    node["last_heard"] = int(time.time())
 
         to_num = None
         if destination and destination != meshtastic.BROADCAST_ADDR:

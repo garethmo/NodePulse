@@ -18,11 +18,13 @@ pytestmark = pytest.mark.asyncio
 async def _wait_for_poll(async_page: Page):
     """Wait for the initial pollData() to complete and render nodes.
 
-    Uses wait_for_selector rather than a fixed sleep so the test proceeds
-    as soon as the first round-trip finishes (typically <500 ms) instead
-    of always burning 3 seconds.
+    Uses wait_for_selector(state="attached") rather than a fixed sleep so the
+    test proceeds as soon as the first round-trip finishes (typically <500 ms)
+    instead of always burning 3 seconds. state="attached" (DOM presence) is
+    required — node cards live inside #view-nodes, which is display:none until
+    the Nodes tab is activated, so a visibility wait can never succeed here.
     """
-    await async_page.wait_for_selector(".node-card", timeout=8000)
+    await async_page.wait_for_selector(".node-card", state="attached", timeout=8000)
 
 
 async def _goto_nodes_tab(async_page: Page, server_url: str):
@@ -30,8 +32,9 @@ async def _goto_nodes_tab(async_page: Page, server_url: str):
     await async_page.goto(server_url, wait_until="domcontentloaded")
     await _wait_for_poll(async_page)
     await async_page.click("#header-tabs .tab-btn[data-view='nodes']")
-    # node-card is already in DOM from the initial poll; just confirm visible.
-    await async_page.wait_for_selector(".node-card", timeout=5000)
+    # node-card is already in DOM from the initial poll; now that the Nodes
+    # view is active, confirm it is actually visible.
+    await async_page.wait_for_selector(".node-card", state="visible", timeout=5000)
 
 
 async def test_favorite_button_appears_on_node_cards(async_page: Page, aio_server):
@@ -102,7 +105,7 @@ async def test_favorites_persist_in_localstorage(async_page: Page, aio_server):
     await async_page.reload(wait_until="domcontentloaded")
     await _wait_for_poll(async_page)
     await async_page.click("#header-tabs .tab-btn[data-view='nodes']")
-    await async_page.wait_for_selector(".node-card", timeout=5000)
+    await async_page.wait_for_selector(".node-card", state="visible", timeout=5000)
     
     # Verify favorite is still active
     fav_button = async_page.locator(".node-fav-btn").first
