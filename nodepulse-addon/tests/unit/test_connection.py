@@ -2007,7 +2007,8 @@ class TestStabilityRemediations:
 
     def test_request_traceroute_sync_returns_bool(self):
         conn = self._conn()
-        conn._interface.sendTraceRoute = MagicMock()        conn._nodes = [{"id": "!12345678"}]
+        conn._interface.sendTraceRoute = MagicMock()
+        conn._nodes = [{"id": "!12345678"}]
         res = conn._request_traceroute_sync("!12345678")
         assert res is True
 
@@ -2015,6 +2016,36 @@ class TestStabilityRemediations:
         conn._interface.sendTraceRoute.side_effect = Exception("Radio failure")
         res_fail = conn._request_traceroute_sync("!12345678")
         assert res_fail is False
+
+    def test_last_heard_never_regresses_to_stale_library_value(self):
+        """Regression: prev is the same dict object as the cached entry, so
+        last_heard must be snapshotted BEFORE update() — otherwise the merge
+        compares the library's stale lastHeard against itself and fresh
+        per-packet timestamps are lost (last_heard stuck hours behind).
+        """
+        import time
+
+        conn = self._conn()
+        conn._interface.myInfo.my_node_num = 999
+        fresh = int(time.time())
+        stale = fresh - 36000  # 10 hours ago
+        conn._nodes = [{"id": "!12345678", "long_name": "Node", "last_heard": fresh}]
+        conn._interface.nodes = {
+            "!12345678": {"user": {"longName": "Node"}, "lastHeard": stale},
+        }
+        with patch("app.remote_cache.load_remote_cache", return_value={}):
+            nodes = conn._get_nodes_sync()
+        assert len(nodes) == 1
+        assert nodes[0]["last_heard"] == fresh
+
+        # And the library value wins when it is genuinely NEWER.
+        conn._nodes = [{"id": "!12345678", "last_heard": stale}]
+        conn._interface.nodes = {
+            "!12345678": {"user": {"longName": "Node"}, "lastHeard": fresh},
+        }
+        with patch("app.remote_cache.load_remote_cache", return_value={}):
+            nodes = conn._get_nodes_sync()
+        assert nodes[0]["last_heard"] == fresh
 
     def test_read_channels_accepts_iface_arg(self):
         conn = self._conn()
