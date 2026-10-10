@@ -1651,6 +1651,31 @@ class TestOnMeshReceive:
             conn._on_mesh_receive({"decoded": {"portnum": "POSITION_APP"}})
         assert len(conn._messages) == 0
 
+    def test_message_updates_last_heard_in_nodes_list(self):
+        """Receiving a text message bumps last_heard and it's visible
+        in _get_nodes_sync (which is what /api/nodes returns)."""
+        conn = self._conn_with_interface()
+        conn._nodes = [{"id": "!00001234", "long_name": "Node", "last_heard": 1000}]
+        conn._interface.nodes = {
+            "!00001234": {"user": {"longName": "Node"}, "lastHeard": 1000},
+        }
+        import time
+        before = int(time.time())
+        with patch.object(conn, "_schedule_save"), \
+             patch("app.remote_cache.load_remote_cache", return_value={}):
+            conn._on_mesh_receive({
+                "from": 0x1234,
+                "to": 0xFFFFFFFF,
+                "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "hello"},
+            })
+        # Now call _get_nodes_sync which simulates /api/nodes
+        nodes = conn._get_nodes_sync()
+        node = next((n for n in nodes if n["id"] == "!00001234"), None)
+        assert node is not None
+        # last_heard should be bumped to a fresh timestamp
+        assert node["last_heard"] is not None
+        assert node["last_heard"] >= before
+
 
 class TestCapturePosition:
     def _position_payload(self, lat_i=400000000, lng_i=-100000000, alt=123):
