@@ -179,6 +179,17 @@ class _NodeSensorBase(CoordinatorEntity, SensorEntity):
         return node.get(self._metric_key)
 
     @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        """Return state attributes including a human-readable reason."""
+        node = self._get_node()
+        if node is None:
+            return {"state_reason": "Node not in mesh"}
+        value = node.get(self._metric_key)
+        if value is None:
+            return {"state_reason": f"No {self._metric_key} data"}
+        return {}
+
+    @property
     def available(self) -> bool:
         """Entities stay available as long as the coordinator is healthy.
 

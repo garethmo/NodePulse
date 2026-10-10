@@ -1514,6 +1514,31 @@ class TestOnMeshReceive:
         assert entry["outgoing"] is False
         assert entry["rx_snr"] == -5.0
 
+    def test_new_node_gets_last_heard_on_first_message(self):
+        """A node not in the persistent cache gets added with a fresh last_heard
+        when its first text message is received."""
+        conn = self._conn_with_interface()
+        # Node !00005555 is NOT in conn._nodes (empty cache) but IS in the
+        # live interface. The first message should add it to the cache with
+        # a current last_heard timestamp.
+        import time
+        before = int(time.time())
+        with patch.object(conn, "_schedule_save"):
+            conn._on_mesh_receive({
+                "from": 0x5555,
+                "to": 0xFFFFFFFF,
+                "channel": 0,
+                "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "first msg"},
+            })
+        after = int(time.time())
+        # Message was captured
+        assert len(conn._messages) == 1
+        # Node was added to persistent cache with last_heard
+        node = next((n for n in conn._nodes if n["id"] == "!00005555"), None)
+        assert node is not None, "New node should be added to cache"
+        assert node["last_heard"] is not None
+        assert before <= node["last_heard"] <= after
+
     def test_from_short_and_long_captured(self):
         conn = self._conn_with_interface()
         with patch.object(conn, "_schedule_save"):

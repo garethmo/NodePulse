@@ -34,6 +34,20 @@ logger = logging.getLogger(__name__)
 NODE_ONLINE_THRESHOLD = 3 * 60 * 60  # 3 hours
 
 
+def _format_duration(seconds: int) -> str:
+    """Format a duration in seconds as a human-readable string."""
+    if seconds < 60:
+        return f"{seconds} second{'s' if seconds != 1 else ''} ago"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours} hour{'s' if hours != 1 else ''} ago"
+    days = hours // 24
+    return f"{days} day{'s' if days != 1 else ''} ago"
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -83,6 +97,15 @@ class NodePulseConnectionSensor(CoordinatorEntity, BinarySensorEntity):
         """Return True when the addon reports an active connection."""
         status = (self.coordinator.data or {}).get("status", {})
         return bool(status.get("connected", False))
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        """Return state attributes including a human-readable reason."""
+        status = (self.coordinator.data or {}).get("status", {})
+        connected = bool(status.get("connected", False))
+        if connected:
+            return {"state_reason": "Connected to radio"}
+        return {"state_reason": "Disconnected from radio"}
 
 
 class NodeOnlineSensor(CoordinatorEntity, BinarySensorEntity):
@@ -136,4 +159,24 @@ class NodeOnlineSensor(CoordinatorEntity, BinarySensorEntity):
 
     @property
     def available(self) -> bool:
-        return super().available and self._get_node() is not None
+        """Stay available as long as coordinator is healthy.
+
+        Nodes routinely drop in/out of mesh range; flipping to Unavailable
+        on every blip spams the logbook. Instead we show "Off" with a
+        descriptive state_reason attribute.
+        """
+        return super().available
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        """Return state attributes including a human-readable reason."""
+        node = self._get_node()
+        if not node:
+            return {"state_reason": "Node not in mesh"}
+        last_heard = as_float(node.get("last_heard"))
+        if last_heard is None:
+            return {"state_reason": "Never heard"}
+        age = int(time() - last_heard)
+        if age <= NODE_ONLINE_THRESHOLD:
+            return {"state_reason": f"Last heard {_format_duration(age)}"}
+        return {"state_reason": f"Not heard for {_format_duration(age)}"}

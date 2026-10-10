@@ -2012,6 +2012,9 @@ class MeshtasticConnection:
 
             # Update last_heard for the sending node on EVERY packet received.
             # This ensures the UI/integration shows fresh "last heard" times.
+            # If the node is not yet in our persistent cache, create a minimal
+            # entry so subsequent packets will bump last_heard and the HA push
+            # triggered by this packet will see a current timestamp.
             from_num = packet.get("from")
             from_id_snr = _node_id_from_num(from_num)
             if from_id_snr:
@@ -2021,6 +2024,8 @@ class MeshtasticConnection:
                     )
                     if node is not None:
                         node["last_heard"] = now_ts
+                    else:
+                        self._nodes.append({"id": from_id_snr, "last_heard": now_ts})
 
             # Also update last_heard for the destination node if present.
             # This ensures bidirectional communication updates the "last heard"
@@ -2034,6 +2039,8 @@ class MeshtasticConnection:
                     )
                     if node is not None:
                         node["last_heard"] = now_ts
+                    else:
+                        self._nodes.append({"id": to_id_snr, "last_heard": now_ts})
 
             # Record every packet in the shared inspector/sniffer buffer.
             self._capture_packet_log(packet)
