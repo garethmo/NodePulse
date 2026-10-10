@@ -518,6 +518,25 @@ class NodeMessageSensor(_NodeSensorBase):
         # Messages are returned oldest first; take the last (most recent) one.
         return node_messages[-1].get("text")
 
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        """Return state attributes including a human-readable reason."""
+        node_messages = self._node_messages()
+        if not node_messages:
+            direction = "sent" if self._outgoing else "received"
+            return {"state_reason": f"No {direction} messages yet"}
+        return {}
+
+    @property
+    def available(self) -> bool:
+        """Stay available as long as coordinator is healthy.
+
+        Message sensors always exist once the node is tracked, even before
+        any messages arrive, so they show "Unknown" with state_reason
+        instead of disappearing.
+        """
+        return super().available
+
 
 class NodeMessageReceivedSensor(NodeMessageSensor):
     """Last received text message for this node, for automation triggers."""
