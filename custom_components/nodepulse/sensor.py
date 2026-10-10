@@ -98,9 +98,12 @@ async def async_setup_entry(
 
         # Only add sensors that currently have a value to avoid cluttering the
         # UI with "Unknown" metrics for features the node doesn't have.
+        # Message sensors are always added so they exist and show "Unknown"
+        # until messages arrive.
+        message_sensor_types = {NodeMessageReceivedSensor, NodeMessageSentSensor}
         out = []
         for sensor in sensor_set:
-            if sensor.native_value is not None:
+            if isinstance(sensor, message_sensor_types) or sensor.native_value is not None:
                 out.append(sensor)
                 logger.debug("Registering new node sensor %s", sensor.unique_id)
         return out
