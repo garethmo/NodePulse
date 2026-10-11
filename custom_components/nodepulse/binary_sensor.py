@@ -24,7 +24,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import DOMAIN, normalize_node_id
 from .coordinator import NodePulseCoordinator
 from .helpers import NodeDiscovery, as_float
 
@@ -122,11 +122,12 @@ class NodeOnlineSensor(CoordinatorEntity, BinarySensorEntity):
         node_id: str,
     ) -> None:
         super().__init__(coordinator)
-        self._node_id = node_id
-        self._attr_unique_id = f"{entry.entry_id}_{node_id}_online"
+        # Normalize node_id for consistency with coordinator's normalized index
+        self._node_id = normalize_node_id(node_id) or node_id
+        self._attr_unique_id = f"{entry.entry_id}_{self._node_id}_online"
         # Group under the same per-node device as the sensors.
-        node = coordinator.get_node(node_id)
-        name = node_id
+        node = coordinator.get_node(self._node_id)
+        name = self._node_id
         if node:
             long_n = node.get("long_name")
             short = node.get("short_name")
@@ -135,7 +136,7 @@ class NodeOnlineSensor(CoordinatorEntity, BinarySensorEntity):
             elif long_n or short:
                 name = long_n or short
         self._attr_device_info = {
-            "identifiers": {(DOMAIN, node_id)},
+            "identifiers": {(DOMAIN, self._node_id)},
             "name": name,
             "manufacturer": "Meshtastic",
             "model": node.get("hw_model") if node else "Meshtastic Node",

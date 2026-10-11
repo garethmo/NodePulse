@@ -6,6 +6,7 @@ Keeping them here (rather than duplicated per module) avoids drift: Q11
 centralised the coordinator lookup that used to be copy-pasted into
 ``__init__.py``, ``api.py``, ``device_trigger.py`` and ``device_action.py``.
 """
+import logging
 from typing import Optional
 
 from homeassistant.core import HomeAssistant
@@ -13,6 +14,8 @@ from homeassistant.helpers import entity_registry as er
 
 from .const import DOMAIN
 from .coordinator import NodePulseCoordinator
+
+logger = logging.getLogger(__name__)
 
 
 def coordinator_for(hass: HomeAssistant) -> Optional[NodePulseCoordinator]:
@@ -83,8 +86,20 @@ class NodeDiscovery:
         nodes = (self.coordinator.data or {}).get("nodes", [])
         tracked = self.coordinator.tracked_nodes
 
+        # Normalize tracked_nodes for comparison since nodes from API may have
+        # inconsistent formatting (with/without "!" prefix, mixed case)
+        from .const import normalize_node_id
+        tracked_normalized = {normalize_node_id(nid) for nid in tracked if normalize_node_id(nid)}
+
+        logger.debug(
+            "NodeDiscovery.run: total_nodes=%d, tracked_nodes=%d, registered=%d",
+            len(nodes),
+            len(tracked),
+            len(self._registered_node_ids)
+        )
+
         # Determine which node IDs were tracked previously but no longer are.
-        newly_untracked = self._registered_node_ids - tracked
+        newly_untracked = self._registered_node_ids - tracked_normalized
 
         if newly_untracked:
             registry = er.async_get(hass)
@@ -137,9 +152,10 @@ class NodeDiscovery:
         new_entities = []
         for node in nodes:
             node_id = node.get("id")
-            if not node_id or node_id in self._registered_node_ids:
+            node_id_norm = normalize_node_id(node_id)
+            if not node_id_norm or node_id_norm in self._registered_node_ids:
                 continue
-            if node_id not in tracked:
+            if node_id_norm not in tracked_normalized:
                 continue
             if not should_create(node):
                 continue
@@ -148,11 +164,13 @@ class NodeDiscovery:
                 continue
             if not isinstance(added, (list, tuple, set)):
                 added = [added]
-            self._registered_node_ids.add(node_id)
+            self._registered_node_ids.add(node_id_norm)
             self._registered_entities.extend(added)
             new_entities.extend(added)
+            logger.info("Creating entities for tracked node %s", node_id)
 
         if new_entities:
+            logger.info("Adding %d new entities for %d tracked nodes", len(new_entities), len(new_entities))
             async_add_entities(new_entities)
 
     def attach(self, hass, async_add_entities, should_create, make_entities) -> None:

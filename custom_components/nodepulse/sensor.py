@@ -36,7 +36,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import DOMAIN, normalize_node_id
 from .coordinator import NodePulseCoordinator
 from .helpers import NodeDiscovery, as_float, as_int
 
@@ -96,16 +96,13 @@ async def async_setup_entry(
             NodeSignalQualitySensor(coordinator, entry, node_id),
         ]
 
-        # Only add sensors that currently have a value to avoid cluttering the
-        # UI with "Unknown" metrics for features the node doesn't have.
-        # Message sensors are always added so they exist and show "Unknown"
-        # until messages arrive.
-        message_sensor_types = {NodeMessageReceivedSensor, NodeMessageSentSensor}
+        # Always create all sensors for tracked nodes, even if they don't have
+        # data yet. They will show "Unknown" until data arrives. This ensures
+        # entities are consistently available and don't disappear when data is
+        # temporarily missing.
         out = []
         for sensor in sensor_set:
-            if isinstance(sensor, message_sensor_types) or sensor.native_value is not None:
-                out.append(sensor)
-                logger.debug("Registering new node sensor %s", sensor.unique_id)
+            out.append(sensor)
         return out
 
     discovery = NodeDiscovery(coordinator, entry)
@@ -166,9 +163,10 @@ class _NodeSensorBase(CoordinatorEntity, SensorEntity):
         node_id: str,
     ) -> None:
         super().__init__(coordinator)
-        self._node_id = node_id
+        # Normalize node_id for consistency with coordinator's normalized index
+        self._node_id = normalize_node_id(node_id) or node_id
         # Per-node device groups all metrics under one HA device per node.
-        self._attr_device_info = _node_device_info(entry, node_id, coordinator)
+        self._attr_device_info = _node_device_info(entry, self._node_id, coordinator)
 
     def _get_node(self) -> Optional[Dict[str, Any]]:
         """Return this node's dict via the coordinator's per-refresh index (O(1))."""
@@ -445,9 +443,11 @@ class NodeMessageSensor(_NodeSensorBase):
     _outgoing: bool  # True = sent messages, False = received messages
 
     def __init__(self, coordinator, entry, node_id):
-        super().__init__(coordinator, entry, node_id)
+        # Normalize node_id first for consistency
+        node_id_norm = normalize_node_id(node_id) or node_id
+        super().__init__(coordinator, entry, node_id_norm)
         direction = "sent" if self._outgoing else "received"
-        self._attr_unique_id = f"{entry.entry_id}_{node_id}_message_{direction}"
+        self._attr_unique_id = f"{entry.entry_id}_{node_id_norm}_message_{direction}"
 
     @staticmethod
     def _norm_node_id(raw: Any) -> Optional[str]:
@@ -488,13 +488,16 @@ class NodeMessageSensor(_NodeSensorBase):
         """
         node_id = self._norm_node_id(self._node_id)
         if not node_id:
+            logger.debug("Message sensor: node_id normalization failed for %s", self._node_id)
             return []
         data = self.coordinator.data or {}
         index = data.get("messages_by_node")
         if index is None:
             messages: List[Dict[str, Any]] = data.get("messages", [])
+            logger.debug("Message sensor: messages_by_node index not available, using full message list (%d messages)", len(messages))
         else:
             messages = index.get(node_id, [])
+            logger.debug("Message sensor: found %d messages for node %s in index", len(messages), node_id)
 
         out = []
         for m in messages:
@@ -507,6 +510,11 @@ class NodeMessageSensor(_NodeSensorBase):
             is_outgoing = (from_id == node_id) if node_id else bool(m.get("outgoing"))
             if is_outgoing == self._outgoing:
                 out.append(m)
+
+        logger.debug(
+            "Message sensor: node=%s direction=%s matched %d messages (outgoing=%s)",
+            node_id, "sent" if self._outgoing else "received", len(out), self._outgoing
+        )
         return out
 
     @property
@@ -516,16 +524,29 @@ class NodeMessageSensor(_NodeSensorBase):
         if not node_messages:
             return None
         # Messages are returned oldest first; take the last (most recent) one.
-        return node_messages[-1].get("text")
+        latest = node_messages[-1]
+        text = latest.get("text")
+        logger.debug(
+            "Message sensor native_value: node=%s direction=%s text=%s",
+            self._node_id, "sent" if self._outgoing else "received", text
+        )
+        return text
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
-        """Return state attributes including a human-readable reason."""
+        """Return state attributes including timestamp and human-readable reason."""
         node_messages = self._node_messages()
         if not node_messages:
             direction = "sent" if self._outgoing else "received"
             return {"state_reason": f"No {direction} messages yet"}
-        return {}
+        # Include timestamp and other metadata for the most recent message
+        latest = node_messages[-1]
+        return {
+            "timestamp": latest.get("timestamp"),
+            "from_id": latest.get("from_id"),
+            "to_id": latest.get("to_id"),
+            "channel": latest.get("channel"),
+        }
 
     @property
     def available(self) -> bool:
@@ -583,7 +604,8 @@ class NodeDistanceSensor(_NodeSensorBase):
         if my_num is None:
             return None
         self_id = "!" + format(my_num & 0xFFFFFFFF, "08x")
-        self_node = self.coordinator.get_node(self_id)
+        self_id_norm = normalize_node_id(self_id)
+        self_node = self.coordinator.get_node(self_id_norm)
         if not self_node or self_node.get("latitude") is None or self_node.get("longitude") is None:
             return None
         R = 6371.0

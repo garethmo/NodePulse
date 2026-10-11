@@ -146,14 +146,15 @@ class NodePulseCoordinator(DataUpdateCoordinator):
         """
         data = self.data or {}
         index = data.get("nodes_by_id")
+        node_id_norm = normalize_node_id(node_id)
         if index is None:
             # Fallback: index not yet built (e.g. data from before the index
             # was introduced). Linear scan is acceptable in this rare case.
             for node in data.get("nodes", []):
-                if node.get("id") == node_id:
+                if normalize_node_id(node.get("id")) == node_id_norm:
                     return node
             return None
-        return index.get(node_id)
+        return index.get(node_id_norm)
 
     @staticmethod
     def _message_key(message: Dict[str, Any]) -> Any:
@@ -324,6 +325,13 @@ class NodePulseCoordinator(DataUpdateCoordinator):
             if working and working != self._working_host:
                 logger.debug("NodePulse addon reached at %s — pinning as preferred host", working)
                 self._working_host = working
+
+            logger.info(
+                "NodePulse fetch: %d nodes, %d messages, %d channels from addon",
+                len(nodes) if nodes else 0,
+                len(messages) if messages else 0,
+                len(channels) if channels else 0
+            )
         except aiohttp.ClientError as exc:
             raise UpdateFailed(f"Network error reaching addon at {self._host}: {exc}") from exc
         except Exception as exc:
@@ -346,10 +354,19 @@ class NodePulseCoordinator(DataUpdateCoordinator):
             "NodePulse data refreshed (host=%s, node_count=%s, message_count=%s)",
             self._host, len(nodes), len(messages) if messages else 0,
         )
-        logger.debug(
-            "NodePulse messages sample: %s",
-            messages[:2] if messages else None
-        )
+        if messages:
+            logger.debug(
+                "NodePulse messages sample: %s",
+                messages[:2]
+            )
+            # Log node IDs in messages to help debug
+            message_node_ids = set()
+            for m in messages[:5]:
+                if m.get("from_id"):
+                    message_node_ids.add(normalize_node_id(m.get("from_id")))
+                if m.get("to_id"):
+                    message_node_ids.add(normalize_node_id(m.get("to_id")))
+            logger.debug("NodePulse message node IDs (first 5 messages): %s", sorted(message_node_ids))
 
         # Track which message IDs we've already surfaced so we can hand only the
         # newly-arrived ones to the logbook and device-trigger subsystems.
@@ -407,11 +424,13 @@ class NodePulseCoordinator(DataUpdateCoordinator):
 
         # Pre-index nodes and messages once per refresh so entity properties do
         # O(1) lookups instead of rescaming the full lists (S10/S11).
+        # Use normalized IDs for consistency with messages_by_node and tracked_nodes.
         nodes_by_id: Dict[str, Any] = {}
         for node in nodes:
             nid = node.get("id")
-            if nid:
-                nodes_by_id[nid] = node
+            nid_norm = normalize_node_id(nid)
+            if nid_norm:
+                nodes_by_id[nid_norm] = node
 
         messages_by_node: Dict[str, List[Dict[str, Any]]] = {}
         for m in messages:
@@ -419,6 +438,12 @@ class NodePulseCoordinator(DataUpdateCoordinator):
                 norm = normalize_node_id(mid)
                 if norm:
                     messages_by_node.setdefault(norm, []).append(m)
+
+        logger.debug(
+            "Coordinator: built messages_by_node index with %d nodes, %d total messages",
+            len(messages_by_node),
+            len(messages)
+        )
 
         return {
             "status": status,

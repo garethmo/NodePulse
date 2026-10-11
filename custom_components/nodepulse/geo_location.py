@@ -16,7 +16,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import DOMAIN, normalize_node_id
 from .coordinator import NodePulseCoordinator
 from .helpers import NodeDiscovery
 
@@ -82,12 +82,13 @@ class NodeGeoLocation(CoordinatorEntity, GeolocationEvent):
         node_id: str,
     ) -> None:
         super().__init__(coordinator)
-        self._node_id = node_id
-        self._attr_unique_id = f"{entry.entry_id}_{node_id}_geo"
+        # Normalize node_id for consistency with coordinator's normalized index
+        self._node_id = normalize_node_id(node_id) or node_id
+        self._attr_unique_id = f"{entry.entry_id}_{self._node_id}_geo"
 
-        name = f"Mesh Node {node_id}"
+        name = f"Mesh Node {self._node_id}"
         model = "Meshtastic Node"
-        node = coordinator.get_node(node_id)
+        node = coordinator.get_node(self._node_id)
         if node:
             short = node.get("short_name")
             long_n = node.get("long_name")
@@ -100,7 +101,7 @@ class NodeGeoLocation(CoordinatorEntity, GeolocationEvent):
                 model = hw
 
         self._attr_device_info = {
-            "identifiers": {(DOMAIN, node_id)},
+            "identifiers": {(DOMAIN, self._node_id)},
             "name": name,
             "manufacturer": "Meshtastic",
             "model": model,
@@ -109,27 +110,46 @@ class NodeGeoLocation(CoordinatorEntity, GeolocationEvent):
 
         # Initialize coordinates from coordinator snapshot on creation so HA
         # has valid state before the first update callback fires.
-        if node:
-            self._attr_latitude = node.get("latitude")
-            self._attr_longitude = node.get("longitude")
-        else:
-            self._attr_latitude = None
-            self._attr_longitude = None
+        self._sync_coordinates(node)
 
     def _get_node(self) -> Optional[Dict[str, Any]]:
         return self.coordinator.get_node(self._node_id)
+
+    def _sync_coordinates(self, node: Optional[Dict[str, Any]]) -> None:
+        """Write fresh coordinates, clearing HA's cached_property values first.
+
+        Home Assistant exposes ``latitude``/``longitude`` as cached properties.
+        Some HA versions cache the first read before we receive a later GPS fix;
+        explicitly clearing the cache guarantees the map sees each movement.
+        """
+        self.__dict__.pop("latitude", None)
+        self.__dict__.pop("longitude", None)
+        self.__dict__.pop("altitude", None)
+        if node:
+            self._attr_latitude = node.get("latitude")
+            self._attr_longitude = node.get("longitude")
+            self._attr_altitude = node.get("altitude")
+        else:
+            self._attr_latitude = None
+            self._attr_longitude = None
+            self._attr_altitude = None
 
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
         node = self._get_node()
-        if node:
-            self._attr_latitude = node.get("latitude")
-            self._attr_longitude = node.get("longitude")
-        else:
-            self._attr_latitude = None
-            self._attr_longitude = None
+        self._sync_coordinates(node)
+        # Force a state write to ensure HA detects coordinate changes
+        self.async_write_ha_state()
         super()._handle_coordinator_update()
+
+    @property
+    def altitude(self) -> Optional[float]:
+        """Return the altitude in meters above sea level."""
+        node = self._get_node()
+        if not node:
+            return None
+        return node.get("altitude")
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
