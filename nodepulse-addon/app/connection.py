@@ -21,6 +21,7 @@ import json
 import logging
 import math
 import os
+import queue
 import re
 import threading
 import time
@@ -83,31 +84,37 @@ def unregister_sse_client(queue: asyncio.Queue) -> None:
 def _broadcast_sse_event(event_type: str, payload: dict) -> None:
     """Fan-out a typed SSE event to all registered client queues.
 
-    Runs on the meshtastic receive thread. Uses put_nowait() so it never
-    blocks. If a client's queue is full (browser too slow to consume events),
-    we evict the oldest item first then insert the new one — this ensures slow
-    clients always receive the *latest* state rather than being permanently
-    blocked after a single overflow.
+    Runs on background threads (meshtastic receive thread or thread pool).
+    Safely schedules queue insertion on the running asyncio event loop using
+    call_soon_threadsafe() to ensure thread safety across threads.
+    If a client's queue is full, evicts the oldest item first.
     """
     if not _sse_queues:
         return
     event = {"type": event_type, "data": payload}
     with _sse_lock:
         queues = list(_sse_queues)
-    evicted = 0
-    for q in queues:
+
+    def _do_put(q: asyncio.Queue, ev: dict) -> None:
         try:
-            q.put_nowait(event)
+            q.put_nowait(ev)
         except asyncio.QueueFull:
-            # Evict the oldest stale event and make room for the fresh one.
             with contextlib.suppress(asyncio.QueueEmpty):
                 q.get_nowait()
             with contextlib.suppress(asyncio.QueueFull):
-                # extremely unlikely — discard rather than block
-                q.put_nowait(event)
-            evicted += 1
-    if evicted:
-        logger.debug("SSE broadcast: evicted oldest event for %s slow client(s) (type=%s)", evicted, event_type)
+                q.put_nowait(ev)
+
+    try:
+        running_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        running_loop = None
+
+    if _event_loop and _event_loop.is_running() and running_loop is not _event_loop:
+        for q in queues:
+            _event_loop.call_soon_threadsafe(_do_put, q, event)
+    else:
+        for q in queues:
+            _do_put(q, event)
 
 # Characters that would break out of an HTML/JS context if echoed verbatim.
 # Waypoint text arrives from the mesh (untrusted), so we strip these at the
@@ -575,6 +582,17 @@ class MeshtasticConnection:
         self._waypoints: list[dict[str, Any]] = []
         self._load_waypoints()
 
+        # Dedicated background persistence queue & single daemon worker thread.
+        # Coalesces disk writes and eliminates thread explosion under high packet rates.
+        self._persist_queue: queue.Queue = queue.Queue()
+        self._pending_persists: dict[str, Any] = {}
+        self._persist_queue_lock = threading.RLock()
+        self._persist_stopping = False
+        self._persist_worker_thread = threading.Thread(
+            target=self._persist_worker, name="NodePulse-PersistWorker", daemon=True
+        )
+        self._persist_worker_thread.start()
+
         # Subscribe to inbound packets early so connection handshake packets are captured.
         try:
             pub.subscribe(self._on_mesh_receive, "meshtastic.receive")
@@ -593,7 +611,8 @@ class MeshtasticConnection:
         )
 
     async def disconnect(self) -> None:
-        """Cleanly close the interface on addon shutdown."""
+        """Cleanly close the interface and persist queue on addon shutdown."""
+        self._stop_persist_worker()
         await asyncio.to_thread(self._close_sync)
 
     @property
@@ -971,10 +990,19 @@ class MeshtasticConnection:
             channel,
             sender_name,
         )
-        result = await asyncio.to_thread(
-            self._send_message_sync, text, destination, channel,
-            want_ack=True, sender_name=sender_name,
-        )
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    self._send_message_sync, text, destination, channel,
+                    want_ack=True, sender_name=sender_name,
+                ),
+                timeout=20.0,
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                "Timed out after 20s sending mesh message (destination=%s)", destination or "broadcast"
+            )
+            return False
         logger.debug(
             "Mesh message sent: text='%s' destination=%s channel=%s result=%s",
             text[:30] if text else "",
@@ -2016,8 +2044,12 @@ class MeshtasticConnection:
             # entry so subsequent packets will bump last_heard and the HA push
             # triggered by this packet will see a current timestamp.
             from_num = packet.get("from")
-            from_id_snr = _node_id_from_num(from_num)
-            if from_id_snr:
+            is_from_broadcast = (
+                from_num in (0xFFFFFFFF, -1, None)
+                or (isinstance(from_num, int) and (from_num & 0xFFFFFFFF) == 0xFFFFFFFF)
+            )
+            from_id_snr = _node_id_from_num(from_num) if (from_num and not is_from_broadcast) else None
+            if from_id_snr and from_id_snr not in ("!ffffffff", "!00000000"):
                 with self._nodes_lock:
                     node = next(
                         (n for n in self._nodes if normalize_node_id(n.get("id")) == from_id_snr), None
@@ -2027,12 +2059,16 @@ class MeshtasticConnection:
                     else:
                         self._nodes.append({"id": from_id_snr, "last_heard": now_ts})
 
-            # Also update last_heard for the destination node if present.
+            # Also update last_heard for the destination node if present (and not broadcast).
             # This ensures bidirectional communication updates the "last heard"
             # timestamp for both ends of a direct message.
             to_num = packet.get("to")
-            to_id_snr = _node_id_from_num(to_num) if to_num else None
-            if to_id_snr:
+            is_to_broadcast = (
+                to_num in (0xFFFFFFFF, -1, None)
+                or (isinstance(to_num, int) and (to_num & 0xFFFFFFFF) == 0xFFFFFFFF)
+            )
+            to_id_snr = _node_id_from_num(to_num) if (to_num and not is_to_broadcast) else None
+            if to_id_snr and to_id_snr not in ("!ffffffff", "!00000000"):
                 with self._nodes_lock:
                     node = next(
                         (n for n in self._nodes if normalize_node_id(n.get("id")) == to_id_snr), None
@@ -2108,7 +2144,11 @@ class MeshtasticConnection:
                 return
 
             # --- Routing ACKs (delivery confirmation) --------------------
-            if portnum == "ROUTING_APP":
+            if (
+                portnum in ("ROUTING_APP", 1)
+                or (isinstance(portnum, str) and "ROUTING" in portnum.upper())
+                or ("routing" in decoded and bool(decoded.get("routing")))
+            ):
                 self._capture_routing_ack(packet)
                 return
 
@@ -2179,6 +2219,36 @@ class MeshtasticConnection:
                 self_num = getattr(my_info, "my_node_num", None)
             self_id = ("!" + format(self_num, "08x")) if self_num is not None else None
 
+            # Suppress on-air echoes of packets we just transmitted.  When the
+            # radio relays our own outbound transmission we receive an exact copy
+            # via the meshtastic pubsub receive callback.  Without this check
+            # that echo is appended as a second bubble labelled "Unknown" (because
+            # self_num is not in _iface_snap.nodes) and broadcast over SSE.
+            if from_id is not None and from_id == self_id:
+                cutoff = time.time() - 10
+                with self._msg_lock:
+                    msg_list = list(self._messages)
+                recent = msg_list[-20:] if len(msg_list) > 20 else msg_list
+                channel_raw_early = packet.get("channel")
+                try:
+                    channel_early = int(channel_raw_early) if channel_raw_early is not None else 0
+                except (ValueError, TypeError):
+                    channel_early = 0
+                for m in recent:
+                    m_ch = 0
+                    try:
+                        m_ch = int(m.get("channel") or 0)
+                    except (ValueError, TypeError):
+                        m_ch = 0
+                    if (
+                        (m.get("outgoing") or m.get("from_telegram") or m.get("from_id") == self_id)
+                        and m.get("text") == text
+                        and m_ch == channel_early
+                        and (m.get("timestamp", 0) >= cutoff)
+                    ):
+                        logger.debug("Suppressed on-air echo for self-sent message: %s", text[:50])
+                        return
+
             name = None
             from_short = ""
             from_long = ""
@@ -2230,8 +2300,14 @@ class MeshtasticConnection:
                     channel = 0
 
             # A packet is a DM if it is addressed to a specific node (not the
-            # broadcast address). Meshtastic uses a high-bit marker for broadcast.
-            is_dm = to_id is not None and to_id != from_id and to_num not in (0xFFFFFFFF, None)
+            # broadcast address). Meshtastic uses 0xFFFFFFFF (or -1) for broadcast.
+            is_dm = (
+                to_id is not None
+                and to_id != from_id
+                and to_num is not None
+                and (to_num & 0xFFFFFFFF) != 0xFFFFFFFF
+                and to_num != -1
+            )
 
             # Conversation key groups messages into threads mirroring the
             # Meshtastic Android app: each channel is one thread ("Primary",
@@ -2246,7 +2322,7 @@ class MeshtasticConnection:
             entry = {
                 "from_id": from_id,
                 "to_id": to_id,
-                "from_name": (name if name and name.strip() else from_id) or "Unknown",
+                "from_name": (name if name and name.strip() else from_id) or from_id or "Unknown",
                 "from_short": from_short,
                 "from_long": from_long,
                 "text": text,
@@ -2509,8 +2585,16 @@ class MeshtasticConnection:
         try:
             decoded = packet.get("decoded", {}) or {}
             routing = decoded.get("routing") or {}
-            # requestId may sit at decoded level, routing sub-dict, or top level.
-            request_id = decoded.get("requestId") or routing.get("requestId") or packet.get("requestId")
+            # requestId may sit at decoded level, routing sub-dict, or top level,
+            # in camelCase or snake_case.
+            request_id = (
+                decoded.get("requestId")
+                or decoded.get("request_id")
+                or routing.get("requestId")
+                or routing.get("request_id")
+                or packet.get("requestId")
+                or packet.get("request_id")
+            )
             if not request_id:
                 return
             try:
@@ -2518,13 +2602,26 @@ class MeshtasticConnection:
             except (TypeError, ValueError):
                 return
 
-            error_reason = routing.get("errorReason", "NONE")
-            status = "delivered" if error_reason in ("NONE", 0, "", None) else "failed"
+            norm_id = request_id & 0xFFFFFFFF
+
+            error_reason = (
+                routing.get("errorReason")
+                or routing.get("error_reason")
+                or decoded.get("errorReason")
+                or decoded.get("error_reason")
+                or packet.get("errorReason")
+                or packet.get("error_reason")
+                or "NONE"
+            )
+            status = "delivered" if error_reason in ("NONE", 0, "", None, "ERR_NONE") else "failed"
 
             conv_key = None
+            msg_id = None
             with self._msg_lock:
-                msg_id = self._pending_acks.pop(request_id, None)
+                # Pop by both raw request_id and normalized uint32
+                msg_id = self._pending_acks.pop(request_id, None) or self._pending_acks.pop(norm_id, None)
                 self._pending_ack_times.pop(request_id, None)
+                self._pending_ack_times.pop(norm_id, None)
                 if msg_id is None:
                     return
                 for msg in self._messages:
@@ -2540,6 +2637,7 @@ class MeshtasticConnection:
                     "conversation": conv_key,
                     "ack_status": status,
                     "ack_at": int(time.time()),
+                    "packet_id": norm_id,
                 })
             logger.debug("ACK received for msg_id=%s: status=%s", msg_id, status)
         except Exception as exc:  # defensive  # noqa: BLE001
@@ -2572,7 +2670,7 @@ class MeshtasticConnection:
                 if msg_id is None:
                     continue
                 for msg in self._messages:
-                    if msg.get("id") == msg_id and msg.get("ack_status") == "sending":
+                    if msg.get("id") == msg_id and msg.get("ack_status") in ("sending", "sent"):
                         msg["ack_status"] = "failed"
                         msg["ack_at"] = int(time.time())
                         expired_updates.append((msg_id, msg.get("conversation")))
@@ -2764,12 +2862,11 @@ class MeshtasticConnection:
             logger.debug("Could not load persisted tags (ignored): %s", exc)
 
     def _save_tags(self) -> None:
-        """Persist the tags dict to disk (best-effort)."""
+        """Persist the tags dict to disk via background persistence queue."""
         try:
-            os.makedirs(_DATA_DIR, exist_ok=True)
             with self._tags_lock:
                 snapshot = dict(self._tags)
-            self._write_json(snapshot, _TAGS_FILE)
+            self._enqueue_save(snapshot, _TAGS_FILE)
         except Exception as exc:  # noqa: BLE001
             logger.debug("Could not persist tags (ignored): %s", exc)
 
@@ -2883,12 +2980,11 @@ class MeshtasticConnection:
             logger.debug("Could not sync favorites from device (ignored): %s", exc)
 
     def _save_favorites(self) -> None:
-        """Persist the favorites list to disk (best-effort)."""
+        """Persist the favorites list to disk via background persistence queue."""
         try:
-            os.makedirs(_DATA_DIR, exist_ok=True)
             with self._favorites_lock:
                 snapshot = sorted(self._favorites)
-            self._write_json(snapshot, _FAVORITES_FILE)
+            self._enqueue_save(snapshot, _FAVORITES_FILE)
         except Exception as exc:  # noqa: BLE001
             logger.debug("Could not persist favorites (ignored): %s", exc)
 
@@ -2944,12 +3040,11 @@ class MeshtasticConnection:
             logger.debug("Could not load persisted position history (ignored): %s", exc)
 
     def _save_position_history(self) -> None:
-        """Persist the position history dict to disk (best-effort)."""
+        """Persist the position history dict to disk via background persistence queue."""
         try:
-            os.makedirs(_DATA_DIR, exist_ok=True)
             with self._pos_hist_lock:
                 snapshot = dict(self._pos_history)
-            self._write_json(snapshot, _POSITION_HISTORY_FILE)
+            self._enqueue_save(snapshot, _POSITION_HISTORY_FILE)
         except Exception as exc:  # noqa: BLE001
             logger.debug("Could not persist position history (ignored): %s", exc)
 
@@ -3222,9 +3317,8 @@ class MeshtasticConnection:
                 else:
                     self._waypoints.append(entry)
 
-            # Persist on a daemon thread so we never block the receive thread.
-            t = threading.Thread(target=self._save_waypoints, daemon=True)
-            t.start()
+            # Persist via background persistence queue.
+            self._save_waypoints()
         except Exception as exc:  # pragma: no cover - defensive  # noqa: BLE001
             logger.debug("Error capturing waypoint (ignored): %s", exc)
 
@@ -3257,8 +3351,7 @@ class MeshtasticConnection:
         }
         with self._waypoints_lock:
             self._waypoints.append(entry)
-        t = threading.Thread(target=self._save_waypoints, daemon=True)
-        t.start()
+        self._save_waypoints()
         return entry
 
     def _update_waypoint_sync(self, waypoint_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
@@ -3273,8 +3366,7 @@ class MeshtasticConnection:
                     break
             else:
                 return None
-        t = threading.Thread(target=self._save_waypoints, daemon=True)
-        t.start()
+        self._save_waypoints()
         return snapshot
 
     def _delete_waypoint_sync(self, waypoint_id: str) -> bool:
@@ -3284,8 +3376,7 @@ class MeshtasticConnection:
             self._waypoints = [w for w in self._waypoints if w.get("id") != waypoint_id]
             deleted = len(self._waypoints) < before
         if deleted:
-            t = threading.Thread(target=self._save_waypoints, daemon=True)
-            t.start()
+            self._save_waypoints()
         return deleted
 
     def _load_waypoints(self) -> None:
@@ -3306,35 +3397,77 @@ class MeshtasticConnection:
             logger.debug("Could not load persisted waypoints (ignored): %s", exc)
 
     def _save_waypoints(self) -> None:
-        """Persist the waypoint list to disk (best-effort, runs on daemon thread)."""
+        """Persist the waypoint list to disk via the background persistence queue."""
         try:
-            os.makedirs(_DATA_DIR, exist_ok=True)
             with self._waypoints_lock:
                 snapshot = list(self._waypoints)
-            self._write_json(snapshot, _WAYPOINTS_FILE)
+            self._enqueue_save(snapshot, _WAYPOINTS_FILE)
         except Exception as exc:  # pragma: no cover - defensive  # noqa: BLE001
             logger.debug("Could not persist waypoints (ignored): %s", exc)
 
+    def _persist_worker(self) -> None:
+        """Dedicated background worker that serializes snapshots to disk.
+
+        Runs on a single daemon thread for the lifetime of the application.
+        Coalesces multiple rapid save requests for the same path into a single
+        write of the most recent state, preventing thread explosion and contention.
+        """
+        while True:
+            try:
+                path = self._persist_queue.get(timeout=0.2)
+            except queue.Empty:
+                if self._persist_stopping:
+                    break
+                continue
+
+            if path is None:  # Shutdown sentinel
+                self._persist_queue.task_done()
+                break
+
+            with self._persist_queue_lock:
+                snapshot = self._pending_persists.pop(path, None)
+
+            if snapshot is not None:
+                self._write_json(snapshot, path)
+
+            self._persist_queue.task_done()
+
+    def _enqueue_save(self, snapshot: Any, path: str) -> None:
+        """Enqueue a snapshot for background persistence on the worker thread.
+
+        If a save for this path is already queued, the snapshot is updated in-place
+        so the worker writes the latest state without queuing duplicate work.
+        """
+        try:
+            with self._persist_queue_lock:
+                already_pending = path in self._pending_persists
+                self._pending_persists[path] = snapshot
+                if not already_pending and not self._persist_stopping:
+                    self._persist_queue.put(path)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Could not enqueue persist for %s (ignored): %s", path, exc)
+
+    def _stop_persist_worker(self) -> None:
+        """Signal the persistence worker to stop and wait briefly for queue to drain."""
+        self._persist_stopping = True
+        try:
+            self._persist_queue.put(None)
+            if hasattr(self, "_persist_worker_thread") and self._persist_worker_thread.is_alive():
+                self._persist_worker_thread.join(timeout=3.0)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Error stopping persistence worker (ignored): %s", exc)
+
     def _schedule_save(self, source_deque, path: str) -> None:
         """
-        Offload a deque snapshot to disk on a daemon thread.
-
-        The meshtastic pubsub listener runs on the library's own background
-        thread; doing a blocking json.dump there would stall inbound packet
-        processing. We snapshot the deque and hand the write to a throwaway
-        daemon thread instead.
+        Offload a deque snapshot to disk via the background persistence queue.
 
         The snapshot itself (list()) is safe without a lock: Python's GIL
         guarantees that a list() call on a deque sees a consistent internal
-        state. The subsequent write to disk is serialised by _persist_lock
-        inside _write_json, preventing interleaved reads and writes.
+        state. Disk I/O is handled sequentially by the persistence worker.
         """
         try:
             snapshot = list(source_deque)
-            t = threading.Thread(
-                target=self._write_json, args=(snapshot, path), daemon=True
-            )
-            t.start()
+            self._enqueue_save(snapshot, path)
         except Exception as exc:  # pragma: no cover - defensive  # noqa: BLE001
             logger.debug("Could not schedule save (ignored): %s", exc)
 
@@ -3504,33 +3637,20 @@ class MeshtasticConnection:
                     reverse=True,
                 )
                 snapshot = nodes_sorted[:_MAX_PERSISTED_NODES]
-            t = threading.Thread(
-                target=self._write_json, args=(snapshot, _NODES_FILE), daemon=True
-            )
-            t.start()
+            self._enqueue_save(snapshot, _NODES_FILE)
         except Exception as exc:  # pragma: no cover - defensive  # noqa: BLE001
             logger.debug("Could not schedule node save (ignored): %s", exc)
 
     def _save_traceroutes(self, *, _is_scheduled: bool = False) -> None:
         """Persist the current traceroute results to disk (best-effort).
 
-        Offloaded to a daemon thread so the meshtastic receive thread is never
-        blocked, and serialised via _persist_lock. Saves are debounced so a
-        burst of traceroute replies cannot spawn a save thread per capture;
-        the most recent result within the debounce window is flushed shortly
-        after the storm settles.
-
-        The ``_is_scheduled`` parameter is an internal sentinel: when True the
-        call comes from a previously-scheduled Timer — debouncing has already
-        elapsed so we flush immediately without re-debouncing.
+        Enqueued to the background persistence worker thread so the meshtastic
+        receive thread is never blocked. Saves are debounced so a burst of
+        traceroute replies cannot overwhelm the queue.
         """
         try:
             now = time.time()
             with self._traceroutes_lock:
-                # If a save happened very recently, schedule a single trailing
-                # flush after the debounce window so the latest state is still
-                # persisted once the burst settles. A negative delta disables
-                # debouncing entirely (save on every call).
                 if (
                     not _is_scheduled
                     and _TRACEROUTE_SAVE_DEBOUNCE > 0
@@ -3547,10 +3667,7 @@ class MeshtasticConnection:
                 self._last_traceroute_save = now
                 self._pending_traceroute_save = False
                 snapshot = dict(self._traceroutes)
-            t = threading.Thread(
-                target=self._write_json, args=(snapshot, _TRACEROUTES_FILE), daemon=True
-            )
-            t.start()
+            self._enqueue_save(snapshot, _TRACEROUTES_FILE)
         except Exception as exc:  # pragma: no cover - defensive  # noqa: BLE001
             logger.debug("Could not schedule traceroute save (ignored): %s", exc)
 
@@ -3711,9 +3828,7 @@ class MeshtasticConnection:
             # Always record the fix in position history for trails and heatmaps.
             if lat is not None and lng is not None:
                 self._record_position(from_id, lat, lng, alt, snr, rssi)
-                # Persist asynchronously on a daemon thread.
-                t = threading.Thread(target=self._save_position_history, daemon=True)
-                t.start()
+                self._save_position_history()
 
             # Check if this is a reply to a position request we made.
             # POSITION_APP packets also arrive as periodic broadcasts from nodes
@@ -3981,25 +4096,39 @@ class MeshtasticConnection:
         """
         Health check that decides whether the session needs a reconnect.
 
-        We treat the session as dead ONLY when the underlying socket is gone or
-        reading the node DB raises — i.e. a genuinely broken connection. An
-        *empty* node DB is NOT treated as dead: the meshtastic library
-        populates ``interface.nodes`` asynchronously after connect, and on a
-        busy/slow mesh this sync can take well over a minute.
-
-        Lock strategy: we hold _lock only long enough to take a reference to
-        the interface object. The actual DB probe happens *outside* the lock so
-        a concurrent _get_nodes_sync call (which also holds _lock while reading
-        nodes) cannot starve the health probe. If the interface reference
-        becomes None between the check and the probe, the AttributeError is
-        caught and treated as unhealthy.
+        Checks actual transport and socket state rather than just an in-memory dictionary.
+        Returns False if the underlying transport is closed, broken, or disconnected.
         """
         with self._lock:
             iface = self._interface
         if iface is None:
             return False
-        # Probe the node DB outside the lock. If the session is dead this will
-        # raise (broken pipe, attribute error, etc.) and we return False.
+
+        # 1. Check library connection flag if present
+        if getattr(iface, "isConnected", True) is False:
+            logger.debug("Health probe failed: iface.isConnected is False")
+            return False
+
+        # 2. Check underlying socket state (for TCPInterface)
+        sock = getattr(iface, "_socket", None) or getattr(iface, "socket", None)
+        if sock is not None:
+            if getattr(sock, "_closed", False) or sock.fileno() == -1:
+                logger.debug("Health probe failed: underlying socket is closed or fileno == -1")
+                return False
+
+        # 3. Check reader background thread if present (StreamInterface / TCPInterface)
+        read_thread = getattr(iface, "_readThread", None)
+        if read_thread is not None and not read_thread.is_alive():
+            logger.debug("Health probe failed: radio readThread has terminated")
+            return False
+
+        # 4. Check serial stream if present (SerialInterface)
+        stream = getattr(iface, "stream", None)
+        if stream is not None and getattr(stream, "is_open", True) is False:
+            logger.debug("Health probe failed: serial stream is closed")
+            return False
+
+        # 5. Probe the node DB outside the lock defensively
         try:
             _ = iface.nodes
         except Exception as exc:  # noqa: BLE001
@@ -4203,8 +4332,9 @@ class MeshtasticConnection:
                             })
                             known.add(tid)
                 return nodes
+            iface = self._interface
+            nodes_raw = dict(getattr(iface, "nodes", {}) or {})
         # _lock is now released — proceed with the merge.
-        nodes_raw = dict(self._interface.nodes or {})
 
         from .remote_cache import load_remote_cache
         remote_cache = load_remote_cache()
@@ -4931,8 +5061,17 @@ class MeshtasticConnection:
                 logger.error("Cannot send message — not connected")
                 return False
             iface = self._interface
-            self_num = getattr(getattr(iface, "myInfo", None), "my_node_num", None)
-            self_id = ("!" + format(self_num, "08x")) if self_num is not None else None
+            my_info = getattr(iface, "myInfo", None)
+            raw_num = getattr(my_info, "my_node_num", None)
+            self_num = None
+            self_id = None
+            if raw_num is not None:
+                try:
+                    self_num = int(raw_num)
+                    self_id = f"!{self_num:08x}"
+                except (ValueError, TypeError):
+                    self_num = None
+                    self_id = None
 
         # Update last_heard for the local node when sending a message.
         # This ensures the UI/integration shows fresh "last heard" times
@@ -4957,8 +5096,11 @@ class MeshtasticConnection:
 
         is_dm = to_id is not None
         if is_dm:
-            other = to_id if to_id != self_id else None
-            conversation = f"dm:{other or 'unknown'}"
+            # Use the actual destination node as the conversation partner.
+            # When to_id somehow resolves to our own ID (shouldn't happen in
+            # normal use) keep to_id rather than falling through to 'unknown'.
+            other = to_id if to_id != self_id else to_id
+            conversation = f"dm:{other or 'self'}"
         else:
             conversation = f"ch:{channel}"
 
@@ -4989,8 +5131,8 @@ class MeshtasticConnection:
 
             # Broadcast messages (and DMs with want_ack=False) never receive a ROUTING_APP
             # reply from the firmware, so we mark them delivered immediately.
-            # DMs with want_ack=True get "sending" and flip on ROUTING_APP receipt (or timeout).
-            initial_ack = "delivered" if (not is_dm or not want_ack) else "sending"
+            # DMs with want_ack=True start at "sent" (one tick) and flip to "delivered" (two ticks) on ROUTING_APP receipt (or timeout).
+            initial_ack = "delivered" if (not is_dm or not want_ack) else "sent"
 
             self._capture_outbound_packet_log(
                 packet_id=packet_id,
@@ -5001,6 +5143,7 @@ class MeshtasticConnection:
                 want_ack=want_ack if is_dm else False,
             )
 
+            user = {}
             self_name = "You"
             if not is_relay and self_num is not None:
                 node_data = self._lookup_node(iface, self_num)
@@ -5008,8 +5151,9 @@ class MeshtasticConnection:
                 self_name = user.get("longName") or user.get("shortName") or self_id or "You"
 
             entry = {
-                # Relay messages appear to come from the relay sender, not self.
-                "from_id": None if is_relay else self_id,
+                # The local node is always the on-mesh transmitter.
+                # Relay messages use the relay's sender_name (e.g. 📱 [Name]) for UI display.
+                "from_id": self_id,
                 "to_id": to_id,
                 # `destination` mirrors what the frontend optimistic message stores so
                 # the client-side echo-dedup in storeMessage() can match the two entries
@@ -5017,6 +5161,8 @@ class MeshtasticConnection:
                 # `m.destination === msg.destination` always fails (undefined vs string).
                 "destination": to_id,  # None for broadcasts, "!hex" for DMs
                 "from_name": sender_name if is_relay else self_name,
+                "from_short": sender_name if is_relay else (user.get("shortName") or ""),
+                "from_long": sender_name if is_relay else (user.get("longName") or ""),
                 "text": text,
                 "channel": channel,
                 "conversation": conversation,
@@ -5025,6 +5171,7 @@ class MeshtasticConnection:
                 # clearly distinguishable from the local user's own messages.
                 "outgoing": not is_relay,
                 "from_telegram": is_relay,
+                "from_ui": not is_relay,
                 "rx_snr": None,
                 "rx_rssi": None,
                 "timestamp": int(time.time()),
@@ -5035,6 +5182,14 @@ class MeshtasticConnection:
             with self._msg_lock:
                 entry["id"] = f"{self_id or 'unknown'}-{channel}-{uuid.uuid4().hex[:8]}"
                 self._messages.append(entry)
+                # Register pending ACK under the lock so rapid ROUTING_APP ACKs never race.
+                if is_dm and packet_id is not None:
+                    norm_packet_id = int(packet_id) & 0xFFFFFFFF
+                    now_ts = time.time()
+                    self._pending_acks[packet_id] = entry["id"]
+                    self._pending_acks[norm_packet_id] = entry["id"]
+                    self._pending_ack_times[packet_id] = now_ts
+                    self._pending_ack_times[norm_packet_id] = now_ts
             logger.debug(
                 "Message added to store: id=%s, conversation=%s, text=%s, outgoing=%s, timestamp=%s",
                 entry["id"], conversation, text[:50], entry["outgoing"], entry["timestamp"]
@@ -5047,7 +5202,10 @@ class MeshtasticConnection:
                 "to_id": entry["to_id"],
                 "destination": entry.get("destination"),
                 "from_name": entry["from_name"],
-                "from_short": "",
+                "from_short": entry.get("from_short") or "",
+                "from_long": entry.get("from_long") or "",
+                "from_telegram": entry.get("from_telegram", False),
+                "from_ui": entry.get("from_ui", False),
                 "text": entry["text"],
                 "channel": entry["channel"],
                 "conversation": entry["conversation"],
@@ -5056,6 +5214,9 @@ class MeshtasticConnection:
                 "rx_snr": entry["rx_snr"],
                 "rx_rssi": entry["rx_rssi"],
                 "timestamp": entry["timestamp"],
+                "ack_status": entry.get("ack_status"),
+                "ack_at": entry.get("ack_at"),
+                "packet_id": packet_id,
             })
 
             # Forward outbound Web UI messages to Telegram if configured
@@ -5066,12 +5227,13 @@ class MeshtasticConnection:
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("Telegram forward callback error on send (ignored): %s", exc)
 
-            # Register pending ACK only for DMs with a valid packet ID.
-            if is_dm and packet_id is not None:
-                self._pending_acks[packet_id] = entry["id"]
-                self._pending_ack_times[packet_id] = time.time()
             self._schedule_save(self._messages, _MESSAGES_FILE)
-            return True
+            return {
+                "sent": True,
+                "id": entry["id"],
+                "packet_id": packet_id,
+                "ack_status": entry.get("ack_status"),
+            }
         except Exception as exc:  # noqa: BLE001
             logger.error(
                 "Failed to send message (destination=%s): %s", destination, exc

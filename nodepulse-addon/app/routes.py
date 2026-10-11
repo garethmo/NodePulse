@@ -1228,7 +1228,10 @@ async def handle_send(request: web.Request) -> web.Response:
             )
             success = await conn.send_message(text, destination=destination, channel=channel)
             if success:
-                return _json_response({"sent": True})
+                resp_payload = {"sent": True}
+                if isinstance(success, dict):
+                    resp_payload.update(success)
+                return _json_response(resp_payload)
             return _error_response("Message was not accepted by the Meshtastic interface", status=502)
         except Exception as exc:  # noqa: BLE001
             logger.error(

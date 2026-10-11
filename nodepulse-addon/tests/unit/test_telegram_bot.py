@@ -174,7 +174,7 @@ class TestTelegramBotHandleMessage:
         bot = TelegramBot(mock_config, Mock(), Mock(), Mock(), Mock())
         bot._handle_command = AsyncMock()
         await bot._handle_message({"chat": {"id": 12345, "type": "private"}, "text": "/status"})
-        bot._handle_command.assert_called_once_with("/status", chat_id="12345")
+        bot._handle_command.assert_called_once_with("/status", chat_id="12345", sender_name="📱 Telegram", first_name="Telegram")
 
     @pytest.mark.asyncio
     @pytest.mark.asyncio
@@ -198,10 +198,9 @@ class TestTelegramBotHandleMessage:
             "text": "reply text",
             "reply_to_message": {"message_id": 123}
         })
-        bot.send_message_callback.assert_called_once_with("reply text", destination="!abcdef")
+        bot.send_message_callback.assert_called_once_with("[Telegram] reply text", destination="!abcdef", sender_name="📱 Telegram")
         bot._send_text.assert_called_with("✅ Reply sent as DM to !abcdef.", chat_id="12345")
 
-    @pytest.mark.asyncio
     @pytest.mark.asyncio
     async def test_handle_message_reply_to_forwarded_channel(self):
         mock_config = make_mock_config(telegram_forward_channels=[1])
@@ -214,7 +213,7 @@ class TestTelegramBotHandleMessage:
             "text": "reply text",
             "reply_to_message": {"message_id": 456}
         })
-        bot.send_message_callback.assert_called_once_with("reply text", channel=1)
+        bot.send_message_callback.assert_called_once_with("[Telegram] reply text", channel=1, sender_name="📱 Telegram")
         bot._send_text.assert_called_with("✅ Reply sent to Channel 1.", chat_id="12345")
 
     @pytest.mark.asyncio
@@ -289,10 +288,9 @@ class TestTelegramBotHandleCommand:
         bot._send_text = AsyncMock()
         bot.send_message_callback = AsyncMock(return_value=True)
         await bot._handle_command("/send #1 hello world")
-        bot.send_message_callback.assert_called_once_with("hello world", channel=1)
+        bot.send_message_callback.assert_called_once_with("[Telegram] hello world", channel=1, sender_name=None)
         bot._send_text.assert_called_with("✅ Message sent to Channel 1.", chat_id="12345")
 
-    @pytest.mark.asyncio
     @pytest.mark.asyncio
     async def test_handle_command_send_invalid_channel(self):
         mock_config = make_mock_config(telegram_forward_channels=[0, 1])
@@ -302,14 +300,13 @@ class TestTelegramBotHandleCommand:
         bot._send_text.assert_called_with("❌ Invalid channel 20. Use 0-15.", chat_id="12345")
 
     @pytest.mark.asyncio
-    @pytest.mark.asyncio
     async def test_handle_command_dm(self):
         mock_config = make_mock_config(telegram_forward_dms=True)
         bot = TelegramBot(mock_config, Mock(), Mock(), Mock(), Mock())
         bot._send_text = AsyncMock()
         bot.send_message_callback = AsyncMock(return_value=True)
         await bot._handle_command("/dm !abcdef hello")
-        bot.send_message_callback.assert_called_once_with("hello", destination="!abcdef")
+        bot.send_message_callback.assert_called_once_with("[Telegram] hello", destination="!abcdef", sender_name=None)
         bot._send_text.assert_called_with("✅ DM sent to !abcdef.", chat_id="12345")
 
     @pytest.mark.asyncio
@@ -369,13 +366,39 @@ class TestTelegramBotSendText:
         })
 
     @pytest.mark.asyncio
-    @pytest.mark.asyncio
     async def test_send_text_returns_none_on_error(self):
         mock_config = make_mock_config()
         bot = TelegramBot(mock_config, Mock(), Mock(), Mock(), Mock())
         bot._api_call = AsyncMock(side_effect=Exception("API error"))
         result = await bot._send_text("test message")
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_send_text_resolves_live_chat_map(self):
+        mock_config = make_mock_config(telegram_authorized_chat_ids=["-12345"])
+        bot = TelegramBot(mock_config, Mock(), Mock(), Mock(), Mock())
+        bot._live_chat_map["-12345"] = "-10012345"
+        bot._api_call = AsyncMock(return_value={"ok": True, "result": {"message_id": 123}})
+        result = await bot._send_text("test message", chat_id="-12345")
+        assert result == 123
+        bot._api_call.assert_called_once_with("sendMessage", {
+            "chat_id": "-10012345",
+            "text": "test message",
+            "parse_mode": "Markdown"
+        })
+
+    @pytest.mark.asyncio
+    async def test_send_text_retries_supergroup(self):
+        mock_config = make_mock_config(telegram_authorized_chat_ids=["-12345"])
+        bot = TelegramBot(mock_config, Mock(), Mock(), Mock(), Mock())
+        bot._api_call = AsyncMock(side_effect=[
+            {"ok": False, "description": "Bad Request: chat not found"},
+            {"ok": True, "result": {"message_id": 999}}
+        ])
+        result = await bot._send_text("test message", chat_id="-12345")
+        assert result == 999
+        assert bot._live_chat_map["-12345"] == "-10012345"
+        assert bot._api_call.call_count == 2
 
 
 class TestTelegramBotForwardMeshMessage:
@@ -398,6 +421,21 @@ class TestTelegramBotForwardMeshMessage:
         bot._loop = Mock()
         bot.forward_mesh_message({"text": "test", "outgoing": True})
         bot._loop.call_soon_threadsafe.assert_not_called()
+
+    def test_forward_mesh_message_outgoing_from_ui(self):
+        mock_config = make_mock_config(telegram_forward_channels=[0])
+        bot = TelegramBot(mock_config, Mock(), Mock(), Mock(), Mock())
+        bot._task = Mock(done=Mock(return_value=False))
+        bot._session = Mock()
+        msg = self._capture_forward_msg(bot, {
+            "text": "Hello from Web UI",
+            "outgoing": True,
+            "from_ui": True,
+            "channel": 0,
+        })
+        assert "📤" in msg
+        assert "*You*" in msg
+        assert "Hello from Web UI" in msg
 
     def test_forward_mesh_message_dm_not_forwarded(self):
         mock_config = make_mock_config(telegram_forward_dms=False)
@@ -494,6 +532,26 @@ class TestTelegramBotForwardMeshMessage:
         })
         assert "TestNode" in msg
 
+    def test_forward_mesh_message_outgoing_dm_stores_peer_in_metadata(self):
+        mock_config = make_mock_config(telegram_forward_dms=True)
+        bot = TelegramBot(mock_config, Mock(), Mock(), Mock(), Mock())
+        bot._task = Mock(done=Mock(return_value=False))
+        bot._session = Mock()
+        captured = []
+        bot._loop = Mock()
+        bot._loop.call_soon_threadsafe = lambda cb: captured.append(cb)
+        bot.forward_mesh_message({
+            "text": "Outbound DM",
+            "is_dm": True,
+            "outgoing": True,
+            "from_ui": True,
+            "from_id": "!selfnode",
+            "to_id": "!destnode",
+        })
+        metadata = captured[0].__defaults__[1]
+        assert metadata["is_dm"] is True
+        assert metadata["node"] == "!destnode"
+
 
 class TestTelegramBotSendForward:
     @pytest.mark.asyncio
@@ -526,7 +584,6 @@ class TestTelegramBotSendForward:
 
 class TestTelegramBotReplyParsing:
     @pytest.mark.asyncio
-    @pytest.mark.asyncio
     async def test_handle_message_reply_fallback_dm(self):
         mock_config = make_mock_config(telegram_forward_dms=True)
         bot = TelegramBot(mock_config, AsyncMock(), Mock(), Mock(), Mock())
@@ -541,9 +598,8 @@ class TestTelegramBotReplyParsing:
                 "text": "📩 [DM] *TestNode* (!abcdef12):\noriginal message"
             }
         })
-        bot.send_message_callback.assert_called_once_with("reply to dm", destination="!abcdef12")
+        bot.send_message_callback.assert_called_once_with("[Telegram] reply to dm", destination="!abcdef12", sender_name="📱 Telegram")
 
-    @pytest.mark.asyncio
     @pytest.mark.asyncio
     async def test_handle_message_reply_fallback_channel(self):
         mock_config = make_mock_config(telegram_forward_channels=[1])
@@ -559,7 +615,26 @@ class TestTelegramBotReplyParsing:
                 "text": "📩 [Ch 1] *TestNode*: original"
             }
         })
-        bot.send_message_callback.assert_called_once_with("reply to channel", channel=1)
+        bot.send_message_callback.assert_called_once_with("[Telegram] reply to channel", channel=1, sender_name="📱 Telegram")
+
+    @pytest.mark.asyncio
+    async def test_handle_message_reply_fallback_outgoing_dm(self):
+        mock_config = make_mock_config(telegram_forward_dms=True)
+        bot = TelegramBot(mock_config, AsyncMock(), Mock(), Mock(), Mock())
+        bot._send_text = AsyncMock()
+        bot.send_message_callback = AsyncMock(return_value=True)
+        bot._forwarded = {}
+        await bot._handle_message({
+            "chat": {"id": 12345, "type": "private"},
+            "text": "reply to outbound dm",
+            "reply_to_message": {
+                "message_id": 999,
+                "text": "📤 [DM to !abcdef12] *You*:\nhello there"
+            }
+        })
+        bot.send_message_callback.assert_called_once_with(
+            "[Telegram] reply to outbound dm", destination="!abcdef12", sender_name="📱 Telegram"
+        )
 
 
 class TestTelegramBotMeshCommands:

@@ -807,6 +807,111 @@ class TestSendMessage:
             assert result is False
 
 
+class TestRoutingAckDelivery:
+    def test_routing_ack_delivery_success(self):
+        conn = create_conn()
+        conn._connected = True
+        mock_iface = MagicMock()
+        mock_iface.localNode.nodeNum = 0x87654321
+        mock_packet = MagicMock()
+        mock_packet.id = 987654321
+        mock_iface.sendText.return_value = mock_packet
+        conn._interface = mock_iface
+
+        # Send DM
+        res = conn._send_message_sync("Hi remote node", destination="!12345678", channel=0, want_ack=True)
+        assert isinstance(res, dict)
+        assert res["sent"] is True
+        assert res["ack_status"] == "sent"
+        msg_id = res["id"]
+        assert 987654321 in conn._pending_acks
+        assert conn._pending_acks[987654321] == msg_id
+
+        # Receive ROUTING_APP ACK with camelCase requestId
+        ack_packet = {
+            "from": 0x12345678,
+            "to": 0x87654321,
+            "decoded": {
+                "portnum": "ROUTING_APP",
+                "requestId": 987654321,
+                "routing": {
+                    "errorReason": "NONE",
+                },
+            },
+        }
+        with patch("app.connection._broadcast_sse_event") as mock_sse:
+            conn._on_mesh_receive(ack_packet)
+            # Pending ACK should have been removed
+            assert 987654321 not in conn._pending_acks
+            # Message entry status updated to delivered
+            msg_entry = next(m for m in conn._messages if m["id"] == msg_id)
+            assert msg_entry["ack_status"] == "delivered"
+            # SSE broadcast emitted
+            mock_sse.assert_any_call("ack_update", {
+                "id": msg_id,
+                "conversation": "dm:!12345678",
+                "ack_status": "delivered",
+                "ack_at": msg_entry["ack_at"],
+                "packet_id": 987654321,
+            })
+
+    def test_routing_ack_uint32_normalization(self):
+        conn = create_conn()
+        conn._connected = True
+        mock_iface = MagicMock()
+        mock_iface.localNode.nodeNum = 0x87654321
+        mock_packet = MagicMock()
+        # Suppose sendText returned a signed negative 32-bit int
+        mock_packet.id = -1000
+        mock_iface.sendText.return_value = mock_packet
+        conn._interface = mock_iface
+
+        res = conn._send_message_sync("Test negative packet id", destination="!12345678", channel=0, want_ack=True)
+        assert isinstance(res, dict)
+        msg_id = res["id"]
+        norm_id = (-1000) & 0xFFFFFFFF
+        assert norm_id in conn._pending_acks
+
+        # Remote node firmware sends unsigned uint32 in snake_case request_id
+        ack_packet = {
+            "from": 0x12345678,
+            "to": 0x87654321,
+            "decoded": {
+                "portnum": "ROUTING_APP",
+                "routing": {
+                    "request_id": norm_id,
+                    "error_reason": "NONE",
+                },
+            },
+        }
+        conn._on_mesh_receive(ack_packet)
+        msg_entry = next(m for m in conn._messages if m["id"] == msg_id)
+        assert msg_entry["ack_status"] == "delivered"
+
+    def test_expire_pending_acks(self):
+        conn = create_conn()
+        conn._messages = [{
+            "id": "test-msg-1",
+            "conversation": "dm:!12345678",
+            "ack_status": "sent",
+            "packet_id": 111,
+        }]
+        conn._pending_acks[111] = "test-msg-1"
+        # Simulate packet sent 60 seconds ago (older than _ACK_TIMEOUT_S = 30)
+        conn._pending_ack_times[111] = time.time() - 60
+
+        with patch("app.connection._broadcast_sse_event") as mock_sse:
+            conn._expire_pending_acks_sync()
+            assert 111 not in conn._pending_acks
+            assert conn._messages[0]["ack_status"] == "failed"
+            mock_sse.assert_called_with("ack_update", {
+                "id": "test-msg-1",
+                "conversation": "dm:!12345678",
+                "ack_status": "failed",
+                "ack_at": conn._messages[0]["ack_at"],
+            })
+
+
 class TestSendMqttProxyMessage:
     @pytest.mark.asyncio
     async def test_send_mqtt_proxy_message_success(self):
@@ -1514,6 +1619,21 @@ class TestOnMeshReceive:
         assert entry["outgoing"] is False
         assert entry["rx_snr"] == -5.0
 
+    def test_text_message_broadcast_signed_negative_one(self):
+        conn = self._conn_with_interface()
+        with patch.object(conn, "_schedule_save"):
+            conn._on_mesh_receive({
+                "from": 0x1234,
+                "to": -1,
+                "channel": 0,
+                "rxSnr": 3.0,
+                "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "broadcast neg"},
+            })
+        assert len(conn._messages) == 1
+        entry = conn._messages[0]
+        assert entry["is_dm"] is False
+        assert entry["conversation"] == "ch:0"
+
     def test_new_node_gets_last_heard_on_first_message(self):
         """A node not in the persistent cache gets added with a fresh last_heard
         when its first text message is received."""
@@ -1593,6 +1713,27 @@ class TestOnMeshReceive:
                 "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "self sent"},
             })
         assert conn._messages[0]["outgoing"] is True
+
+    def test_outgoing_echo_suppressed(self):
+        conn = self._conn_with_interface()
+        import time
+        conn._messages = [{
+            "id": "1",
+            "from_id": "!00009999",
+            "text": "self sent",
+            "channel": 0,
+            "outgoing": True,
+            "timestamp": int(time.time()),
+        }]
+        with patch.object(conn, "_schedule_save"):
+            conn._on_mesh_receive({
+                "from": 0x9999,
+                "to": 0x1234,
+                "channel": 0,
+                "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "self sent"},
+            })
+        # Should still have only the original 1 message, echo was suppressed
+        assert len(conn._messages) == 1
 
     def test_snr_history_recorded(self):
         conn = self._conn_with_interface()
@@ -2494,6 +2635,179 @@ class TestCoordinateValidation:
         assert "!33333333" in deleted_nodes  # Partial GPS
         assert "!12345678" not in deleted_nodes  # Valid GPS
         assert "!11111111" not in deleted_nodes  # Valid GPS
+
+
+class TestPersistenceWorker:
+    def test_enqueue_coalesces_same_path(self, monkeypatch):
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost",
+            port=4403,
+            mode="tcp",
+            config=mock_config,
+        )
+        written = []
+        conn._write_json = lambda snapshot, path: written.append((snapshot, path))
+        
+        # Enqueue two snapshots for the same path in rapid succession
+        conn._enqueue_save([{"val": 1}], "/tmp/test.json")
+        conn._enqueue_save([{"val": 2}], "/tmp/test.json")
+        
+        conn._stop_persist_worker()
+        
+        # Should have written the latest snapshot
+        assert len(written) == 1
+        assert written[0] == ([{"val": 2}], "/tmp/test.json")
+
+
+class TestInterfaceHealth:
+    def test_is_interface_healthy_none_interface(self):
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost",
+            port=4403,
+            mode="tcp",
+            config=mock_config,
+        )
+        conn._interface = None
+        assert conn._is_interface_healthy() is False
+
+    def test_is_interface_healthy_is_connected_false(self):
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost",
+            port=4403,
+            mode="tcp",
+            config=mock_config,
+        )
+        mock_iface = Mock()
+        mock_iface.isConnected = False
+        mock_iface.nodes = {}
+        conn._interface = mock_iface
+        assert conn._is_interface_healthy() is False
+
+    def test_is_interface_healthy_socket_closed(self):
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost",
+            port=4403,
+            mode="tcp",
+            config=mock_config,
+        )
+        mock_iface = Mock()
+        mock_iface.isConnected = True
+        mock_sock = Mock()
+        mock_sock.fileno.return_value = -1
+        mock_sock._closed = True
+        mock_iface._socket = mock_sock
+        mock_iface.nodes = {}
+        conn._interface = mock_iface
+        assert conn._is_interface_healthy() is False
+
+    def test_is_interface_healthy_read_thread_dead(self):
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost",
+            port=4403,
+            mode="tcp",
+            config=mock_config,
+        )
+        mock_iface = Mock()
+        mock_iface.isConnected = True
+        mock_sock = Mock()
+        mock_sock.fileno.return_value = 10
+        mock_sock._closed = False
+        mock_iface._socket = mock_sock
+        mock_thread = Mock()
+        mock_thread.is_alive.return_value = False
+        mock_iface._readThread = mock_thread
+        mock_iface.nodes = {}
+        conn._interface = mock_iface
+        assert conn._is_interface_healthy() is False
+
+    def test_is_interface_healthy_all_healthy(self):
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost",
+            port=4403,
+            mode="tcp",
+            config=mock_config,
+        )
+        mock_iface = Mock()
+        mock_iface.isConnected = True
+        mock_sock = Mock()
+        mock_sock.fileno.return_value = 10
+        mock_sock._closed = False
+        mock_iface._socket = mock_sock
+        mock_thread = Mock()
+        mock_thread.is_alive.return_value = True
+        mock_iface._readThread = mock_thread
+        mock_iface.nodes = {"!12345678": {}}
+        conn._interface = mock_iface
+        assert conn._is_interface_healthy() is True
+
+
+class TestBroadcastFiltering:
+    def test_on_mesh_receive_skips_broadcast_destination(self):
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost",
+            port=4403,
+            mode="tcp",
+            config=mock_config,
+        )
+        packet = {
+            "from": 0x12345678,
+            "to": 0xFFFFFFFF,  # Broadcast
+            "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "hello"},
+        }
+        conn._on_mesh_receive(packet)
+        node_ids = [n.get("id") for n in conn._nodes]
+        assert "!12345678" in node_ids
+        assert "!ffffffff" not in node_ids
+
+    def test_on_mesh_receive_skips_broadcast_sender(self):
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost",
+            port=4403,
+            mode="tcp",
+            config=mock_config,
+        )
+        packet = {
+            "from": -1,  # Broadcast / invalid
+            "to": 0x12345678,
+            "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "hello"},
+        }
+        conn._on_mesh_receive(packet)
+        node_ids = [n.get("id") for n in conn._nodes]
+        assert "!ffffffff" not in node_ids
+
+
+class TestGetNodesSyncSafety:
+    def test_get_nodes_sync_when_interface_is_none(self):
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost",
+            port=4403,
+            mode="tcp",
+            config=mock_config,
+        )
+        conn._interface = None
+        conn._connected = False
+        conn._nodes = [{"id": "!12345678", "last_heard": 100}]
+        nodes = conn._get_nodes_sync()
+        assert len(nodes) == 1
+        assert nodes[0]["id"] == "!12345678"
 
 
 

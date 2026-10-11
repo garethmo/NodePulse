@@ -96,13 +96,36 @@ async def async_setup_entry(
             NodeSignalQualitySensor(coordinator, entry, node_id),
         ]
 
-        # Always create all sensors for tracked nodes, even if they don't have
-        # data yet. They will show "Unknown" until data arrives. This ensures
-        # entities are consistently available and don't disappear when data is
-        # temporarily missing.
+        # Create sensors conditionally based on node capabilities:
+        # - Basic metrics (SNR, RSSI, hops, battery, etc.): always create
+        # - Environmental sensors (temp, humidity, pressure, gas): only if node has data
+        # - GPS sensors (lat, lon, alt, distance): only if node has GPS coordinates
+        # - Message sensors: always create (show "Unknown" until messages arrive)
+        node_id = node["id"]
+        has_gps = node.get("latitude") is not None and node.get("longitude") is not None
+        has_env = (
+            node.get("temperature") is not None or
+            node.get("relative_humidity") is not None or
+            node.get("barometric_pressure") is not None or
+            node.get("gas_resistance") is not None
+        )
+
         out = []
         for sensor in sensor_set:
-            out.append(sensor)
+            # Always create message sensors and basic metrics
+            if isinstance(sensor, (NodeMessageReceivedSensor, NodeMessageSentSensor)):
+                out.append(sensor)
+            # GPS sensors only if node has coordinates
+            elif isinstance(sensor, (NodeLatitudeSensor, NodeLongitudeSensor, NodeAltitudeSensor, NodeDistanceSensor)):
+                if has_gps:
+                    out.append(sensor)
+            # Environmental sensors only if node has environmental data
+            elif isinstance(sensor, (NodeTemperatureSensor, NodeHumiditySensor, NodePressureSensor, NodeGasResistanceSensor)):
+                if has_env:
+                    out.append(sensor)
+            # All other sensors (SNR, RSSI, hops, battery, etc.) always create
+            else:
+                out.append(sensor)
         return out
 
     discovery = NodeDiscovery(coordinator, entry)

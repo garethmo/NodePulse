@@ -32,20 +32,19 @@ async def async_setup_entry(
     """
     Dynamic tracker discovery — shared NodeDiscovery helper (Q12).
 
-    A device_tracker entity is created for every tracked node regardless of
-    whether it has a GPS fix at discovery time. Coordinates are populated (and
-    updated) on every coordinator refresh. When no fix is available, latitude
-    and longitude are None and HA reports the device as an unknown location —
-    the entity is already registered, so it will appear on the map immediately
-    once a GPS fix arrives without requiring a new discovery cycle.
+    A device_tracker entity is created only for tracked nodes that have GPS coordinates.
     """
     coordinator: NodePulseCoordinator = hass.data[DOMAIN][entry.entry_id]
+
+    def _should_create_tracker(node: Dict[str, Any]) -> bool:
+        """Only create device_tracker entity if node has GPS coordinates."""
+        return node.get("latitude") is not None and node.get("longitude") is not None
 
     discovery = NodeDiscovery(coordinator, entry)
     discovery.attach(
         hass,
         async_add_entities,
-        should_create=lambda node: True,
+        should_create=_should_create_tracker,
         make_entities=lambda node: [NodeTracker(coordinator, entry, node["id"])],
     )
 

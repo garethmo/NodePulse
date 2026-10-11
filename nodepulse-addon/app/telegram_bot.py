@@ -137,14 +137,14 @@ class TelegramBot:
         while True:
             try:
                 # getUpdates with long polling timeout of 30s
-                data = {"offset": self._offset, "timeout": 30, "allowed_updates": ["message"]}
+                data = {"offset": self._offset, "timeout": 30, "allowed_updates": ["message", "channel_post"]}
                 result = await self._api_call("getUpdates", data)
                 
                 if result.get("ok"):
                     reconnect_interval = 5
                     for update in result.get("result", []):
                         self._offset = update["update_id"] + 1
-                        message = update.get("message")
+                        message = update.get("message") or update.get("channel_post")
                         if message:
                             await self._handle_message(message)
                 else:
@@ -188,13 +188,26 @@ class TelegramBot:
         if not text:
             return
             
+        sender_info = message.get("from", {})
+        first_name = (
+            sender_info.get("first_name")
+            or sender_info.get("username")
+            or message.get("author_signature")
+            or message.get("sender_chat", {}).get("title")
+            or "Telegram"
+        )
+        if first_name.strip().lower() in ("unknown", ""):
+            first_name = "Telegram"
+        sender_label = f"📱 {first_name}"
+        formatted_text = f"[{first_name}] {text}"
+
         if text.startswith("/"):
             if not self.allow_commands:
                 await self._send_text("Commands are disabled in config.", chat_id=chat_id)
                 return
-            await self._handle_command(text, chat_id=chat_id)
+            await self._handle_command(text, chat_id=chat_id, sender_name=sender_label, first_name=first_name)
             return
-            
+
         # Check if this is a native Telegram reply to a forwarded mesh message
         reply_to = message.get("reply_to_message")
         if reply_to:
@@ -210,7 +223,9 @@ class TelegramBot:
                     dest_id = forwarded.get("node")
                     if dest_id:
                         logger.info("Routing Telegram reply as DM to %s", dest_id)
-                        success = await self.send_message_callback(text, destination=dest_id)
+                        success = await self.send_message_callback(
+                            formatted_text, destination=dest_id, sender_name=sender_label
+                        )
                         if success:
                             await self._send_text(f"✅ Reply sent as DM to {dest_id}.", chat_id=chat_id)
                         else:
@@ -220,7 +235,9 @@ class TelegramBot:
                 else:
                     ch_idx = forwarded.get("channel", 0)
                     logger.info("Routing Telegram reply to Channel %d", ch_idx)
-                    success = await self.send_message_callback(text, channel=ch_idx)
+                    success = await self.send_message_callback(
+                        formatted_text, channel=ch_idx, sender_name=sender_label
+                    )
                     if success:
                         await self._send_text(f"✅ Reply sent to Channel {ch_idx}.", chat_id=chat_id)
                     else:
@@ -230,16 +247,24 @@ class TelegramBot:
             # Fallback: parse the replied-to text (covers messages forwarded
             # before the message_id tracking existed).
             orig_text = reply_to.get("text", "")
-            if orig_text.startswith("📩"):
+            if orig_text.startswith("📩") or orig_text.startswith("📤"):
                 import re
                 ch_match = re.search(r"\[Ch (\d+)\]", orig_text)
-                id_match = re.search(r"\((![a-fA-F0-9]+)\)", orig_text)
+                # Matches both:
+                #   📩 [DM] *Node* (!abcdef12): ...  (parenthesised hex ID)
+                #   📤 [DM to !abcdef12] *You*: ...  (ID in DM-to bracket)
+                id_match = (
+                    re.search(r"\[DM to (![a-fA-F0-9]+)\]", orig_text)
+                    or re.search(r"\((![a-fA-F0-9]+)\)", orig_text)
+                )
 
-                if "[DM]" in orig_text:
+                if "[DM" in orig_text:
                     if id_match:
                         dest_id = id_match.group(1)
                         logger.info("Routing Telegram reply as DM to %s", dest_id)
-                        success = await self.send_message_callback(text, destination=dest_id)
+                        success = await self.send_message_callback(
+                            formatted_text, destination=dest_id, sender_name=sender_label
+                        )
                         if success:
                             await self._send_text(f"✅ Reply sent as DM to {dest_id}.", chat_id=chat_id)
                         else:
@@ -250,7 +275,9 @@ class TelegramBot:
                 elif ch_match:
                     ch_idx = int(ch_match.group(1))
                     logger.info("Routing Telegram reply to Channel %d", ch_idx)
-                    success = await self.send_message_callback(text, channel=ch_idx)
+                    success = await self.send_message_callback(
+                        formatted_text, channel=ch_idx, sender_name=sender_label
+                    )
                     if success:
                         await self._send_text(f"✅ Reply sent to Channel {ch_idx}.", chat_id=chat_id)
                     else:
@@ -273,7 +300,9 @@ class TelegramBot:
         else:
             await self._send_text("✅ Message sent to mesh.", chat_id=chat_id)
 
-    async def _handle_command(self, text: str, chat_id: str | None = None) -> None:
+    async def _handle_command(
+        self, text: str, chat_id: str | None = None, sender_name: str | None = None, first_name: str = "Telegram"
+    ) -> None:
         """Dispatch a /-command from a specific chat.
 
         ``chat_id`` is passed explicitly so concurrent commands from different
@@ -384,7 +413,8 @@ class TelegramBot:
                     await self._send_text(f"❌ Invalid channel {channel}. Use 0-15.", chat_id=effective_chat_id)
                     return
                 logger.info("Telegram /send command: sending '%s' to channel %d", msg[:50], channel)
-                success = await self.send_message_callback(msg, channel=channel)
+                formatted_msg = f"[{first_name}] {msg}"
+                success = await self.send_message_callback(formatted_msg, channel=channel, sender_name=sender_name)
                 if success:
                     logger.info("Telegram /send command: message sent successfully")
                     await self._send_text(f"✅ Message sent to Channel {channel}.", chat_id=effective_chat_id)
@@ -399,7 +429,8 @@ class TelegramBot:
                     return
                 dest = dm_parts[0]
                 msg = dm_parts[1]
-                success = await self.send_message_callback(msg, destination=dest)
+                formatted_msg = f"[{first_name}] {msg}"
+                success = await self.send_message_callback(formatted_msg, destination=dest, sender_name=sender_name)
                 if success:
                     await self._send_text(f"✅ DM sent to {dest}.", chat_id=effective_chat_id)
                 else:
@@ -1142,6 +1173,12 @@ class TelegramBot:
             logger.warning("Telegram _send_text skipped: no target chat_id configured")
             return None
 
+        clean_target = str(target).removeprefix("-100").lstrip("-")
+        if clean_target in self._live_chat_map:
+            target = self._live_chat_map[clean_target]
+        elif str(target) in self._live_chat_map:
+            target = self._live_chat_map[str(target)]
+
         # Attempt 1: Markdown formatting
         try:
             payload = {"chat_id": target, "text": text, "parse_mode": "Markdown"}
@@ -1149,8 +1186,17 @@ class TelegramBot:
             if data.get("ok"):
                 return data.get("result", {}).get("message_id")
             description = data.get("description", "")
+            if "chat not found" in description.lower() and not str(target).startswith("-100"):
+                retry_target = f"-100{clean_target}"
+                logger.info("Retrying sendMessage with supergroup format %s", retry_target)
+                retry_payload = {"chat_id": retry_target, "text": text, "parse_mode": "Markdown"}
+                retry_data = await self._api_call("sendMessage", retry_payload)
+                if retry_data.get("ok"):
+                    self._live_chat_map[clean_target] = retry_target
+                    self._live_chat_map[str(target)] = retry_target
+                    return retry_data.get("result", {}).get("message_id")
             if not any(kw in description.lower() for kw in ("parse", "entities", "markdown")):
-                # Non-markdown error (e.g. chat not found, rate limit) — don't retry as plain text
+                # Non-markdown error (e.g. rate limit) — don't retry as plain text
                 logger.warning("Telegram sendMessage to %s rejected: %s", target, description)
                 return None
             logger.warning(
@@ -1165,6 +1211,16 @@ class TelegramBot:
             data = await self._api_call("sendMessage", payload)
             if data.get("ok"):
                 return data.get("result", {}).get("message_id")
+            description = data.get("description", "")
+            if "chat not found" in description.lower() and not str(target).startswith("-100"):
+                retry_target = f"-100{clean_target}"
+                logger.info("Retrying plain text sendMessage with supergroup format %s", retry_target)
+                retry_payload = {"chat_id": retry_target, "text": text}
+                retry_data = await self._api_call("sendMessage", retry_payload)
+                if retry_data.get("ok"):
+                    self._live_chat_map[clean_target] = retry_target
+                    self._live_chat_map[str(target)] = retry_target
+                    return retry_data.get("result", {}).get("message_id")
             logger.error("Telegram plain text sendMessage rejected for %s: %s", target, data)
         except Exception as exc:  # noqa: BLE001
             logger.error("Failed to send Telegram response to chat %s: %s", target, exc)
@@ -1185,6 +1241,11 @@ class TelegramBot:
             target_chat_id = chat_id or self._default_forward_chat
             if not target_chat_id:
                 return False
+            clean_target = str(target_chat_id).removeprefix("-100").lstrip("-")
+            if clean_target in self._live_chat_map:
+                target_chat_id = self._live_chat_map[clean_target]
+            elif str(target_chat_id) in self._live_chat_map:
+                target_chat_id = self._live_chat_map[str(target_chat_id)]
             data = FormData()
             data.add_field("chat_id", target_chat_id)
             data.add_field(
@@ -1253,7 +1314,7 @@ class TelegramBot:
         callback already running on the loop.  Instead we use
         call_soon_threadsafe() which is the correct cross-thread bridge.
         """
-        if not self.enabled or not self._session or not self._task or not self._loop:
+        if not self.enabled or not self._session or not self._loop or (getattr(self._session, "closed", False) is True):
             return
 
         # Ignore messages originating from Telegram to prevent loopback echoes
@@ -1261,8 +1322,11 @@ class TelegramBot:
         if entry.get("from_telegram") or from_name.startswith("📱"):
             return
 
-        # Do not forward our own outgoing messages back to Telegram
-        if entry.get("outgoing"):
+        # Handle outgoing messages:
+        # If outgoing, only forward if it originated from the Web UI / API (from_ui).
+        # On-air radio echoes (heard with from_id == self_id) are dropped to prevent duplicate forwards.
+        is_outgoing = bool(entry.get("outgoing"))
+        if is_outgoing and not entry.get("from_ui"):
             return
 
         is_dm = entry.get("is_dm", False)
@@ -1296,46 +1360,57 @@ class TelegramBot:
             logger.debug("Telegram forward skipped for invalid/binary text payload: %r", text)
             return
 
-        snr = entry.get("rx_snr")
-
-        snr_str = f" [SNR: {snr}]" if snr is not None else ""
-        ch_str = "[DM]" if is_dm else f"[Ch {channel}]"
-        id_str = f" ({from_id})" if from_id else ""
-
-        # Resolve a human-readable sender label, prioritising the short name
-        # (e.g. "Bob") and appending the long name when it adds clarity, so the
-        # user can tell at a glance who a message came from.
-        short = entry.get("from_short") or ""
-        long = entry.get("from_long") or ""
-        if short and long and short != long:
-            label = f"{short} ({long})"
-        elif short:
-            label = short
-        elif long:
-            label = long
+        if is_outgoing:
+            dest_str = f" to {entry.get('to_id')}" if is_dm and entry.get("to_id") else ""
+            ch_str = f"[DM{dest_str}]" if is_dm else f"[Ch {channel}]"
+            msg = f"📤 {ch_str} *You*:\n{text}"
         else:
-            label = entry.get("from_name", "Unknown")
+            snr = entry.get("rx_snr")
+            snr_str = f" [SNR: {snr}]" if snr is not None else ""
+            ch_str = "[DM]" if is_dm else f"[Ch {channel}]"
+            id_str = f" ({from_id})" if from_id else ""
 
-        # Escape markdown formatting characters in the user's name
-        safe_name = label.replace("*", "").replace("_", "").replace("`", "")
+            # Resolve a human-readable sender label, prioritising the short name
+            # (e.g. "Bob") and appending the long name when it adds clarity, so the
+            # user can tell at a glance who a message came from.
+            short = entry.get("from_short") or ""
+            long = entry.get("from_long") or ""
+            if short and long and short != long:
+                label = f"{short} ({long})"
+            elif short:
+                label = short
+            elif long:
+                label = long
+            else:
+                label = entry.get("from_name", "Unknown")
 
-        msg = f"📩 {ch_str} *{safe_name}*{id_str}{snr_str}:\n{text}"
+            # Escape markdown formatting characters in the user's name
+            safe_name = label.replace("*", "").replace("_", "").replace("`", "")
+
+            msg = f"📩 {ch_str} *{safe_name}*{id_str}{snr_str}:\n{text}"
 
         # Schedule the send coroutine onto the event loop from this non-async
         # thread.  call_soon_threadsafe is the thread-safe way to submit work
         # to a running asyncio loop; create_task would silently fail or attach
         # to the wrong loop when called from outside the loop thread.
-        if not self._task.done():
-            metadata = {
-                "is_dm": is_dm,
-                "channel": channel,
-                "node": from_id,
-            }
-            self._loop.call_soon_threadsafe(
-                lambda m=msg, meta=metadata: asyncio.ensure_future(
-                    self._send_forward(m, meta), loop=self._loop
-                )
+        # For outgoing DMs (📤) the local node is from_id, so the conversation
+        # partner is to_id.  Store that as the reply target so that replying to
+        # the Telegram mirror of our own outbound message routes back to the
+        # right peer, not to ourselves (which would produce dm:unknown).
+        if is_outgoing and is_dm:
+            dm_node = entry.get("to_id") or entry.get("destination") or from_id
+        else:
+            dm_node = from_id
+        metadata = {
+            "is_dm": is_dm,
+            "channel": channel,
+            "node": dm_node,
+        }
+        self._loop.call_soon_threadsafe(
+            lambda m=msg, meta=metadata: asyncio.ensure_future(
+                self._send_forward(m, meta), loop=self._loop
             )
+        )
 
     async def _send_forward(self, msg: str, metadata: dict[str, Any]) -> None:
         """Send a forwarded mesh message to all authorized chats and record message_id."""
@@ -1347,9 +1422,13 @@ class TelegramBot:
             if message_id:
                 with self._forward_lock:
                     self._forwarded[message_id] = dict(metadata, ts=time.time())
-                if len(self._forwarded) > 500:
-                    cutoff = time.time() - 24 * 3600
-                    self._forwarded = {
-                        mid: meta for mid, meta in self._forwarded.items()
-                        if meta.get("ts", 0) >= cutoff
-                    }
+                    if len(self._forwarded) > 500:
+                        cutoff = time.time() - 24 * 3600
+                        filtered = {
+                            mid: meta for mid, meta in self._forwarded.items()
+                            if meta.get("ts", 0) >= cutoff
+                        }
+                        if len(filtered) > 500:
+                            newest = sorted(filtered.items(), key=lambda kv: kv[1].get("ts", 0))[-500:]
+                            filtered = dict(newest)
+                        self._forwarded = filtered

@@ -30,17 +30,19 @@ async def async_setup_entry(
 ) -> None:
     """Dynamic geo_location discovery — shared NodeDiscovery helper (Q12).
 
-    A geo_location entity is created for every tracked node regardless of
-    whether it currently has a GPS fix. Coordinates are updated on each
-    coordinator refresh; None coordinates mean unknown location.
+    A geo_location entity is created only for tracked nodes that have GPS coordinates.
     """
     coordinator: NodePulseCoordinator = hass.data[DOMAIN][entry.entry_id]
+
+    def _should_create_geo(node: Dict[str, Any]) -> bool:
+        """Only create geo_location entity if node has GPS coordinates."""
+        return node.get("latitude") is not None and node.get("longitude") is not None
 
     discovery = NodeDiscovery(coordinator, entry)
     discovery.attach(
         hass,
         async_add_entities,
-        should_create=lambda node: True,
+        should_create=_should_create_geo,
         make_entities=lambda node: [NodeGeoLocation(coordinator, entry, node["id"])],
     )
 

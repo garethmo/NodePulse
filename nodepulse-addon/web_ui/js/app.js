@@ -1026,7 +1026,8 @@ function formatMessageTime(timestamp) {
 function conversationForKey(key) {
   if (key.startsWith('dm:')) {
     const nodeId = key.slice(3);
-    return { key, kind: 'dm', name: nodeName(nodeId), nodeId };
+    const resolvedName = (nodeId === 'unknown' || !nodeId) ? 'Unknown Node' : (nodeName(nodeId) || nodeId);
+    return { key, kind: 'dm', name: resolvedName, nodeId };
   }
   const chParsed = parseInt(key.slice(3), 10);
   const ch = isNaN(chParsed) ? 0 : chParsed;
@@ -1198,24 +1199,45 @@ function storeMessage(msg, { skipUnread } = {}) {
     const pending = state._pendingEchoes[echoKey];
     if (pending) {
       pending.id = msg.id;
-      pending.ack_status = msg.ack_status || pending.ack_status || 'delivered';
+      if (!pending.ack_status || pending.ack_status === 'sending' || pending.ack_status === 'sent') {
+        pending.ack_status = msg.ack_status || pending.ack_status || 'sent';
+      }
       pending.ack_at = msg.ack_at ?? pending.ack_at;
+      if (msg.packet_id != null) {
+        pending.packet_id = msg.packet_id;
+      }
       state.seenMessageIds.add(msg.id);
       delete state._pendingEchoes[echoKey];
       return;
     }
   }
 
-  // Fallback deduplication for outgoing messages: compare text, destination, channel, and timestamp window.
+  // Fallback deduplication: compare text, destination, channel, and timestamp window.
+  // Suppresses both on-air RF echoes and rapid SSE repeats across outgoing/relay messages.
   const THREE_SECONDS = 5;
   const now = Date.now() / 1000;
-  if (msg.outgoing && thread.some(m =>
-    m.outgoing &&
+  const existingIndex = thread.findIndex(m =>
     m.text === msg.text &&
     (m.destination || null) === (msg.destination || null) &&
     Number(m.channel ?? 0) === Number(msg.channel ?? 0) &&
     Math.abs((m.timestamp || 0) - (msg.timestamp || now)) < THREE_SECONDS
-  )) return;
+  );
+  if (existingIndex !== -1) {
+    // If an optimistic local bubble matched via fallback, upgrade it with canonical server metadata
+    if (msg.outgoing) {
+      const match = thread[existingIndex];
+      if (match && match.id && String(match.id).startsWith('local-')) {
+        match.id = msg.id;
+        if (!match.ack_status || match.ack_status === 'sending' || match.ack_status === 'sent') {
+          match.ack_status = msg.ack_status || match.ack_status || 'sent';
+        }
+        match.ack_at = msg.ack_at ?? match.ack_at;
+        if (msg.packet_id != null) match.packet_id = msg.packet_id;
+        state.seenMessageIds.add(msg.id);
+      }
+    }
+    return;
+  }
 
   thread.push(msg);
 
@@ -1234,10 +1256,24 @@ function storeMessage(msg, { skipUnread } = {}) {
 async function retryMessage(msg) {
   msg.status = 'sending';
   if (state.activeConversation === msg.conversation) renderMessagesThread();
+  const echoKey = `${msg.conversation}:${msg.text || ''}`;
+  state._pendingEchoes = state._pendingEchoes || {};
+  state._pendingEchoes[echoKey] = msg;
   try {
-    await sendMessage(msg.text, msg.destination ?? null, msg.channel ?? 0);
+    const res = await sendMessage(msg.text, msg.destination ?? null, msg.channel ?? 0);
     msg.status = 'sent';
+    if (res && res.id) {
+      msg.id = res.id;
+      state.seenMessageIds.add(res.id);
+    }
+    if (res && res.ack_status) {
+      msg.ack_status = res.ack_status;
+    }
+    if (res && res.packet_id != null) {
+      msg.packet_id = res.packet_id;
+    }
   } catch (err) {
+    delete state._pendingEchoes[echoKey];
     msg.status = 'failed';
     showToast(`Send failed: ${err.message}`, 'error');
   }
@@ -1266,10 +1302,10 @@ async function handleSend() {
   const text   = input.value.trim();
   if (!text) return;
 
-  const conv = conversationForKey(state.activeConversation);
+  const convKey = state.activeConversation || 'ch:0';
+  const conv = conversationForKey(convKey);
   const destination = conv.kind === 'dm' ? conv.nodeId : null;
   const channel = conv.kind === 'dm' ? 0 : conv.channel;
-  const convKey = state.activeConversation;
 
   // Optimistically render the outgoing message in the active thread.
   const optimistic = {
@@ -1288,14 +1324,26 @@ async function handleSend() {
   input.value = '';
   _autoSizeInput(input);
 
+  // Register optimistic entry for pending-echo matching before awaiting HTTP response.
+  const echoKey = `${convKey}:${text}`;
+  state._pendingEchoes = state._pendingEchoes || {};
+  state._pendingEchoes[echoKey] = optimistic;
+
   try {
-    await sendMessage(text, destination, channel);
+    const res = await sendMessage(text, destination, channel);
     optimistic.status = 'sent';
-    // Register optimistic entry for pending-echo matching (see renderIncomingMessages).
-    const echoKey = `${convKey}:${text}`;
-    state._pendingEchoes = state._pendingEchoes || {};
-    state._pendingEchoes[echoKey] = optimistic;
+    if (res && res.id) {
+      optimistic.id = res.id;
+      state.seenMessageIds.add(res.id);
+    }
+    if (res && res.ack_status) {
+      optimistic.ack_status = res.ack_status;
+    }
+    if (res && res.packet_id != null) {
+      optimistic.packet_id = res.packet_id;
+    }
   } catch (err) {
+    delete state._pendingEchoes[echoKey];
     optimistic.status = 'failed';
     showToast(`Send failed: ${err.message}`, 'error');
   }
@@ -1472,7 +1520,8 @@ function renderMessagesThread() {
     if (avatarEl) { avatarEl.textContent = conv.name.charAt(0).toUpperCase(); avatarEl.style.display = ''; }
   }
 
-  const conv = conversationForKey(state.activeConversation || 'ch:0');
+  const convKey = state.activeConversation || 'ch:0';
+  const conv = conversationForKey(convKey);
 
   const chSelect = document.getElementById('messages-channel-select');
   if (chSelect) {
@@ -1484,10 +1533,10 @@ function renderMessagesThread() {
     }
   }
 
-  const thread = (state.messagesByConv[state.activeConversation] || []);
+  const thread = (state.messagesByConv[convKey] || []);
 
   if (!state.convHistoryDays) state.convHistoryDays = {};
-  const daysToShow = state.convHistoryDays[state.activeConversation] || 0;
+  const daysToShow = state.convHistoryDays[convKey] || 0;
   
   const now = new Date();
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000;
@@ -1525,7 +1574,7 @@ function renderMessagesThread() {
     loadMoreBtn.className = 'messages-load-more';
     loadMoreBtn.textContent = 'Load previous days';
     loadMoreBtn.onclick = () => {
-      state.convHistoryDays[state.activeConversation] = daysToShow + 1;
+      state.convHistoryDays[convKey] = daysToShow + 1;
       renderMessagesThread();
     };
     list.appendChild(loadMoreBtn);
@@ -1600,9 +1649,15 @@ function renderMessagesThread() {
       channelHtml = `<span class="message-channel">${escapeHtml(chName)}</span>`;
     }
 
-    const sender = isOutgoing
-      ? selfNodeName()
-      : (shortNameFor(msg.from_id) || msg.from_name || nodeName(msg.from_id) || 'Unknown');
+    let sender;
+    if (msg.from_telegram || (msg.from_name && msg.from_name.startsWith('📱'))) {
+      sender = msg.from_name || 'Telegram';
+    } else if (isOutgoing) {
+      sender = selfNodeName();
+    } else {
+      const explicitName = (msg.from_name && msg.from_name !== 'Unknown') ? msg.from_name : null;
+      sender = shortNameFor(msg.from_id) || explicitName || nodeName(msg.from_id) || 'Unknown';
+    }
 
     bubble.innerHTML = `
       ${sender && !sameSender ? `<div class="message-sender">${escapeHtml(sender)}</div>` : ''}
@@ -1683,16 +1738,27 @@ async function handleMessagesSend() {
   input.value = '';
   input.style.height = 'auto';
 
+  // Register this optimistic entry so renderIncomingMessages or the immediate SSE
+  // message event matches this entry and upgrades it instead of appending a duplicate bubble.
+  const echoKey = `${convKey}:${text}`;
+  state._pendingEchoes = state._pendingEchoes || {};
+  state._pendingEchoes[echoKey] = optimistic;
+
   try {
-    await sendMessage(text, destination, channel);
+    const res = await sendMessage(text, destination, channel);
     optimistic.status = 'sent';
-    // Register this optimistic entry so renderIncomingMessages can match the
-    // server-side confirmation (which arrives on the next poll, ~15 s later)
-    // and upgrade the existing bubble instead of appending a second one.
-    const echoKey = `${convKey}:${text}`;
-    state._pendingEchoes = state._pendingEchoes || {};
-    state._pendingEchoes[echoKey] = optimistic;
+    if (res && res.id) {
+      optimistic.id = res.id;
+      state.seenMessageIds.add(res.id);
+    }
+    if (res && res.ack_status) {
+      optimistic.ack_status = res.ack_status;
+    }
+    if (res && res.packet_id != null) {
+      optimistic.packet_id = res.packet_id;
+    }
   } catch (err) {
+    delete state._pendingEchoes[echoKey];
     optimistic.status = 'failed';
     showToast(`Send failed: ${err.message}`, 'error');
   }
@@ -2424,7 +2490,7 @@ function renderIncomingMessages(messages) {
 
     // Patch ACK status on already-seen outgoing messages (server resolved it).
     if (state.seenMessageIds.has(msg.id)) {
-      const key = msg.conversation || (msg.is_dm ? `dm:${msg.from_id}` : `ch:${msg.channel ?? 0}`);
+      const key = msg.conversation || (msg.is_dm ? (msg.outgoing ? `dm:${msg.to_id || msg.destination}` : `dm:${msg.from_id}`) : `ch:${msg.channel ?? 0}`);
       const thread = state.messagesByConv[key];
       if (thread) {
         const stored = thread.find(m => m.id === msg.id);
@@ -2443,14 +2509,19 @@ function renderIncomingMessages(messages) {
     // This handles the case where the server echo arrives on the next poll
     // (~15 s later), well outside the 3-second firmware-echo dedup window.
     if (msg.outgoing) {
-      const key = msg.conversation || (msg.is_dm ? `dm:${msg.from_id}` : `ch:${msg.channel ?? 0}`);
+      const key = msg.conversation || (msg.is_dm ? (msg.outgoing ? `dm:${msg.to_id || msg.destination}` : `dm:${msg.from_id}`) : `ch:${msg.channel ?? 0}`);
       const echoKey = `${key}:${msg.text || ''}`;
       const pending = state._pendingEchoes[echoKey];
       if (pending) {
         // Upgrade the existing optimistic entry to the real server-confirmed one.
         pending.id = msg.id;
-        pending.ack_status = msg.ack_status || pending.ack_status;
+        if (!pending.ack_status || pending.ack_status === 'sending' || pending.ack_status === 'sent') {
+          pending.ack_status = msg.ack_status || pending.ack_status || 'sent';
+        }
         pending.ack_at = msg.ack_at ?? pending.ack_at;
+        if (msg.packet_id != null) {
+          pending.packet_id = msg.packet_id;
+        }
         // Register the real id so future polls can patch ack status on it.
         state.seenMessageIds.add(msg.id);
         delete state._pendingEchoes[echoKey];
@@ -3915,7 +3986,7 @@ function initEventSource() {
       try {
         const msg = JSON.parse(e.data);
         if (!msg || !msg.id) return;
-        // Reuse the same pipeline as the poll: storeMessage handles deduplication.
+        // Reuse the same pipeline as the poll: storeMessage handles deduplication and pending-echo upgrade.
         if (!state.seenMessageIds.has(msg.id)) {
           state.seenMessageIds.add(msg.id);
           storeMessage(msg, { skipUnread: false });
@@ -3924,6 +3995,18 @@ function initEventSource() {
           renderMessagesSidebar();
           updateMessagesBadge();
           _fireNewMessageNotification(msg);
+        } else {
+          // If already seen, update ack_status if it changed
+          const convKey = msg.conversation || (msg.is_dm ? (msg.outgoing ? `dm:${msg.to_id || msg.destination}` : `dm:${msg.from_id}`) : `ch:${msg.channel ?? 0}`);
+          const thread = state.messagesByConv[convKey];
+          if (thread) {
+            const stored = thread.find(m => m.id === msg.id);
+            if (stored && msg.ack_status && stored.ack_status !== msg.ack_status) {
+              stored.ack_status = msg.ack_status;
+              stored.ack_at = msg.ack_at;
+              if (state.activeConversation === convKey) renderMessagesThread();
+            }
+          }
         }
       } catch (err) {
         console.warn('[SSE] message parse error:', err);
@@ -3934,16 +4017,35 @@ function initEventSource() {
     es.addEventListener('ack_update', (e) => {
       try {
         const data = JSON.parse(e.data);
-        if (data && data.id && data.conversation) {
-          const thread = state.messagesByConv[data.conversation];
-          if (thread) {
-            const stored = thread.find(m => m.id === data.id);
-            if (stored) {
-              stored.ack_status = data.ack_status;
-              stored.ack_at = data.ack_at;
-              if (state.activeConversation === data.conversation) {
-                renderMessagesThread();
+        if (data && (data.id || data.packet_id != null)) {
+          let stored = null;
+          let matchedConv = data.conversation;
+
+          if (matchedConv && state.messagesByConv[matchedConv]) {
+            stored = state.messagesByConv[matchedConv].find(m =>
+              (data.id && m.id === data.id) ||
+              (data.packet_id != null && m.packet_id != null && Number(m.packet_id) === Number(data.packet_id))
+            );
+          }
+
+          if (!stored) {
+            for (const [convKey, thread] of Object.entries(state.messagesByConv)) {
+              stored = thread.find(m =>
+                (data.id && m.id === data.id) ||
+                (data.packet_id != null && m.packet_id != null && Number(m.packet_id) === Number(data.packet_id))
+              );
+              if (stored) {
+                matchedConv = convKey;
+                break;
               }
+            }
+          }
+
+          if (stored) {
+            stored.ack_status = data.ack_status;
+            stored.ack_at = data.ack_at;
+            if (state.activeConversation === matchedConv) {
+              renderMessagesThread();
             }
           }
         }
@@ -3984,14 +4086,17 @@ function initEventSource() {
       }
     });
 
-    // Telemetry update: trigger a node-list refresh to pick up new battery/metrics.
+    // Telemetry update: debounced node-list refresh to prevent API floods when many nodes report.
+    let telemetryDebounceTimer = null;
     es.addEventListener('telemetry', () => {
-      // Full node list re-fetch is lightweight (<50 ms local) and ensures
-      // battery voltage / device metrics are current.
-      fetchNodes().then(raw => {
-        if (!Array.isArray(raw)) return;
-        state.nodes = raw;
-      }).catch(() => {});
+      if (telemetryDebounceTimer) clearTimeout(telemetryDebounceTimer);
+      telemetryDebounceTimer = setTimeout(() => {
+        telemetryDebounceTimer = null;
+        fetchNodes().then(raw => {
+          if (!Array.isArray(raw)) return;
+          state.nodes = raw;
+        }).catch(() => {});
+      }, 3000);
     });
 
     // Traceroute completed: fetch only the hops chart data which changes after

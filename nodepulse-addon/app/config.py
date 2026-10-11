@@ -227,7 +227,9 @@ def load_config() -> Config:
         telegram_chat_id=str(raw.get("telegram_chat_id", "")),
         # Support both old single chat_id and new list of authorized chat IDs
         telegram_authorized_chat_ids=[str(x) for x in raw.get("telegram_authorized_chat_ids", []) if x],
-        telegram_forward_channels=parse_int_list(raw.get("telegram_forward_channels", [0]), [0]),
+        telegram_forward_channels=parse_int_list(
+            raw.get("telegram_forward_channels", list(range(8))), list(range(8))
+        ),
         telegram_forward_dms=bool(raw.get("telegram_forward_dms", True)),
         telegram_allow_commands=bool(raw.get("telegram_allow_commands", True)),
         auto_responder_enabled=bool(raw.get("auto_responder_enabled", False)),
