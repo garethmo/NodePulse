@@ -128,8 +128,11 @@ class NodeTracker(CoordinatorEntity, TrackerEntity):
         """Handle updated data from the coordinator."""
         node = self._get_node()
         self._sync_coordinates(node)
-        # Force a state write to ensure HA detects coordinate changes
-        self.async_write_ha_state()
+        # Delegate the actual state write to the base class so HA's standard
+        # entity update flow runs exactly once per coordinator cycle.
+        # Calling async_write_ha_state() here AND in super() caused two writes
+        # per cycle; the second write (from super) could race with HA's state
+        # deduplication and silently discard the coordinate update.
         super()._handle_coordinator_update()
 
     @property

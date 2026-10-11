@@ -2811,4 +2811,147 @@ class TestGetNodesSyncSafety:
 
 
 
+class TestStaleFlagClearing:
+    """Regression tests for the stale-flag-not-cleared bug.
+
+    When a node that was previously evicted from the radio's bounded node DB
+    (and thus cached with ``stale: True``) re-appears in a live poll, the
+    ``_get_nodes_sync`` method must set ``stale: False`` on the emitted node.
+
+    Without the fix, ``dict.update(entry)`` only writes keys present in
+    ``entry``; since ``entry`` never contains a ``stale`` key the cached
+    ``stale: True`` silently survived the merge, causing HA to keep the entity
+    marked stale in dev tools and the map to stop updating.
+    """
+
+    def _make_conn(self):
+        """Return a real MeshtasticConnection with a mock config."""
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        return MeshtasticConnection(
+            host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
+        )
+
+    def _make_interface(self, node_id: str, lat: float | None = None, lng: float | None = None):
+        """Return a minimal mock interface with a single node in its DB."""
+        mock_iface = Mock()
+        position: dict = {}
+        if lat is not None and lng is not None:
+            position = {"latitude": lat, "longitude": lng}
+        mock_iface.nodes = {
+            node_id: {
+                "user": {
+                    "longName": "G54_Mobile",
+                    "shortName": "G54M",
+                    "hwModel": "HELTEC_V4",
+                },
+                "position": position,
+                "deviceMetrics": {},
+                "lastHeard": 1791738165,
+                "snr": 6.0,
+                "hopsAway": 0,
+            }
+        }
+        mock_iface.myInfo = Mock()
+        mock_iface.myInfo.my_node_num = None
+        return mock_iface
+
+    def test_stale_flag_cleared_when_node_returns_to_live_db(self):
+        """A node previously cached as stale must emit stale=False when live."""
+        conn = self._make_conn()
+
+        node_id = "!890bae69"
+        # Seed the persistent cache with a node flagged stale (simulates a
+        # previous eviction cycle where the node was absent from the radio DB).
+        with conn._nodes_lock:
+            conn._nodes = [{
+                "id": node_id,
+                "long_name": "G54_Mobile",
+                "short_name": "G54M",
+                "stale": True,  # Previously evicted from radio DB.
+                "latitude": -29.753337,
+                "longitude": 30.801920,
+                "altitude": 413,
+                "last_heard": 1791738000,
+            }]
+
+        # Now the node is back in the live radio DB.
+        conn._interface = self._make_interface(node_id, lat=-29.753337, lng=30.801920)
+        conn._connected = True
+
+        nodes = conn._get_nodes_sync()
+
+        # The node must appear exactly once.
+        matching = [n for n in nodes if n["id"] == node_id]
+        assert len(matching) == 1, "Node should appear exactly once in output"
+
+        emitted = matching[0]
+        assert emitted["stale"] is False, (
+            "stale flag must be cleared to False when the node is in the live "
+            "radio DB — leaving it True causes HA to report the entity as stale "
+            "in dev tools and prevents map updates"
+        )
+
+    def test_stale_flag_false_for_newly_seen_live_node(self):
+        """A brand-new node (not in persistent cache) must emit stale=False."""
+        conn = self._make_conn()
+
+        node_id = "!aabbccdd"
+        with conn._nodes_lock:
+            conn._nodes = []  # Empty persistent cache.
+
+        conn._interface = self._make_interface(node_id, lat=-29.0, lng=30.0)
+        conn._connected = True
+
+        nodes = conn._get_nodes_sync()
+
+        matching = [n for n in nodes if n["id"] == node_id]
+        assert len(matching) == 1
+        assert matching[0].get("stale") is False, (
+            "Newly-seen live nodes must emit stale=False"
+        )
+
+    def test_stale_flag_true_for_absent_cached_node(self):
+        """A node absent from the live radio DB must remain stale=True."""
+        conn = self._make_conn()
+
+        live_id = "!11111111"
+        evicted_id = "!22222222"
+
+        # Persistent cache has two nodes; only one appears in the live radio DB.
+        with conn._nodes_lock:
+            conn._nodes = [
+                {
+                    "id": live_id,
+                    "long_name": "LiveNode",
+                    "short_name": "LN",
+                    "latitude": -29.0,
+                    "longitude": 30.0,
+                    "last_heard": 1791738165,
+                },
+                {
+                    "id": evicted_id,
+                    "long_name": "EvictedNode",
+                    "short_name": "EN",
+                    "latitude": -30.0,
+                    "longitude": 31.0,
+                    "last_heard": 1791700000,
+                },
+            ]
+
+        conn._interface = self._make_interface(live_id, lat=-29.0, lng=30.0)
+        conn._connected = True
+
+        nodes = conn._get_nodes_sync()
+
+        live_nodes = [n for n in nodes if n["id"] == live_id]
+        evicted_nodes = [n for n in nodes if n["id"] == evicted_id]
+
+        assert len(live_nodes) == 1
+        assert live_nodes[0].get("stale") is False, "Live node must not be stale"
+
+        assert len(evicted_nodes) == 1
+        assert evicted_nodes[0].get("stale") is True, (
+            "Node absent from live radio DB must be flagged stale"
+        )
 

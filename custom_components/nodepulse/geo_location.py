@@ -141,8 +141,8 @@ class NodeGeoLocation(CoordinatorEntity, GeolocationEvent):
         """Handle updated data from the coordinator."""
         node = self._get_node()
         self._sync_coordinates(node)
-        # Force a state write to ensure HA detects coordinate changes
-        self.async_write_ha_state()
+        # Delegate the state write to the base class so HA's update flow
+        # runs exactly once per cycle (see device_tracker.py for rationale).
         super()._handle_coordinator_update()
 
     @property

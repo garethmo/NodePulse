@@ -4502,6 +4502,11 @@ class MeshtasticConnection:
                     # Merge fresh radio data over the cached entry. This is the
                     # authoritative source for all fields the radio reports.
                     cached[node_id].update(entry)
+                    # Node is present in the live radio DB — explicitly clear any
+                    # stale flag that may have persisted from a previous eviction
+                    # cycle. dict.update() only writes keys in `entry`, so without
+                    # this the cached stale:True would survive the merge.
+                    cached[node_id]["stale"] = False
 
                     # Always restore the previously-captured traceroute — it is
                     # never present in the raw library entry so update() would
@@ -4602,6 +4607,10 @@ class MeshtasticConnection:
                     result_ids.add(node_id)
                 else:
                     entry["traceroute"] = None
+                    # Node is newly seen in live radio data — explicitly mark as
+                    # not stale so a previously-persisted stale flag can't carry
+                    # over if this ID was ever in the persistent store.
+                    entry["stale"] = False
                     # With improved coordinate handling, lat/lng are only set when we have
                     # a complete pair, so we can check for both being non-None
                     if entry["latitude"] is not None and entry["longitude"] is not None:
