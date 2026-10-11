@@ -2201,10 +2201,10 @@ class MeshtasticConnection:
                 return
 
             from_num = packet.get("from")
-            from_id = ("!" + format(from_num, "08x")) if from_num is not None else None
+            from_id = _node_id_from_num(from_num)
 
             to_num = packet.get("to")
-            to_id = ("!" + format(to_num, "08x")) if to_num is not None else None
+            to_id = _node_id_from_num(to_num)
 
             # Identify the local/self node so we can mark direction and decide
             # whether an inbound packet is a broadcast (channel) or a direct
@@ -2217,7 +2217,7 @@ class MeshtasticConnection:
             if _iface_snap is not None:
                 my_info = getattr(_iface_snap, "myInfo", None)
                 self_num = getattr(my_info, "my_node_num", None)
-            self_id = ("!" + format(self_num, "08x")) if self_num is not None else None
+            self_id = _node_id_from_num(self_num)
 
             # Suppress on-air echoes of packets we just transmitted.  When the
             # radio relays our own outbound transmission we receive an exact copy
@@ -2252,39 +2252,59 @@ class MeshtasticConnection:
             name = None
             from_short = ""
             from_long = ""
-            if from_num is not None and _iface_snap is not None:
-                # Try multiple lookup methods since meshtastic library nodes dict
-                # may be keyed by integer node number or string node ID depending on version.
-                # Use the already-snapshotted reference — never re-read self._interface here.
-                node = (
-                    _iface_snap.nodes.get(from_num) or
-                    _iface_snap.nodes.get(from_id) or
-                    _iface_snap.nodes.get(str(from_num))
-                )
+            if _iface_snap is not None:
+                # Use _lookup_node which properly searches both nodesByNum (int) and nodes (hex string)
+                node = self._lookup_node(_iface_snap, from_num)
+                if not node and from_id:
+                    node = self._lookup_node(_iface_snap, from_id)
                 if node:
                     user = node.get("user") or {}
-                    # Prefer the short name in the chat window (compact), falling
-                    # back to the long name when no short name is set.
-                    from_short = user.get("shortName") or ""
-                    from_long = user.get("longName") or ""
+                    from_short = (
+                        user.get("shortName")
+                        or user.get("short_name")
+                        or node.get("short_name")
+                        or node.get("shortName")
+                        or ""
+                    )
+                    from_long = (
+                        user.get("longName")
+                        or user.get("long_name")
+                        or node.get("long_name")
+                        or node.get("longName")
+                        or ""
+                    )
                     name = from_short or from_long
                     logger.debug("Resolved node name from live interface: %s (short: %s, long: %s)", 
                                 from_id, from_short, from_long)
                 else:
                     logger.debug("Node not found in live interface: %s (num: %s)", from_id, from_num)
+
             # Fallback to the persistent node store for senders we don't have a
-            # live user dict for (e.g. nodes heard via MQTT or traceroute). This
-            # keeps the Telegram/UI sender label human-readable instead of an
-            # opaque node ID when the live interface snapshot lacks the sender.
-            if not name:
+            # live user dict for (e.g. nodes heard via MQTT or traceroute).
+            if not from_short or not from_long:
                 with self._nodes_lock:
                     persisted = next(
-                        (n for n in self._nodes if n.get("id") == from_id), None
+                        (n for n in self._nodes if normalize_node_id(n.get("id")) == from_id), None
                     )
                 if persisted:
-                    from_short = persisted.get("short_name") or ""
-                    from_long = persisted.get("long_name") or ""
-                    name = from_short or from_long
+                    if not from_short:
+                        from_short = (
+                            persisted.get("short_name")
+                            or persisted.get("shortName")
+                            or (persisted.get("user") or {}).get("shortName")
+                            or (persisted.get("user") or {}).get("short_name")
+                            or ""
+                        )
+                    if not from_long:
+                        from_long = (
+                            persisted.get("long_name")
+                            or persisted.get("longName")
+                            or (persisted.get("user") or {}).get("longName")
+                            or (persisted.get("user") or {}).get("long_name")
+                            or ""
+                        )
+                    if not name:
+                        name = from_short or from_long
                     logger.debug("Resolved node name from persistent store: %s (short: %s, long: %s)", 
                                 from_id, from_short, from_long)
                 else:
@@ -4239,10 +4259,10 @@ class MeshtasticConnection:
 
     def _lookup_node(self, iface, node_num) -> dict[str, Any]:
         """
-        Look up a node's cached info dict by its integer node number.
+        Look up a node's cached info dict by its integer node number or hex id.
         The meshtastic library keeps the node DB in two maps: ``nodesByNum``
         keyed by the integer node number, and ``nodes`` keyed by the
-        "!xxxxxxxx" hex node ID string. Nodes that haven't received a User
+        "!xxxxxxxx" hex node ID string (or int). Nodes that haven't received a User
         packet yet only exist in ``nodesByNum``, so try that integer key
         first, falling back to the hex-ID key in ``nodes``.
         """
@@ -4250,18 +4270,20 @@ class MeshtasticConnection:
             return {}
         try:
             nodes_by_num = getattr(iface, "nodesByNum", None)
-            if nodes_by_num:
+            if isinstance(nodes_by_num, dict):
                 hit = nodes_by_num.get(node_num)
-                if hit:
+                if isinstance(hit, dict):
                     return hit
-            node_id = "!" + format(int(node_num) & 0xFFFFFFFF, "08x")
-            nodes = getattr(iface, "nodes", None) or {}
-            return (
-                nodes.get(node_id)
-                or nodes.get(node_num)
-                or nodes.get(str(node_num))
-                or {}
-            )
+            node_id = _node_id_from_num(node_num)
+            nodes = getattr(iface, "nodes", None)
+            if isinstance(nodes, dict):
+                if node_id and isinstance(nodes.get(node_id), dict):
+                    return nodes[node_id]
+                if isinstance(nodes.get(node_num), dict):
+                    return nodes[node_num]
+                if isinstance(nodes.get(str(node_num)), dict):
+                    return nodes[str(node_num)]
+            return {}
         except (TypeError, ValueError):
             return {}
 

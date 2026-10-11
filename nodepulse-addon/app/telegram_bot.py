@@ -360,7 +360,16 @@ class TelegramBot:
                 # not the raw meshtastic protobuf structure (user.shortName).
                 sorted_nodes = sorted(nodes, key=lambda n: n.get("last_heard") or 0, reverse=True)[:20]
                 for n in sorted_nodes:
-                    name = n.get("short_name") or n.get("long_name") or n.get("id", "?")
+                    short = n.get("short_name") or n.get("shortName") or ""
+                    long = n.get("long_name") or n.get("longName") or ""
+                    if short and long and short != long:
+                        name = f"{short} ({long})"
+                    elif short:
+                        name = short
+                    elif long:
+                        name = long
+                    else:
+                        name = n.get("id", "?")
                     snr = n.get("snr", "N/A")
                     badge = " 🔒" if n.get("public_key") else ""
                     line = f"• {self._escape_md(name)}{badge} (SNR: {snr})"
@@ -1112,9 +1121,17 @@ class TelegramBot:
 
     @staticmethod
     def _node_label(node: dict[str, Any]) -> str:
-        return TelegramBot._escape_md(
-            node.get("long_name") or node.get("short_name") or node.get("id") or "?"
-        )
+        short = node.get("short_name") or node.get("shortName") or ""
+        long = node.get("long_name") or node.get("longName") or ""
+        if short and long and short != long:
+            raw = f"{short} ({long})"
+        elif short:
+            raw = short
+        elif long:
+            raw = long
+        else:
+            raw = node.get("id") or "?"
+        return TelegramBot._escape_md(raw)
 
     @staticmethod
     def _format_traceroute(record: dict[str, Any], num_to_name: dict[int, str]) -> str:
@@ -1303,6 +1320,51 @@ class TelegramBot:
             + "\n    </trkseg>\n  </trk>\n</gpx>"
         )
 
+    def _find_node_by_id(self, node_id: Any) -> dict[str, Any] | None:
+        """Find a node dict by node_id or number from live interface or cached nodes."""
+        if not node_id or not self._conn:
+            return None
+        from .connection import normalize_node_id
+        norm = normalize_node_id(node_id)
+        raw_id_str = str(node_id).strip()
+        # Check cached persistent/live nodes list in connection
+        nodes = getattr(self._conn, "_nodes", None)
+        if nodes and isinstance(nodes, list):
+            lock = getattr(self._conn, "_nodes_lock", None)
+            if lock is not None and hasattr(lock, "__enter__") and hasattr(lock, "acquire"):
+                try:
+                    with lock:
+                        for n in nodes:
+                            if not isinstance(n, dict):
+                                continue
+                            n_id = n.get("id")
+                            if (norm and normalize_node_id(n_id) == norm) or str(n_id) == raw_id_str:
+                                return n
+                except Exception:
+                    pass
+            else:
+                for n in nodes:
+                    if not isinstance(n, dict):
+                        continue
+                    n_id = n.get("id")
+                    if (norm and normalize_node_id(n_id) == norm) or str(n_id) == raw_id_str:
+                        return n
+        # Check live interface
+        iface = getattr(self._conn, "_interface", None)
+        if iface and hasattr(self._conn, "_lookup_node"):
+            try:
+                hit = self._conn._lookup_node(iface, node_id)
+                if isinstance(hit, dict) and hit:
+                    user = hit.get("user") or {}
+                    return {
+                        "id": norm or raw_id_str,
+                        "short_name": user.get("shortName") or user.get("short_name") or hit.get("short_name") or "",
+                        "long_name": user.get("longName") or user.get("long_name") or hit.get("long_name") or "",
+                    }
+            except Exception:
+                pass
+        return None
+
     def forward_mesh_message(self, entry: dict[str, Any]) -> None:
         """
         Called synchronously by the mesh receive thread when a new message arrives.
@@ -1361,9 +1423,32 @@ class TelegramBot:
             return
 
         if is_outgoing:
-            dest_str = f" to {entry.get('to_id')}" if is_dm and entry.get("to_id") else ""
+            dest_str = ""
+            to_id = entry.get("to_id") or entry.get("destination")
+            if is_dm and to_id:
+                dest_label = ""
+                dest_node = self._find_node_by_id(to_id)
+                if dest_node:
+                    d_short = dest_node.get("short_name") or dest_node.get("shortName") or ""
+                    d_long = dest_node.get("long_name") or dest_node.get("longName") or ""
+                    if d_short and d_long and d_short != d_long:
+                        dest_label = f"{d_short} ({d_long})"
+                    elif d_short:
+                        dest_label = d_short
+                    elif d_long:
+                        dest_label = d_long
+                dest_label = dest_label or str(to_id)
+                dest_str = f" to {dest_label}"
             ch_str = f"[DM{dest_str}]" if is_dm else f"[Ch {channel}]"
-            msg = f"📤 {ch_str} *You*:\n{text}"
+
+            # Check if local node short name is known
+            self_short = entry.get("from_short") or ""
+            if not self_short and self._conn and from_id:
+                self_node = self._find_node_by_id(from_id)
+                if self_node:
+                    self_short = self_node.get("short_name") or self_node.get("shortName") or ""
+            sender_str = f"You ({self_short})" if self_short and self_short not in ("You", "Unknown") else "You"
+            msg = f"📤 {ch_str} *{sender_str}*:\n{text}"
         else:
             snr = entry.get("rx_snr")
             snr_str = f" [SNR: {snr}]" if snr is not None else ""
@@ -1375,6 +1460,15 @@ class TelegramBot:
             # user can tell at a glance who a message came from.
             short = entry.get("from_short") or ""
             long = entry.get("from_long") or ""
+
+            # If short name is missing from entry, resolve dynamically from connection manager
+            if not short and from_id and self._conn:
+                node_info = self._find_node_by_id(from_id)
+                if node_info:
+                    short = node_info.get("short_name") or node_info.get("shortName") or ""
+                    if not long:
+                        long = node_info.get("long_name") or node_info.get("longName") or ""
+
             if short and long and short != long:
                 label = f"{short} ({long})"
             elif short:

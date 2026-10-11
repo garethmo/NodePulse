@@ -552,8 +552,47 @@ class TestTelegramBotForwardMeshMessage:
         assert metadata["is_dm"] is True
         assert metadata["node"] == "!destnode"
 
+    def test_forward_mesh_message_resolves_short_name_from_conn(self):
+        mock_config = make_mock_config(telegram_forward_channels=[0])
+        conn = Mock()
+        conn._nodes = [{"id": "!abcdef", "short_name": "Bob", "long_name": "Bob The Tester"}]
+        bot = TelegramBot(mock_config, Mock(), Mock(), Mock(), conn=conn)
+        bot._task = Mock(done=Mock(return_value=False))
+        bot._session = Mock()
+        msg = self._capture_forward_msg(bot, {
+            "text": "Hello without short in entry",
+            "is_dm": False,
+            "channel": 0,
+            "from_id": "!abcdef",
+        })
+        assert "Bob" in msg
+        assert "Bob The Tester" in msg
+
+    def test_forward_mesh_message_outgoing_dm_resolves_dest_short_name(self):
+        mock_config = make_mock_config(telegram_forward_dms=True)
+        conn = Mock()
+        conn._nodes = [{"id": "!destnode", "short_name": "Alice", "long_name": "Alice Cooper"}]
+        bot = TelegramBot(mock_config, Mock(), Mock(), Mock(), conn=conn)
+        bot._task = Mock(done=Mock(return_value=False))
+        bot._session = Mock()
+        msg = self._capture_forward_msg(bot, {
+            "text": "Outbound DM to Alice",
+            "is_dm": True,
+            "outgoing": True,
+            "from_ui": True,
+            "from_id": "!selfnode",
+            "to_id": "!destnode",
+        })
+        assert "[DM to Alice (Alice Cooper)]" in msg
+
+    def test_node_label_shows_short_and_long_name(self):
+        label = TelegramBot._node_label({"short_name": "Bob", "long_name": "Bob The Tester"})
+        assert "Bob" in label
+        assert "Bob The Tester" in label
+
 
 class TestTelegramBotSendForward:
+
     @pytest.mark.asyncio
     @pytest.mark.asyncio
     async def test_send_forward_records_message_id(self):
