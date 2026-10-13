@@ -2107,6 +2107,21 @@ class MeshtasticConnection:
                 self._capture_neighborinfo(packet)
                 return
 
+            # --- Node info (new node discovered / name/hw updated) --------
+            # NODEINFO_APP is sent when a node announces itself or when its
+            # user record changes (name, hardware model). Trigger an HA push
+            # so entity names and new device_tracker entries appear in HA
+            # immediately rather than waiting for the next polling cycle.
+            # The 3-second debounce on _trigger_ha_push() absorbs any burst
+            # of NODEINFO packets that follows a reconnect or radio reset.
+            if portnum == "NODEINFO_APP":
+                _broadcast_sse_event("nodeinfo", {
+                    "node_id": from_id_snr,
+                    "timestamp": int(time.time()),
+                })
+                self._trigger_ha_push()
+                return
+
             # --- Traceroute replies ---------------------------------------
             if portnum == "TRACEROUTE_APP":
                 self._capture_traceroute(packet)
