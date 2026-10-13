@@ -1079,6 +1079,11 @@ class TestFavorites:
                 result = conn._set_favorite_sync("!11111111", False)
                 assert result == ["!22222222"]
 
+                # _save_favorites enqueues writes on a background daemon thread.
+                # Drain the queue now so the file is guaranteed on disk before
+                # conn2 tries to load it.
+                conn._stop_persist_worker()
+
                 # A fresh connection loads from the same file.
                 conn2 = MeshtasticConnection(
                     host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
