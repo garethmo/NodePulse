@@ -283,39 +283,34 @@ def _is_co_located(lat1: Any, lon1: Any, lat2: Any, lon2: Any, threshold_km: flo
 
 def _are_coordinates_suspicious(lat: Any, lon: Any) -> bool:
     """Check if coordinates appear to be invalid or suspicious (default/placeholder values).
-    
+
     Returns True if coordinates look like they might be incorrect:
     - Either coordinate is None
-    - Coordinates are exactly 0,0 (common default)
-    - Coordinates are outside reasonable Earth bounds
-    - Coordinates are suspiciously rounded (likely placeholders)
+    - Coordinates are exactly 0,0 (Meshtastic protobuf default when no fix is available)
+    - Coordinates are outside valid Earth bounds
+
+    NOTE: Do NOT add heuristics based on decimal-place count or "rounded" values.
+    Meshtastic's "no fix" sentinel is always the protobuf integer default 0 (→ 0.0, 0.0).
+    Real nodes at round-valued locations (e.g. lat=-29.8, lon=30.8 in Durban) would be
+    incorrectly rejected by such checks.
     """
     if lat is None or lon is None:
         return True
-    
+
     try:
         lat_f = float(lat)
         lon_f = float(lon)
-        
-        # Check for exact 0,0 (common default/placeholder)
+
+        # Meshtastic encodes "no fix" as latitudeI=0 / longitudeI=0 in the protobuf.
+        # After * 1e-7 conversion this becomes 0.0, 0.0 — the only numeric placeholder.
         if lat_f == 0.0 and lon_f == 0.0:
             return True
-        
-        # Check for coordinates outside Earth bounds
+
+        # Reject anything outside valid WGS-84 bounds.
         if not (-90 <= lat_f <= 90) or not (-180 <= lon_f <= 180):
             return True
-        
-        # Check for suspiciously rounded coordinates (likely placeholders)
-        # If coordinates end with many zeros or have very few decimal places,
-        # they might be default values
-        lat_str = str(lat_f).rstrip('0').rstrip('.') if '.' in str(lat_f) else str(lat_f)
-        lon_str = str(lon_f).rstrip('0').rstrip('.') if '.' in str(lon_f) else str(lon_f)
-        
-        # If coordinates have 4 or fewer significant digits, they might be placeholders
-        return (
-            len(lat_str.replace('.', '').replace('-', '')) <= 4
-            and len(lon_str.replace('.', '').replace('-', '')) <= 4
-        )
+
+        return False
     except (TypeError, ValueError):
         return True
 
@@ -5389,48 +5384,51 @@ class MeshtasticConnection:
                 logger.debug("Error requesting position for node %s: %s", node_id, exc)
 
     def _apply_coordinate_offset(self, node: dict[str, Any], seen_coords: set[tuple[float, float]]) -> dict[str, Any]:
-        """Apply a small random offset to node coordinates if they duplicate existing nodes.
-        
+        """Apply a small deterministic offset to node coordinates if they duplicate existing nodes.
+
         This prevents nodes from stacking exactly on top of each other on the map.
-        The offset is very small (about 1-2 meters) so nodes appear at the same
-        general location but can be distinguished visually.
-        
+        The offset is derived from the node's ID hash so it is stable across polls —
+        the pin stays still on the map while remaining visually separate from co-located
+        nodes. (A random offset would cause the pin to jitter by ~1-2m on every poll.)
+
         Args:
             node: The node to potentially offset
             seen_coords: A set of (lat, lng) tuples representing already-processed nodes
-            
+
         Returns:
             The node with potentially offset coordinates
         """
-        import random
-        
         lat = node.get("latitude")
         lng = node.get("longitude")
-        
+
         # If node has no coordinates, no offset needed
         if lat is None or lng is None:
             return node
-            
+
         coord_tuple = (lat, lng)
-        
+
         if coord_tuple in seen_coords:
-            # Apply a small random offset (~1-2 meters)
-            lat_offset = random.uniform(-0.00001, 0.00001)
-            lng_offset = random.uniform(-0.00001, 0.00001)
-            
+            # Derive a stable, small offset (~1-2 metres) from the node ID so the
+            # same node always gets the same nudge regardless of poll order.
+            node_id = str(node.get("id") or "")
+            # Map the hash into [-0.00001, +0.00001] for each axis independently.
+            h = hash(node_id)
+            lat_offset = ((h & 0xFFFF) / 0xFFFF - 0.5) * 0.00002          # ±0.00001°
+            lng_offset = (((h >> 16) & 0xFFFF) / 0xFFFF - 0.5) * 0.00002  # ±0.00001°
+
             node["latitude"] = lat + lat_offset
             node["longitude"] = lng + lng_offset
-            
+
             logger.info(
-                "Applied small coordinate offset to node %s (%s) to prevent map stacking",
+                "Applied deterministic coordinate offset to node %s (%s) to prevent map stacking",
                 normalize_node_id(node.get("id")), node.get("long_name", node.get("short_name", ""))
             )
-            
-            # Record the new coordinates so if a third node has these we offset it too (unlikely)
+
+            # Record the new coordinates so a third co-located node is also offset.
             seen_coords.add((node["latitude"], node["longitude"]))
         else:
             seen_coords.add(coord_tuple)
-        
+
         return node
 
     def _has_duplicate_coordinates(self, node: dict[str, Any], existing_nodes: list[dict[str, Any]]) -> bool:

@@ -27,7 +27,7 @@ DEFAULT_SCAN_INTERVAL = 30  # seconds
 # Platform names forwarded by __init__.py. ``notify`` is a config-entry
 # tracked platform like the rest (Q2) so its entities are unloaded with the
 # entry instead of lingering as legacy async_load_platform services.
-PLATFORMS = ["binary_sensor", "sensor", "device_tracker", "geo_location", "notify"]
+PLATFORMS = ["binary_sensor", "sensor", "device_tracker", "notify"]
 
 # Data-field keys (addon JSON response)
 ATTR_NEIGHBORS          = "neighbors"

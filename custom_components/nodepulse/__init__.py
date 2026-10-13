@@ -158,9 +158,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
-    # Forward to all platform modules (binary_sensor, sensor, device_tracker,
-    # geo_location, notify). The notify platform is now a real config-entry
-    # platform so its entities are tracked and unloaded with the entry (Q2).
+    # Forward to all platform modules (binary_sensor, sensor, device_tracker, notify).
+    # device_tracker handles map plotting via TrackerEntity + SourceType.GPS.
+    # The notify platform is a real config-entry platform so its entities are
+    # tracked and unloaded with the entry (Q2).
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     # Listen for new mesh messages: fire device-trigger events and write
