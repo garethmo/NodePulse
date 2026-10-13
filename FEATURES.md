@@ -23,6 +23,11 @@ The addon runs as a Home Assistant addon (Docker container) serving a REST API a
 | **Telegram Chat-ID Prefix Matching (1.33.1+)** | Supergroup ID normalisation now uses `str.removeprefix("-100")` instead of `str.lstrip("-100")`. The previous character-set stripping could silently mangle IDs whose digits after `-` began with `1` or `0`, causing authorization mismatches for some users. |
 | **Instant HA Map Appearance (1.33.1+)** | `device_tracker` and `geo_location` entities are registered for every tracked node at discovery time (no GPS-fix gate). Nodes with no GPS fix report unknown location and appear on the HA map immediately when their first position update arrives — no re-discovery cycle needed. |
 | **Ghost Entity Prevention (1.33.1+)** | When a node is removed from the tracked set, `NodeDiscovery` now also removes its entry from the HA Entity Registry, preventing it from ghosting back after an addon restart. |
+| **Telegram Short-Name Resolution (1.33.2+)** | Node short names are correctly resolved and displayed in all forwarded Meshtastic messages and Telegram bot command responses. Previously the field was sometimes omitted, causing messages to fall back to the raw hex node ID. |
+| **Stale Flag Lifecycle Fix (1.33.2+)** | `stale: False` is explicitly set when a previously-evicted node reappears in live radio data, preventing stale sensor attributes from persisting across poll cycles. |
+| **Sticky Device Tracker Coordinates (1.33.2+)** | `device_tracker.py` retains the last known GPS fix when a coordinator snapshot arrives without position data (reconnect, pre-fix snapshot). State stays at the last known map position rather than regressing to `unknown`. |
+| **Stable Co-location Offset (1.33.2+)** | Co-located nodes are spread with a deterministic hash-derived offset instead of a random per-poll offset, eliminating 1–2 m pin jitter on every coordinator refresh. |
+| **NODEINFO_APP HA Push (1.33.2+)** | A new `NODEINFO_APP` branch in `_on_receive()` broadcasts an SSE `nodeinfo` event and triggers an immediate HA coordinator refresh (debounced 3 s) when a node is first seen or updates its user record. Previously the packet fell through to the early-exit path, delaying discovery by up to one full poll interval. |
 
 ### REST API
 
@@ -319,7 +324,7 @@ The `custom_components/nodepulse/` package registers entities, services, device 
 |--------|-------------|-----------------|
 | `device_tracker.<node_name>_location` | `GPS` | `altitude`, `snr`, `rssi`, `hops_away`, `hw_model`, `short_name`, `last_position_fix`, `stale` |
 
-Created only for nodes with a valid GPS fix. Plots directly on the native Home Assistant map card. The `stale` attribute is `True` for nodes that the radio has evicted from its bounded DB but are kept visible from the persistent store.
+Created for every tracked node that has ever reported GPS coordinates. Plots directly on the native Home Assistant map card. Coordinates are **sticky** — once a valid GPS fix has been received the entity retains the last known position across coordinator cycles rather than regressing to `unknown`. The `stale` attribute is `True` for nodes that the radio has evicted from its bounded DB but are kept visible from the persistent store.
 
 ### Notify Platform
 
@@ -392,8 +397,7 @@ NodePulse Integration (Python / DataUpdateCoordinator)
   ├── coordinator.py — DataUpdateCoordinator + addon REST client
   ├── binary_sensor.py — Connection + Online
   ├── sensor.py — 24 per-node metric sensors
-  ├── device_tracker.py — GPS device trackers
-  ├── geo_location.py — Geo location entities for the native map card
+  ├── device_tracker.py — GPS device trackers (sticky coordinates, always-registered)
   ├── notify.py — Gateway + per-channel notify entities
   ├── device_action.py — 3 actions per node
   ├── device_trigger.py — 3 triggers per node

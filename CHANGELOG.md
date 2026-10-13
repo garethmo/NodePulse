@@ -2,6 +2,26 @@
 
 All notable changes to NodePulse are documented here.
 
+## [1.33.2] - 2026-10-13
+
+### Added
+- **HA Integration — Instant Node Discovery via NODEINFO_APP** — `_on_receive()` in `connection.py` now has a dedicated branch for `NODEINFO_APP` packets (sent when a node is first seen or updates its user record). Previously this packet type fell through to the early-exit text-message path, so new nodes and name changes only became visible in HA after the next scheduled coordinator poll (up to 30 s). The new branch broadcasts an SSE `nodeinfo` event to the Web UI and calls `_trigger_ha_push()` so the HA coordinator refreshes within seconds. The existing 3-second debounce on both sides absorbs bursts of NODEINFO packets during reconnects.
+
+### Fixed
+- **Telegram Bot — Node Short Name in Messages and Commands** — Node short names are now correctly resolved and displayed in all forwarded Meshtastic messages and Telegram bot command responses (`/nodes`, etc.). Previously the short name field was sometimes omitted, causing messages to fall back to the raw hex node ID.
+- **HA Integration — Stale Flag Lifecycle** — When a node reappears in live radio data, `stale: False` is now explicitly set on the node record. Previously a node evicted from the radio's bounded DB (marked `stale: True`) could retain its stale flag across poll cycles even after the radio re-discovered it, causing incorrect `stale` attribute values on sensors and device trackers.
+- **HA Integration — Redundant Coordinator State Writes Removed** — Removed a redundant `async_write_ha_state()` call that ran immediately before `super()._handle_coordinator_update()` in `device_tracker.py`. The extra write caused two HA state machine updates per coordinator cycle; the second could race with HA's state deduplication and silently discard the coordinate update.
+- **HA Integration — Sticky Device Tracker Coordinates** — `device_tracker.py` now retains ("stickifies") the last known GPS fix when a coordinator snapshot arrives without `latitude`/`longitude` (e.g. during a reconnect or before a node sends its first position packet). Previously coordinates were reset to `None` on every snapshot that lacked position data, causing HA to flip the entity state to `unknown` and drop the map pin. The initial state before any fix has been received remains `unknown`.
+
+### Refactored
+- **HA Integration — `geo_location` Platform Deprecated** — `geo_location.py` is renamed to `_geo_location_deprecated.py` and is no longer registered as a platform. The `device_tracker` platform already plots every tracked node on the native HA map card; the parallel `geo_location` entity was redundant and caused duplicate pins. The deprecated file is retained temporarily to document the old implementation.
+- **Addon — Coordinate Filtering Improvements** — Removed the flawed "rounded coordinate" heuristic from `_are_coordinates_suspicious()` that incorrectly rejected real nodes at round-valued GPS locations (e.g. a node at lat=-29.8, lon=30.8 in Durban). The only valid sentinel value for Meshtastic's protobuf default is `0.0, 0.0` — any coordinate within valid Earth bounds is now kept.
+- **Addon — Stable Co-location Offset** — `_apply_coordinate_offset()` now uses a deterministic hash-derived offset per node instead of a random per-poll offset. This prevents the 1–2 m pin jitter visible on every coordinator refresh when multiple nodes share the same GPS position.
+
+### Code Quality
+- **Lint — Resolved 5 `ruff` Errors** — Fixed `SIM103` (return bool directly), `SIM102` (collapsed nested `if`), `RUF034` (useless `if`-`else`), and two `BLE001` (blind `except Exception`) violations across `connection.py` and `coordinator.py`.
+- **Tests — Fixed Failing Unit Tests** — Repaired 5 broken unit tests in `test_connection.py` and `test_telegram_bot.py` caused by interface changes; added regression tests for the stale-flag lifecycle, NODEINFO_APP push, and Telegram short-name resolution. Fixed a timing race condition in `test_favorites.py` round-trip tests.
+
 ## [1.33.1] - 2026-10-06
 ### Fixed
 - **Code Quality — SSE Eviction Logic** — Replaced bare `try/except/pass` blocks in the SSE broadcast eviction path (`connection.py`) with `contextlib.suppress()`, satisfying the `SIM105` lint rule and making the intent clearer.

@@ -115,7 +115,10 @@ NodePulse is a Home Assistant addon and custom integration that gives you deep v
 | 🔍 **Auto Traceroute** | Automatically dispatches traceroute when a new node is discovered. Background thread, non-blocking, 300s timeout, respects serialization. Toggle in Settings → Auto Responder (`auto_traceroute_enabled`, default `false`). |
 | ⚡ **Real-Time SSE Push** | Persistent Server-Sent Events stream (`GET /api/events`) delivers new messages, delivery ACKs, traceroute results, position fixes, telemetry, and waypoints to the browser within ~100 ms of radio reception — no page refresh needed. Falls back gracefully to 15-second polling on the HA Companion App or Nabu Casa remote access when SSE is blocked by proxies. |
 | 🔒 **Telegram Auth Fix (1.33.1)** | Supergroup chat-ID normalisation now uses `str.removeprefix("-100")` so IDs whose digits begin with `1` or `0` are never silently mangled, preventing authorization mismatches. |
-| 📍 **Instant HA Map Appearance (1.33.1)** | `device_tracker` and `geo_location` entities are registered for all tracked nodes at discovery time. Nodes without a GPS fix appear on the HA map the moment their first position update arrives — no re-discovery cycle needed. |
+| 📍 **Instant HA Map Appearance (1.33.1)** | `device_tracker` entities are registered for all tracked nodes at discovery time. Nodes without a GPS fix appear on the HA map the moment their first position update arrives — no re-discovery cycle needed. |
+| 🗺️ **Sticky Device Tracker Coordinates (1.33.2)** | Once a valid GPS fix is received, the `device_tracker` entity retains the last known position across coordinator snapshots instead of regressing to `unknown` during reconnects or between position packets. |
+| 🤖 **NODEINFO_APP Instant Discovery (1.33.2)** | New nodes and name-change packets (`NODEINFO_APP`) now trigger an immediate HA coordinator push (debounced 3 s) instead of waiting up to 30 s for the next scheduled poll. |
+| 📌 **Stable Co-location Offsets (1.33.2)** | Nodes sharing the same GPS fix are spread with a deterministic hash-derived pin offset rather than a random per-poll offset, eliminating 1–2 m jitter on every refresh. |
 | 👻 **Ghost Entity Prevention (1.33.1)** | Removed nodes are now purged from the HA Entity Registry (not just the live state machine), preventing them from reappearing as ghost entities after an addon restart. |
 | ⏱ **Traceroute Timeout Feedback** | When a traceroute times out (300s), the node card shows "⏱ Timed out — no route discovered" with a relative timestamp; the map and topology pages skip timeout records instead of drawing bogus edges |
 | 🗄️ **Persisted Traceroutes** | Discovered routes are stored in `traceroutes.json` and survive addon restarts. Traceroute targets evicted from the radio's bounded node DB are re-injected (as stale) so the topology page keeps drawing their links — even while the radio is offline |
@@ -246,7 +249,7 @@ erDiagram
   NODE_DEVICE ||--|| AIR_UTIL_SENSOR : has
   NODE_DEVICE ||--|| UPTIME_SENSOR : has
   NODE_DEVICE ||--|| ROLE_SENSOR : has
-  NODE_DEVICE ||--o| GPS_TRACKER : "has (if GPS fix)"
+  NODE_DEVICE ||--o| GPS_TRACKER : "has (if has ever had GPS fix)"
   NODE_DEVICE ||--|| ONLINE_BINARY_SENSOR : has
   NODE_DEVICE ||--o| LAST_MESSAGE_RECEIVED_SENSOR : has
   NODE_DEVICE ||--o| LAST_MESSAGE_SENT_SENSOR : has
