@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
-from app import connection
+from app import connection, remote_cache
 from app.connection import MeshtasticConnection
 
 
@@ -1060,9 +1060,13 @@ class TestFavorites:
     def test_favorites_persist_roundtrip(self):
         mock_config = Mock()
         mock_config.mqtt_enabled = False
+        # Patch _sync_favorites_from_device to prevent it from spawning
+        # background work that holds open files inside the temp dir, which
+        # would cause TemporaryDirectory.__exit__ to fail with ENOTEMPTY.
         with tempfile.TemporaryDirectory() as tmp, \
                 patch.object(connection, "_DATA_DIR", tmp), \
-                patch.object(connection, "_FAVORITES_FILE", os.path.join(tmp, "favorites.json")):
+                patch.object(connection, "_FAVORITES_FILE", os.path.join(tmp, "favorites.json")), \
+                patch.object(MeshtasticConnection, "_sync_favorites_from_device"):
                 conn = MeshtasticConnection(
                     host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
                 )
@@ -2432,10 +2436,13 @@ class TestCoordinateValidation:
         assert connection._are_coordinates_suspicious(30.0, -181.0) is True  # Longitude < -180
 
     def test_are_coordinates_suspicious_rounded_placeholder(self):
-        # Very rounded coordinates (few significant digits) are suspicious
-        assert connection._are_coordinates_suspicious(30.0, 40.0) is True
-        assert connection._are_coordinates_suspicious(-29.0, 30.0) is True
-        assert connection._are_coordinates_suspicious(30.123, 40.456) is False  # More precision
+        # The rounded-coordinate heuristic was intentionally removed: real nodes
+        # can sit at round-valued locations (e.g. lat=-29.8, lon=30.8 in Durban).
+        # Only the Meshtastic protobuf sentinel 0,0 is treated as suspicious.
+        # Coordinates with few decimal places but valid Earth bounds are accepted.
+        assert connection._are_coordinates_suspicious(30.0, 40.0) is False
+        assert connection._are_coordinates_suspicious(-29.0, 30.0) is False
+        assert connection._are_coordinates_suspicious(30.123, 40.456) is False
 
     def test_are_coordinates_suspicious_valid_coordinates(self):
         assert connection._are_coordinates_suspicious(-29.7564436, 30.8181389) is False
@@ -2828,9 +2835,11 @@ class TestStaleFlagClearing:
         """Return a real MeshtasticConnection with a mock config."""
         mock_config = Mock()
         mock_config.mqtt_enabled = False
-        return MeshtasticConnection(
-            host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
-        )
+        # Suppress device-sync side-effects that require network or /data access.
+        with patch.object(MeshtasticConnection, "_sync_favorites_from_device"):
+            return MeshtasticConnection(
+                host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
+            )
 
     def _make_interface(self, node_id: str, lat: float | None = None, lng: float | None = None):
         """Return a minimal mock interface with a single node in its DB."""
@@ -2879,7 +2888,11 @@ class TestStaleFlagClearing:
         conn._interface = self._make_interface(node_id, lat=-29.753337, lng=30.801920)
         conn._connected = True
 
-        nodes = conn._get_nodes_sync()
+        # Redirect /data access so the test works in a sandboxed CI environment.
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(remote_cache, "_DATA_DIR", tmp), \
+                patch.object(remote_cache, "_CACHE_FILE", os.path.join(tmp, "remote_configs.json")):
+            nodes = conn._get_nodes_sync()
 
         # The node must appear exactly once.
         matching = [n for n in nodes if n["id"] == node_id]
@@ -2903,7 +2916,10 @@ class TestStaleFlagClearing:
         conn._interface = self._make_interface(node_id, lat=-29.0, lng=30.0)
         conn._connected = True
 
-        nodes = conn._get_nodes_sync()
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(remote_cache, "_DATA_DIR", tmp), \
+                patch.object(remote_cache, "_CACHE_FILE", os.path.join(tmp, "remote_configs.json")):
+            nodes = conn._get_nodes_sync()
 
         matching = [n for n in nodes if n["id"] == node_id]
         assert len(matching) == 1
@@ -2942,7 +2958,10 @@ class TestStaleFlagClearing:
         conn._interface = self._make_interface(live_id, lat=-29.0, lng=30.0)
         conn._connected = True
 
-        nodes = conn._get_nodes_sync()
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(remote_cache, "_DATA_DIR", tmp), \
+                patch.object(remote_cache, "_CACHE_FILE", os.path.join(tmp, "remote_configs.json")):
+            nodes = conn._get_nodes_sync()
 
         live_nodes = [n for n in nodes if n["id"] == live_id]
         evicted_nodes = [n for n in nodes if n["id"] == evicted_id]
