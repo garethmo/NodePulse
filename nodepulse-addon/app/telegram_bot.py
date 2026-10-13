@@ -1340,7 +1340,7 @@ class TelegramBot:
                             n_id = n.get("id")
                             if (norm and normalize_node_id(n_id) == norm) or str(n_id) == raw_id_str:
                                 return n
-                except Exception:
+                except (AttributeError, TypeError, KeyError):
                     pass
             else:
                 for n in nodes:
@@ -1361,7 +1361,7 @@ class TelegramBot:
                         "short_name": user.get("shortName") or user.get("short_name") or hit.get("short_name") or "",
                         "long_name": user.get("longName") or user.get("long_name") or hit.get("long_name") or "",
                     }
-            except Exception:
+            except (AttributeError, TypeError, KeyError):
                 pass
         return None
 

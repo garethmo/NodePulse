@@ -307,10 +307,7 @@ def _are_coordinates_suspicious(lat: Any, lon: Any) -> bool:
             return True
 
         # Reject anything outside valid WGS-84 bounds.
-        if not (-90 <= lat_f <= 90) or not (-180 <= lon_f <= 180):
-            return True
-
-        return False
+        return not (-90 <= lat_f <= 90) or not (-180 <= lon_f <= 180)
     except (TypeError, ValueError):
         return True
 
@@ -4126,10 +4123,9 @@ class MeshtasticConnection:
 
         # 2. Check underlying socket state (for TCPInterface)
         sock = getattr(iface, "_socket", None) or getattr(iface, "socket", None)
-        if sock is not None:
-            if getattr(sock, "_closed", False) or sock.fileno() == -1:
-                logger.debug("Health probe failed: underlying socket is closed or fileno == -1")
-                return False
+        if sock is not None and (getattr(sock, "_closed", False) or sock.fileno() == -1):
+            logger.debug("Health probe failed: underlying socket is closed or fileno == -1")
+            return False
 
         # 3. Check reader background thread if present (StreamInterface / TCPInterface)
         read_thread = getattr(iface, "_readThread", None)
@@ -5123,9 +5119,9 @@ class MeshtasticConnection:
         is_dm = to_id is not None
         if is_dm:
             # Use the actual destination node as the conversation partner.
-            # When to_id somehow resolves to our own ID (shouldn't happen in
-            # normal use) keep to_id rather than falling through to 'unknown'.
-            other = to_id if to_id != self_id else to_id
+            # When to_id is our own ID (self-DM edge case), label using from_id
+            # so the conversation key is still meaningful.
+            other = to_id if to_id != self_id else self_id
             conversation = f"dm:{other or 'self'}"
         else:
             conversation = f"ch:{channel}"
