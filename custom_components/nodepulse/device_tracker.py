@@ -3,9 +3,10 @@ NodePulse — Device Tracker Platform.
 
 Registers a device_tracker entity for every tracked node. When a node has a
 valid GPS fix, HA plots it on the native map card alongside other tracked
-devices. Nodes without a fix are registered but report an unknown location,
-so they appear on the map the moment their first position update arrives
-without needing a re-discovery cycle.
+devices. Once a fix has been received, coordinates are retained ("sticky")
+so that the state never regresses to ``unknown`` just because the latest
+coordinator snapshot is missing lat/lon — the last known position is always
+preferred over losing the location entirely.
 """
 import logging
 from typing import Any, Dict, Optional
@@ -97,8 +98,14 @@ class NodeTracker(CoordinatorEntity, TrackerEntity):
             "via_device": (DOMAIN, entry.entry_id),
         }
 
-        # Initialize coordinates from coordinator snapshot on creation so HA
-        # has valid state before the first update callback fires.
+        # Pre-initialise to None so _sync_coordinates can safely check whether
+        # we already hold a valid fix before deciding to retain the old value.
+        self._attr_latitude: Optional[float] = None
+        self._attr_longitude: Optional[float] = None
+        self._attr_altitude: Optional[float] = None
+
+        # Seed coordinates from the coordinator snapshot so HA has valid state
+        # before the first update callback fires.
         self._sync_coordinates(node)
 
     def _get_node(self) -> Optional[Dict[str, Any]]:
@@ -110,18 +117,30 @@ class NodeTracker(CoordinatorEntity, TrackerEntity):
         Home Assistant exposes ``latitude``/``longitude`` as cached properties.
         Some HA versions cache the first read before we receive a later GPS fix;
         explicitly clearing the cache guarantees the map sees each movement.
+
+        Coordinates are **sticky**: once a valid GPS fix has been received we
+        never overwrite it with ``None``. This prevents the entity state from
+        regressing to ``unknown`` during reconnects or when a coordinator
+        snapshot arrives without position data.
         """
+        # latitude and longitude are @cached_property on TrackerEntity; clear the
+        # instance-level cache so HA picks up fresh coordinates on every state write.
         self.__dict__.pop("latitude", None)
         self.__dict__.pop("longitude", None)
-        self.__dict__.pop("altitude", None)
+
         if node:
-            self._attr_latitude = node.get("latitude")
-            self._attr_longitude = node.get("longitude")
-            self._attr_altitude = node.get("altitude")
-        else:
-            self._attr_latitude = None
-            self._attr_longitude = None
-            self._attr_altitude = None
+            new_lat = node.get("latitude")
+            new_lon = node.get("longitude")
+            new_alt = node.get("altitude")
+
+            if new_lat is not None and new_lon is not None:
+                # Fresh valid fix — update all three coordinates.
+                self._attr_latitude = new_lat
+                self._attr_longitude = new_lon
+                self._attr_altitude = new_alt
+            # else: no new fix in this snapshot — retain the last known position
+            # so the state stays at the previous coordinates rather than going unknown.
+        # else: node vanished from coordinator — also retain last known position.
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -135,13 +154,8 @@ class NodeTracker(CoordinatorEntity, TrackerEntity):
         # deduplication and silently discard the coordinate update.
         super()._handle_coordinator_update()
 
-    @property
-    def altitude(self) -> Optional[float]:
-        """Return the altitude in meters above sea level."""
-        node = self._get_node()
-        if not node:
-            return None
-        return node.get("altitude")
+    # altitude is served via self._attr_altitude set by _sync_coordinates().
+    # No property override needed — the _attr_* convention handles it.
 
     @property
     def location_accuracy(self) -> int:
