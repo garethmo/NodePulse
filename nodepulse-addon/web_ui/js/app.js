@@ -4115,6 +4115,30 @@ function initEventSource() {
       }).catch(() => {});
     });
 
+    // Inbound packet captured: prepend to the local ring buffer so the Packet
+    // Inspector shows new entries in real-time without waiting for the 60-second
+    // pollData cycle.  renderPacketTable is debounced at 150 ms so a burst of
+    // back-to-back packets (e.g. during a MQTT-bridge flood) coalesces into a
+    // single DOM update rather than hammering the renderer for every packet.
+    let _pktRenderTimer = null;
+    es.addEventListener('packet', (e) => {
+      try {
+        const pkt = JSON.parse(e.data);
+        if (!pkt) return;
+        // Prepend newest-first, keep bounded to match the server-side ring buffer.
+        state.packetLog = [pkt, ...state.packetLog].slice(0, 500);
+        if (state.currentView === 'packets') {
+          if (_pktRenderTimer) clearTimeout(_pktRenderTimer);
+          _pktRenderTimer = setTimeout(() => {
+            _pktRenderTimer = null;
+            renderPacketTable();
+          }, 150);
+        }
+      } catch (err) {
+        console.warn('[SSE] packet parse error:', err);
+      }
+    });
+
     es.onerror = () => {
       // onerror fires on connection loss; the browser may retry automatically,
       // but we take control with our own backoff to surface status to the user.

@@ -2534,6 +2534,13 @@ class MeshtasticConnection:
             }
             with self._packet_log_lock:
                 self._packet_log.appendleft(entry)  # newest first
+            # Push the entry to every connected SSE client immediately so the
+            # Packet Inspector updates in real-time instead of waiting for the
+            # next 60-second pollData cycle.  The SSE broadcast is non-blocking
+            # (call_soon_threadsafe) and the per-client queue evicts stale
+            # entries automatically when full, so this never stalls the receive
+            # thread or overwhelms slow clients.
+            _broadcast_sse_event("packet", entry)
         except Exception as exc:  # defensive — never crash the receive thread  # noqa: BLE001
             logger.debug("Error capturing packet to log (ignored): %s", exc)
 
