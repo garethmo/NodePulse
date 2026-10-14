@@ -2105,6 +2105,15 @@ class MeshtasticConnection:
             # --- Neighbour info -------------------------------------------
             if portnum == "NEIGHBORINFO_APP":
                 self._capture_neighborinfo(packet)
+                # Broadcast so the topology view can update its neighbor graph
+                # and HA can refresh the neighbor-count sensor.
+                _broadcast_sse_event("neighborinfo", {
+                    "node_id": from_id_snr,
+                    "timestamp": int(time.time()),
+                })
+                # Neighbor data feeds the topology map and neighbor-count sensor
+                # in HA. The 3-s debounce on _trigger_ha_push absorbs any burst.
+                self._trigger_ha_push()
                 return
 
             # --- Node info (new node discovered / name/hw updated) --------

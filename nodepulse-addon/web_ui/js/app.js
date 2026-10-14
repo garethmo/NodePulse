@@ -4064,17 +4064,29 @@ function initEventSource() {
           if (rx_rssi != null) node.rx_rssi = rx_rssi;
           // Trigger the reactive setter to re-render the nodes grid.
           state.nodes = [...state.nodes];
+          // Also refresh map marker popups so the SNR values are current
+          // when the user clicks a node that just reported a new signal.
+          dashMap.updateNodes(state.nodes);
+          fullMap.updateNodes(state.nodes);
         }
       } catch (err) {
         console.warn('[SSE] signal_update parse error:', err);
       }
     });
 
-    // Position update: queue a targeted position-history refresh.
+    // Position update: fetch fresh node data (new lat/lon) and update map
+    // markers so the pin actually moves, then update trails.
     es.addEventListener('position', (e) => {
       try {
-        const { node_id } = JSON.parse(e.data);
-        // Re-fetch position history only — cheaper than a full poll.
+        // Fetch the updated node list so the new coordinates are reflected
+        // in the map markers and node cards, not just the trail polylines.
+        fetchNodes().then(raw => {
+          if (!Array.isArray(raw)) return;
+          state.nodes = raw;
+          dashMap.updateNodes(raw);
+          fullMap.updateNodes(raw);
+        }).catch(() => {});
+        // Fetch position history to extend the trail polyline.
         fetchPositionHistory().then(data => {
           state.posHistory = data;
           dashMap.updateTrails(data, state.nodes);
@@ -4086,7 +4098,9 @@ function initEventSource() {
       }
     });
 
-    // Telemetry update: debounced node-list refresh to prevent API floods when many nodes report.
+    // Telemetry update: debounced node-list refresh. After updating state.nodes,
+    // also push the fresh data to both map instances so battery/temperature
+    // values are current in map popups without waiting for the next full poll.
     let telemetryDebounceTimer = null;
     es.addEventListener('telemetry', () => {
       if (telemetryDebounceTimer) clearTimeout(telemetryDebounceTimer);
@@ -4095,17 +4109,52 @@ function initEventSource() {
         fetchNodes().then(raw => {
           if (!Array.isArray(raw)) return;
           state.nodes = raw;
+          dashMap.updateNodes(raw);
+          fullMap.updateNodes(raw);
         }).catch(() => {});
       }, 3000);
     });
 
-    // Traceroute completed: fetch only the hops chart data which changes after
-    // a traceroute. Do NOT call pollData() — that would fork a new recursive
-    // poll loop on every traceroute event, causing unbounded parallel polling.
+    // Traceroute completed: refresh hops chart, node list, and map markers
+    // so hop-count badges and traceroute overlays update immediately.
+    // Do NOT call pollData() — that would fork a new recursive poll loop on
+    // every traceroute event, causing unbounded parallel polling.
     es.addEventListener('traceroute', () => {
       fetchHops().then(data => charts.renderHops(data)).catch(() => {});
-      // Also refresh the full node list once so hop-count badges update.
-      fetchNodes().then(raw => { if (Array.isArray(raw)) state.nodes = raw; }).catch(() => {});
+      fetchNodes().then(raw => {
+        if (!Array.isArray(raw)) return;
+        state.nodes = raw;
+        dashMap.updateNodes(raw);
+        fullMap.updateNodes(raw);
+        // Keep the topology graph current if it is the active view.
+        if (state.currentView === 'topology') topology.updateData(state);
+      }).catch(() => {});
+    });
+
+    // New node discovered or user record changed (name, hw model): refresh the
+    // node list and both map instances so the new node/name appears everywhere
+    // without waiting for the next 60-second poll cycle.
+    es.addEventListener('nodeinfo', () => {
+      fetchNodes().then(raw => {
+        if (!Array.isArray(raw)) return;
+        state.nodes = raw;
+        dashMap.updateNodes(raw);
+        fullMap.updateNodes(raw);
+        // Update topology graph — a new node may have appeared.
+        if (state.currentView === 'topology') topology.updateData(state);
+      }).catch(() => {});
+    });
+
+    // Neighbour data updated: refresh the topology graph (which shows
+    // neighbour links) and the node list so neighbor-count badges update.
+    es.addEventListener('neighborinfo', () => {
+      fetchNodes().then(raw => {
+        if (!Array.isArray(raw)) return;
+        state.nodes = raw;
+        dashMap.updateNodes(raw);
+        fullMap.updateNodes(raw);
+        if (state.currentView === 'topology') topology.updateData(state);
+      }).catch(() => {});
     });
 
     // Waypoint received from mesh: refresh the map layer.
