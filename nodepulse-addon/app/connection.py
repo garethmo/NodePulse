@@ -3617,8 +3617,7 @@ class MeshtasticConnection:
                             # skip nodes with duplicate coordinates here — dropping
                             # the node makes it look "newly discovered" on the next
                             # poll, which wrongly re-triggers auto-traceroute sweeps
-                            # after every restart. Map de-stacking is handled at
-                            # render time by _apply_coordinate_offset on a copy.
+                            # after every restart.
                             lat = n.get("latitude")
                             lng = n.get("longitude")
                             lat, lng = self._validate_and_correct_coordinates(nid, lat, lng)
@@ -4395,9 +4394,6 @@ class MeshtasticConnection:
         # stale re-injection loop below can correctly identify which persisted
         # nodes are absent from the current poll and need restoring.
         result_ids: set[str] = set()
-        
-        # Track coordinates to prevent O(N^2) coordinate stacking checks
-        seen_coords: set[tuple[float, float]] = set()
 
         # Merge the interface's latest node data into our persistent cache.
         # This keeps late-arriving traceroute/position updates visible on the
@@ -4634,20 +4630,14 @@ class MeshtasticConnection:
                     if entry["altitude"] is None and prev_alt is not None:
                         cached[node_id]["altitude"] = prev_alt
                     
-                    # Apply coordinate offset if duplicates exist to prevent stacking.
-                    # Operate on a shallow copy so the offset never pollutes the
-                    # persistent cache (it would corrupt the next poll's
-                    # "did the library position change" comparison).
-                    node_to_add = self._apply_coordinate_offset(dict(cached[node_id]), seen_coords)
-                    result.append(node_to_add)
+                    # Append the node without coordinate offset.
+                    # Offsets were causing issues with HA map tracking because
+                    # the offset coordinates were being sent to the device_tracker
+                    # entity instead of the raw GPS coordinates. The original
+                    # Meshtastic integration sends raw coordinates without offsets.
+                    # Visual stacking should be handled in the UI layer if needed.
+                    result.append(dict(cached[node_id]))
                     result_ids.add(node_id)
-                    # Track the ORIGINAL (non-offset) coordinates in seen_coords,
-                    # not the offset coordinates. This prevents re-applying the same
-                    # offset on every poll when the library returns the original coords.
-                    orig_lat = cached[node_id].get("latitude")
-                    orig_lng = cached[node_id].get("longitude")
-                    if orig_lat is not None and orig_lng is not None:
-                        seen_coords.add((orig_lat, orig_lng))
                 else:
                     entry["traceroute"] = None
                     # Node is newly seen in live radio data — explicitly mark as
@@ -4665,15 +4655,12 @@ class MeshtasticConnection:
                     if entry["latitude"] is not None and entry["longitude"] is not None:
                         self._last_lib_pos[node_id] = (entry["latitude"], entry["longitude"])
                     
-                    # Apply coordinate offset if duplicates exist to prevent stacking.
-                    # Copy so the offset never pollutes the persistent cache.
-                    entry = self._apply_coordinate_offset(dict(entry), seen_coords)
-                    result.append(entry)
+                    # Append the node without coordinate offset.
+                    # Offsets were causing issues with HA map tracking because
+                    # the offset coordinates were being sent to the device_tracker
+                    # entity instead of the raw GPS coordinates.
+                    result.append(dict(entry))
                     result_ids.add(node_id)
-                    # Track the ORIGINAL (non-offset) coordinates in seen_coords
-                    # to prevent re-applying the same offset on every poll.
-                    if entry["latitude"] is not None and entry["longitude"] is not None:
-                        seen_coords.add((entry["latitude"], entry["longitude"]))
                     newly_discovered.append(node_id)
 
             # Re-inject nodes the radio no longer reports (its bounded node DB
@@ -4754,8 +4741,8 @@ class MeshtasticConnection:
                         restored["altitude"] = None
                         logger.debug("Dropped suspicious coordinates when restoring stale node %s: lat=%s lng=%s", nid, restored_lat, restored_lng)
                 
-                # Apply coordinate offset if duplicates exist to prevent stacking
-                restored = self._apply_coordinate_offset(restored, seen_coords)
+                # Append the stale node without coordinate offset.
+                # Offsets were causing issues with HA map tracking.
                 cached[nid] = restored
                 result.append(restored)
                 result_ids.add(nid)
@@ -5439,54 +5426,6 @@ class MeshtasticConnection:
                     logger.debug("Failed to request position for node %s", node_id)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("Error requesting position for node %s: %s", node_id, exc)
-
-    def _apply_coordinate_offset(self, node: dict[str, Any], seen_coords: set[tuple[float, float]]) -> dict[str, Any]:
-        """Apply a small deterministic offset to node coordinates if they duplicate existing nodes.
-
-        This prevents nodes from stacking exactly on top of each other on the map.
-        The offset is derived from the node's ID hash so it is stable across polls —
-        the pin stays still on the map while remaining visually separate from co-located
-        nodes. (A random offset would cause the pin to jitter by ~1-2m on every poll.)
-
-        Args:
-            node: The node to potentially offset
-            seen_coords: A set of (lat, lng) tuples representing already-processed nodes
-
-        Returns:
-            The node with potentially offset coordinates
-        """
-        lat = node.get("latitude")
-        lng = node.get("longitude")
-
-        # If node has no coordinates, no offset needed
-        if lat is None or lng is None:
-            return node
-
-        coord_tuple = (lat, lng)
-
-        if coord_tuple in seen_coords:
-            # Derive a stable, small offset (~1-2 metres) from the node ID so the
-            # same node always gets the same nudge regardless of poll order.
-            node_id = str(node.get("id") or "")
-            # Map the hash into [-0.00001, +0.00001] for each axis independently.
-            h = hash(node_id)
-            lat_offset = ((h & 0xFFFF) / 0xFFFF - 0.5) * 0.00002          # ±0.00001°
-            lng_offset = (((h >> 16) & 0xFFFF) / 0xFFFF - 0.5) * 0.00002  # ±0.00001°
-
-            node["latitude"] = lat + lat_offset
-            node["longitude"] = lng + lng_offset
-
-            logger.debug(
-                "Applied deterministic coordinate offset to node %s (%s) to prevent map stacking",
-                normalize_node_id(node.get("id")), node.get("long_name", node.get("short_name", ""))
-            )
-
-            # Record the new coordinates so a third co-located node is also offset.
-            seen_coords.add((node["latitude"], node["longitude"]))
-        else:
-            seen_coords.add(coord_tuple)
-
-        return node
 
     def _has_duplicate_coordinates(self, node: dict[str, Any], existing_nodes: list[dict[str, Any]]) -> bool:
         """Check if a node has duplicate coordinates with any existing nodes.
