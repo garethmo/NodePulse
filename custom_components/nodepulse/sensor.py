@@ -84,6 +84,7 @@ async def async_setup_entry(
             NodeUptimeSensor(coordinator, entry, node_id),
             NodeRoleSensor(coordinator, entry, node_id),
             NodeGasResistanceSensor(coordinator, entry, node_id),
+            NodeGpsSensor(coordinator, entry, node_id),
             NodeLatitudeSensor(coordinator, entry, node_id),
             NodeLongitudeSensor(coordinator, entry, node_id),
             NodeAltitudeSensor(coordinator, entry, node_id),
@@ -116,7 +117,7 @@ async def async_setup_entry(
             if isinstance(sensor, (NodeMessageReceivedSensor, NodeMessageSentSensor)):
                 out.append(sensor)
             # GPS sensors only if node has coordinates
-            elif isinstance(sensor, (NodeLatitudeSensor, NodeLongitudeSensor, NodeAltitudeSensor, NodeDistanceSensor)):
+            elif isinstance(sensor, (NodeGpsSensor, NodeLatitudeSensor, NodeLongitudeSensor, NodeAltitudeSensor, NodeDistanceSensor)):
                 if has_gps:
                     out.append(sensor)
             # Environmental sensors only if node has environmental data
@@ -340,6 +341,50 @@ class NodePressureSensor(_NodeSensorBase):
         super().__init__(coordinator, entry, node_id)
         self._attr_unique_id = f"{entry.entry_id}_{node_id}_pressure"
         self._attr_name = "Pressure"
+
+
+class NodeGpsSensor(_NodeSensorBase):
+    """Combined GPS sensor with latitude, longitude, and altitude attributes for Home Assistant maps.
+
+    This sensor exposes the node's GPS position in a format that Home Assistant's
+    map cards can use. The sensor state shows the GPS fix status (timestamp), while
+    the coordinates are exposed as attributes (latitude, longitude, altitude).
+    """
+    _metric_key = "last_position_fix"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_icon = "mdi:map-marker"
+
+    def __init__(self, coordinator, entry, node_id):
+        super().__init__(coordinator, entry, node_id)
+        self._attr_unique_id = f"{entry.entry_id}_{node_id}_gps"
+        self._attr_name = "GPS"
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        """Expose GPS coordinates as attributes for Home Assistant maps."""
+        node = self._get_node()
+        if not node:
+            return {}
+
+        attrs = {}
+        lat = node.get("latitude")
+        lon = node.get("longitude")
+        alt = node.get("altitude")
+
+        if lat is not None:
+            attrs["latitude"] = lat
+        if lon is not None:
+            attrs["longitude"] = lon
+        if alt is not None:
+            attrs["altitude"] = alt
+
+        # Also include the last position fix timestamp
+        fix_time = node.get("last_position_fix")
+        if fix_time is not None:
+            attrs["last_position_fix"] = fix_time
+
+        return attrs
 
 
 class NodeLatitudeSensor(_NodeSensorBase):
