@@ -4641,6 +4641,13 @@ class MeshtasticConnection:
                     node_to_add = self._apply_coordinate_offset(dict(cached[node_id]), seen_coords)
                     result.append(node_to_add)
                     result_ids.add(node_id)
+                    # Track the ORIGINAL (non-offset) coordinates in seen_coords,
+                    # not the offset coordinates. This prevents re-applying the same
+                    # offset on every poll when the library returns the original coords.
+                    orig_lat = cached[node_id].get("latitude")
+                    orig_lng = cached[node_id].get("longitude")
+                    if orig_lat is not None and orig_lng is not None:
+                        seen_coords.add((orig_lat, orig_lng))
                 else:
                     entry["traceroute"] = None
                     # Node is newly seen in live radio data — explicitly mark as
@@ -4663,6 +4670,10 @@ class MeshtasticConnection:
                     entry = self._apply_coordinate_offset(dict(entry), seen_coords)
                     result.append(entry)
                     result_ids.add(node_id)
+                    # Track the ORIGINAL (non-offset) coordinates in seen_coords
+                    # to prevent re-applying the same offset on every poll.
+                    if entry["latitude"] is not None and entry["longitude"] is not None:
+                        seen_coords.add((entry["latitude"], entry["longitude"]))
                     newly_discovered.append(node_id)
 
             # Re-inject nodes the radio no longer reports (its bounded node DB
@@ -5465,7 +5476,7 @@ class MeshtasticConnection:
             node["latitude"] = lat + lat_offset
             node["longitude"] = lng + lng_offset
 
-            logger.info(
+            logger.debug(
                 "Applied deterministic coordinate offset to node %s (%s) to prevent map stacking",
                 normalize_node_id(node.get("id")), node.get("long_name", node.get("short_name", ""))
             )

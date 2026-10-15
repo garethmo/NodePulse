@@ -3870,6 +3870,19 @@ function exportMessagesCSV() {
 
 async function pollPackets() {
   if (state.currentView !== 'packets') return;
+  // Only poll packets if SSE is not connected (fallback mode)
+  // When SSE is active, packets arrive in real-time via SSE events
+  // and polling would overwrite the live state with slightly stale server data
+  if (_es && _es.readyState === EventSource.OPEN) {
+    // SSE is active - packets are updated in real-time via SSE events
+    // Only update sniffer stats from the poll (packets come from SSE)
+    try {
+      const stats = await fetchSnifferStats();
+      state.snifferStats = stats || null;
+      renderSnifferStats(state.snifferStats);
+    } catch (err) { console.warn('Sniffer stats poll failed:', err); }
+    return;
+  }
   try {
     const [pkts, stats] = await Promise.all([fetchPackets(200), fetchSnifferStats()]);
     state.packetLog    = pkts   || [];
