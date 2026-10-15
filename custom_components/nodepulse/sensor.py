@@ -347,18 +347,27 @@ class NodeGpsSensor(_NodeSensorBase):
     """Combined GPS sensor with latitude, longitude, and altitude attributes for Home Assistant maps.
 
     This sensor exposes the node's GPS position in a format that Home Assistant's
-    map cards can use. The sensor state shows the GPS fix status (timestamp), while
-    the coordinates are exposed as attributes (latitude, longitude, altitude).
+    map cards can use. The sensor state shows "home" when the node has a GPS fix,
+    while the coordinates are exposed as attributes (latitude, longitude, altitude).
     """
     _metric_key = "last_position_fix"
-    _attr_device_class = SensorDeviceClass.TIMESTAMP
-    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_icon = "mdi:map-marker"
 
     def __init__(self, coordinator, entry, node_id):
         super().__init__(coordinator, entry, node_id)
         self._attr_unique_id = f"{entry.entry_id}_{node_id}_gps"
         self._attr_name = "GPS"
+
+    @property
+    def native_value(self) -> str:
+        """Return 'home' when GPS coordinates are available."""
+        node = self._get_node()
+        if node is None:
+            return None
+        # Return 'home' when we have GPS coordinates (standard for location sensors)
+        if node.get("latitude") is not None and node.get("longitude") is not None:
+            return "home"
+        return None
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
