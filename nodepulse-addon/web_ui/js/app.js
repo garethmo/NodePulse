@@ -3615,11 +3615,12 @@ function renderPacketTable() {
     const portnumDesc  = _portnumDesc(portnumLabel);
     const titleAttr    = portnumDesc ? ` title="${escapeHtml(portnumDesc)}"` : '';
     const descSpan     = portnumDesc ? `<span class="portnum-badge-desc">${escapeHtml(portnumDesc)}</span>` : '';
+    const outboundBadge = pkt.outbound ? '<span class="outbound-badge" title="Outbound packet (sent from this node)">OUT</span>' : '';
     const tr = document.createElement('tr');
-    tr.className = 'packet-row';
+    tr.className = 'packet-row' + (pkt.outbound ? ' outbound-row' : '');
     tr.innerHTML = `
       <td class="packet-time">${_fmtPacketTime(pkt.timestamp)}</td>
-      <td><span class="portnum-badge" style="color:${color}"${titleAttr}>${escapeHtml(portnumLabel)}${descSpan}</span></td>
+      <td><span class="portnum-badge" style="color:${color}"${titleAttr}>${escapeHtml(portnumLabel)}${descSpan}</span>${outboundBadge}</td>
       <td class="mono pkt-id">${escapeHtml(pkt.from_id||'\u2014')}${shortNameFor(pkt.from_id) ? ' <span class="pkt-name">'+escapeHtml(shortNameFor(pkt.from_id))+'</span>' : ''}</td>
       <td class="mono pkt-id">${escapeHtml(pkt.to_id||'\u2014')}${shortNameFor(pkt.to_id) ? ' <span class="pkt-name">'+escapeHtml(shortNameFor(pkt.to_id))+'</span>' : ''}</td>
       <td>${pkt.channel??'\u2014'}${flaggedChannels.has(pkt.channel) ? ' <span class="sec-pkt-badge" title="Weak or no encryption on this channel">\uD83D\uDD13</span>' : ''}</td>

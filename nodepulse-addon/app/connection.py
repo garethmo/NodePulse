@@ -2591,6 +2591,13 @@ class MeshtasticConnection:
             }
             with self._packet_log_lock:
                 self._packet_log.appendleft(entry)
+            # Push the entry to every connected SSE client immediately so the
+            # Packet Inspector updates in real-time instead of waiting for the
+            # next 60-second pollData cycle. The SSE broadcast is non-blocking
+            # (call_soon_threadsafe) and the per-client queue evicts stale
+            # entries automatically when full, so this never stalls the send
+            # thread or overwhelms slow clients.
+            _broadcast_sse_event("packet", entry)
         except Exception as exc:  # noqa: BLE001
             logger.debug("Error capturing outbound packet to log (ignored): %s", exc)
 
@@ -4597,13 +4604,13 @@ class MeshtasticConnection:
                         entry_lat is not None and entry_lng is not None
                         and (entry_lat, entry_lng) != self._last_lib_pos.get(node_id)
                     )
-                    if entry_lat is not None and entry_lng is not None:
-                        self._last_lib_pos[node_id] = (entry_lat, entry_lng)
 
                     if lib_moved:
                         # Library got a genuinely new fix this cycle — the
                         # coords from update() stand; refresh the timestamp.
                         cached[node_id]["last_position_fix"] = int(time.time())
+                        # Only update _last_lib_pos when we actually accept the library coords
+                        self._last_lib_pos[node_id] = (entry_lat, entry_lng)
                     elif (
                         prev_lat is not None and prev_lng is not None
                         and (prev_lat, prev_lng) != (entry_lat, entry_lng)
@@ -4616,6 +4623,13 @@ class MeshtasticConnection:
                             cached[node_id]["last_position_fix"] = prev_fix
                         if prev_fix_count is not None:
                             cached[node_id]["position_fix_count"] = prev_fix_count
+                    # If library coords are None/empty but cache has coords, always keep cache
+                    elif entry_lat is None or entry_lng is None:
+                        if prev_lat is not None and prev_lng is not None:
+                            cached[node_id]["latitude"] = prev_lat
+                            cached[node_id]["longitude"] = prev_lng
+                            if prev_fix is not None:
+                                cached[node_id]["last_position_fix"] = prev_fix
 
                     if entry["altitude"] is None and prev_alt is not None:
                         cached[node_id]["altitude"] = prev_alt
@@ -5305,6 +5319,11 @@ class MeshtasticConnection:
 
         try:
             iface.sendMqttClientProxyMessage(topic, data)
+            # Log the outbound MQTT proxy packet for packet inspector visibility
+            self._capture_outbound_packet_log(
+                portnum="MQTT_PROXY",
+                decoded={"topic": topic, "data_size": len(data)},
+            )
             return True
         except Exception as exc:  # noqa: BLE001
             logger.error("Failed to send MQTT proxy message to radio: %s", exc)
