@@ -16,6 +16,7 @@ Filter pipeline (in evaluation order — cheapest check first):
      distant nodes from bypassing the geo-fence by sending non-position
      packet types (TEXT_MESSAGE_APP, TELEMETRY_APP, etc.).
 """
+
 import asyncio
 import contextlib
 import logging
@@ -77,7 +78,9 @@ class MqttBridge:
         if not self.enabled:
             logger.info("MQTT bridge is disabled in config")
             return
-        logger.info("Starting MQTT bridge (address=%s, port=%s)", self.address, self.port)
+        logger.info(
+            "Starting MQTT bridge (address=%s, port=%s)", self.address, self.port
+        )
         self._task = asyncio.create_task(self._run_loop())
 
     async def stop(self) -> None:
@@ -94,7 +97,8 @@ class MqttBridge:
             try:
                 logger.info(
                     "Connecting to MQTT broker (address=%s, port=%s)",
-                    self.address, self.port,
+                    self.address,
+                    self.port,
                 )
                 async with aiomqtt.Client(
                     hostname=self.address,
@@ -116,7 +120,8 @@ class MqttBridge:
             except aiomqtt.MqttError as exc:
                 logger.warning(
                     "MQTT connection error — reconnecting (delay=%ss): %s",
-                    reconnect_interval, exc,
+                    reconnect_interval,
+                    exc,
                 )
                 await asyncio.sleep(reconnect_interval)
                 reconnect_interval = min(reconnect_interval * 2, _RECONNECT_MAX_S)
@@ -126,7 +131,8 @@ class MqttBridge:
             except Exception as exc:
                 logger.error(
                     "Unexpected error in MQTT loop — reconnecting (delay=%ss): %s",
-                    reconnect_interval, exc,
+                    reconnect_interval,
+                    exc,
                     exc_info=True,
                 )
                 await asyncio.sleep(reconnect_interval)
@@ -226,4 +232,7 @@ class MqttBridge:
         if lat is None or lng is None:
             # No coordinate data — allow through (unknown location).
             return True
-        return self.lat_min <= float(lat) <= self.lat_max and self.lng_min <= float(lng) <= self.lng_max
+        return (
+            self.lat_min <= float(lat) <= self.lat_max
+            and self.lng_min <= float(lng) <= self.lng_max
+        )

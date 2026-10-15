@@ -7,6 +7,7 @@ Tests exercise the full public API:
   - update_cached_remote_config  (new node, overwrite)
   - patch_cached_remote_config   (new section, existing section, missing node)
 """
+
 import json
 import os
 import tempfile
@@ -18,14 +19,19 @@ import app.remote_cache as rc
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _with_tmp(fn):
     """Decorator that runs a test inside a fresh temp dir and patches rc paths."""
+
     def wrapper():
         with tempfile.TemporaryDirectory() as tmp:
             cache_file = os.path.join(tmp, "remote_configs.json")
-            with patch.object(rc, "_DATA_DIR", tmp), \
-                 patch.object(rc, "_CACHE_FILE", cache_file):
+            with (
+                patch.object(rc, "_DATA_DIR", tmp),
+                patch.object(rc, "_CACHE_FILE", cache_file),
+            ):
                 fn(tmp, cache_file)
+
     return wrapper
 
 
@@ -33,12 +39,15 @@ def _with_tmp(fn):
 # load_remote_cache
 # ---------------------------------------------------------------------------
 
+
 class TestLoadRemoteCache:
     def test_returns_empty_dict_when_file_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
             cache_file = os.path.join(tmp, "remote_configs.json")
-            with patch.object(rc, "_DATA_DIR", tmp), \
-                 patch.object(rc, "_CACHE_FILE", cache_file):
+            with (
+                patch.object(rc, "_DATA_DIR", tmp),
+                patch.object(rc, "_CACHE_FILE", cache_file),
+            ):
                 assert rc.load_remote_cache() == {}
 
     def test_returns_empty_dict_on_corrupt_json(self):
@@ -46,8 +55,10 @@ class TestLoadRemoteCache:
             cache_file = os.path.join(tmp, "remote_configs.json")
             with open(cache_file, "w") as f:
                 f.write("this is not json {{{")
-            with patch.object(rc, "_DATA_DIR", tmp), \
-                 patch.object(rc, "_CACHE_FILE", cache_file):
+            with (
+                patch.object(rc, "_DATA_DIR", tmp),
+                patch.object(rc, "_CACHE_FILE", cache_file),
+            ):
                 result = rc.load_remote_cache()
             assert result == {}
 
@@ -57,8 +68,10 @@ class TestLoadRemoteCache:
             payload = {"!aabbccdd": {"lora": {"hop_limit": 3}}}
             with open(cache_file, "w") as f:
                 json.dump(payload, f)
-            with patch.object(rc, "_DATA_DIR", tmp), \
-                 patch.object(rc, "_CACHE_FILE", cache_file):
+            with (
+                patch.object(rc, "_DATA_DIR", tmp),
+                patch.object(rc, "_CACHE_FILE", cache_file),
+            ):
                 result = rc.load_remote_cache()
             assert result == payload
 
@@ -66,8 +79,10 @@ class TestLoadRemoteCache:
         with tempfile.TemporaryDirectory() as root:
             data_dir = os.path.join(root, "nested", "data")
             cache_file = os.path.join(data_dir, "remote_configs.json")
-            with patch.object(rc, "_DATA_DIR", data_dir), \
-                 patch.object(rc, "_CACHE_FILE", cache_file):
+            with (
+                patch.object(rc, "_DATA_DIR", data_dir),
+                patch.object(rc, "_CACHE_FILE", cache_file),
+            ):
                 rc.load_remote_cache()
             # Directory must now exist.
             assert os.path.isdir(data_dir)
@@ -77,13 +92,16 @@ class TestLoadRemoteCache:
 # save_remote_cache
 # ---------------------------------------------------------------------------
 
+
 class TestSaveRemoteCache:
     def test_saves_to_disk(self):
         with tempfile.TemporaryDirectory() as tmp:
             cache_file = os.path.join(tmp, "remote_configs.json")
             payload = {"!11223344": {"device": {"role": "CLIENT"}}}
-            with patch.object(rc, "_DATA_DIR", tmp), \
-                 patch.object(rc, "_CACHE_FILE", cache_file):
+            with (
+                patch.object(rc, "_DATA_DIR", tmp),
+                patch.object(rc, "_CACHE_FILE", cache_file),
+            ):
                 rc.save_remote_cache(payload)
             with open(cache_file) as f:
                 on_disk = json.load(f)
@@ -94,8 +112,10 @@ class TestSaveRemoteCache:
         with tempfile.TemporaryDirectory() as tmp:
             cache_file = os.path.join(tmp, "remote_configs.json")
             tmp_path = cache_file + ".tmp"
-            with patch.object(rc, "_DATA_DIR", tmp), \
-                 patch.object(rc, "_CACHE_FILE", cache_file):
+            with (
+                patch.object(rc, "_DATA_DIR", tmp),
+                patch.object(rc, "_CACHE_FILE", cache_file),
+            ):
                 rc.save_remote_cache({"!aabb": {}})
             assert not os.path.exists(tmp_path)
 
@@ -108,8 +128,10 @@ class TestSaveRemoteCache:
                 json.dump(original, f)
 
             bad_payload = {"!bad": object()}  # not JSON-serialisable
-            with patch.object(rc, "_DATA_DIR", tmp), \
-                 patch.object(rc, "_CACHE_FILE", cache_file):
+            with (
+                patch.object(rc, "_DATA_DIR", tmp),
+                patch.object(rc, "_CACHE_FILE", cache_file),
+            ):
                 rc.save_remote_cache(bad_payload)  # must not raise
 
             # Original file must be intact.
@@ -122,8 +144,10 @@ class TestSaveRemoteCache:
             cache_file = os.path.join(tmp, "remote_configs.json")
             tmp_path = cache_file + ".tmp"
             bad_payload = {"!bad": object()}
-            with patch.object(rc, "_DATA_DIR", tmp), \
-                 patch.object(rc, "_CACHE_FILE", cache_file):
+            with (
+                patch.object(rc, "_DATA_DIR", tmp),
+                patch.object(rc, "_CACHE_FILE", cache_file),
+            ):
                 rc.save_remote_cache(bad_payload)
             assert not os.path.exists(tmp_path)
 
@@ -132,12 +156,15 @@ class TestSaveRemoteCache:
 # get_cached_remote_config
 # ---------------------------------------------------------------------------
 
+
 class TestGetCachedRemoteConfig:
     def test_returns_none_when_cache_empty(self):
         with tempfile.TemporaryDirectory() as tmp:
             cache_file = os.path.join(tmp, "remote_configs.json")
-            with patch.object(rc, "_DATA_DIR", tmp), \
-                 patch.object(rc, "_CACHE_FILE", cache_file):
+            with (
+                patch.object(rc, "_DATA_DIR", tmp),
+                patch.object(rc, "_CACHE_FILE", cache_file),
+            ):
                 assert rc.get_cached_remote_config("!aabbccdd") is None
 
     def test_returns_config_for_known_node(self):
@@ -146,8 +173,10 @@ class TestGetCachedRemoteConfig:
             payload = {"!aabbccdd": {"lora": {"hop_limit": 5}}}
             with open(cache_file, "w") as f:
                 json.dump(payload, f)
-            with patch.object(rc, "_DATA_DIR", tmp), \
-                 patch.object(rc, "_CACHE_FILE", cache_file):
+            with (
+                patch.object(rc, "_DATA_DIR", tmp),
+                patch.object(rc, "_CACHE_FILE", cache_file),
+            ):
                 result = rc.get_cached_remote_config("!aabbccdd")
             assert result == {"lora": {"hop_limit": 5}}
 
@@ -156,8 +185,10 @@ class TestGetCachedRemoteConfig:
             cache_file = os.path.join(tmp, "remote_configs.json")
             with open(cache_file, "w") as f:
                 json.dump({"!known": {}}, f)
-            with patch.object(rc, "_DATA_DIR", tmp), \
-                 patch.object(rc, "_CACHE_FILE", cache_file):
+            with (
+                patch.object(rc, "_DATA_DIR", tmp),
+                patch.object(rc, "_CACHE_FILE", cache_file),
+            ):
                 assert rc.get_cached_remote_config("!unknown") is None
 
 
@@ -165,12 +196,15 @@ class TestGetCachedRemoteConfig:
 # update_cached_remote_config
 # ---------------------------------------------------------------------------
 
+
 class TestUpdateCachedRemoteConfig:
     def test_adds_new_node(self):
         with tempfile.TemporaryDirectory() as tmp:
             cache_file = os.path.join(tmp, "remote_configs.json")
-            with patch.object(rc, "_DATA_DIR", tmp), \
-                 patch.object(rc, "_CACHE_FILE", cache_file):
+            with (
+                patch.object(rc, "_DATA_DIR", tmp),
+                patch.object(rc, "_CACHE_FILE", cache_file),
+            ):
                 rc.update_cached_remote_config("!aabb1122", {"device": {}})
                 result = rc.load_remote_cache()
             assert "!aabb1122" in result
@@ -180,8 +214,10 @@ class TestUpdateCachedRemoteConfig:
             cache_file = os.path.join(tmp, "remote_configs.json")
             with open(cache_file, "w") as f:
                 json.dump({"!aabb1122": {"lora": {"hop_limit": 3}}}, f)
-            with patch.object(rc, "_DATA_DIR", tmp), \
-                 patch.object(rc, "_CACHE_FILE", cache_file):
+            with (
+                patch.object(rc, "_DATA_DIR", tmp),
+                patch.object(rc, "_CACHE_FILE", cache_file),
+            ):
                 rc.update_cached_remote_config("!aabb1122", {"lora": {"hop_limit": 7}})
                 result = rc.load_remote_cache()
             assert result["!aabb1122"]["lora"]["hop_limit"] == 7
@@ -191,8 +227,10 @@ class TestUpdateCachedRemoteConfig:
             cache_file = os.path.join(tmp, "remote_configs.json")
             with open(cache_file, "w") as f:
                 json.dump({"!aaaaaaaa": {"device": {}}}, f)
-            with patch.object(rc, "_DATA_DIR", tmp), \
-                 patch.object(rc, "_CACHE_FILE", cache_file):
+            with (
+                patch.object(rc, "_DATA_DIR", tmp),
+                patch.object(rc, "_CACHE_FILE", cache_file),
+            ):
                 rc.update_cached_remote_config("!bbbbbbbb", {"lora": {}})
                 result = rc.load_remote_cache()
             assert "!aaaaaaaa" in result
@@ -203,14 +241,17 @@ class TestUpdateCachedRemoteConfig:
 # patch_cached_remote_config
 # ---------------------------------------------------------------------------
 
+
 class TestPatchCachedRemoteConfig:
     def test_patches_existing_section(self):
         with tempfile.TemporaryDirectory() as tmp:
             cache_file = os.path.join(tmp, "remote_configs.json")
             with open(cache_file, "w") as f:
                 json.dump({"!aabb": {"lora": {"hop_limit": 3, "tx_power": 20}}}, f)
-            with patch.object(rc, "_DATA_DIR", tmp), \
-                 patch.object(rc, "_CACHE_FILE", cache_file):
+            with (
+                patch.object(rc, "_DATA_DIR", tmp),
+                patch.object(rc, "_CACHE_FILE", cache_file),
+            ):
                 rc.patch_cached_remote_config("!aabb", "lora", {"hop_limit": 7})
                 result = rc.load_remote_cache()
             # hop_limit is updated, tx_power is preserved.
@@ -222,8 +263,10 @@ class TestPatchCachedRemoteConfig:
             cache_file = os.path.join(tmp, "remote_configs.json")
             with open(cache_file, "w") as f:
                 json.dump({"!aabb": {}}, f)
-            with patch.object(rc, "_DATA_DIR", tmp), \
-                 patch.object(rc, "_CACHE_FILE", cache_file):
+            with (
+                patch.object(rc, "_DATA_DIR", tmp),
+                patch.object(rc, "_CACHE_FILE", cache_file),
+            ):
                 rc.patch_cached_remote_config("!aabb", "device", {"role": "ROUTER"})
                 result = rc.load_remote_cache()
             assert result["!aabb"]["device"]["role"] == "ROUTER"
@@ -234,8 +277,10 @@ class TestPatchCachedRemoteConfig:
             cache_file = os.path.join(tmp, "remote_configs.json")
             with open(cache_file, "w") as f:
                 json.dump({}, f)
-            with patch.object(rc, "_DATA_DIR", tmp), \
-                 patch.object(rc, "_CACHE_FILE", cache_file):
+            with (
+                patch.object(rc, "_DATA_DIR", tmp),
+                patch.object(rc, "_CACHE_FILE", cache_file),
+            ):
                 rc.patch_cached_remote_config("!unknown", "lora", {"hop_limit": 5})
                 result = rc.load_remote_cache()
             # Unknown node must NOT be created as a side-effect.

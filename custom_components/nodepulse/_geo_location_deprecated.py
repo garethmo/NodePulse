@@ -7,6 +7,7 @@ appears immediately; nodes without a fix are registered but hold no position,
 so they appear on the map as soon as their first GPS update arrives without
 needing a re-discovery cycle.
 """
+
 import logging
 from typing import Any, Dict, Optional
 

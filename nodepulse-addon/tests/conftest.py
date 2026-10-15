@@ -6,7 +6,9 @@ import pytest
 import pytest_asyncio
 
 # Add app to path so we can import it
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "app")))
+sys.path.insert(
+    0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "app"))
+)
 
 # Route is referenced by _abort_cdn below; the browser import stays local to the
 # async_page fixture so a bare pytest run (no Playwright) still collects.
@@ -29,9 +31,10 @@ def mock_config():
         scan_interval=30,
         ignored_nodes=[],
         mqtt_enabled=False,
-        telegram_enabled=False
+        telegram_enabled=False,
     )
     return config
+
 
 @pytest.fixture
 def mock_connection():
@@ -51,17 +54,39 @@ def mock_connection():
     # Realistic in-memory state backing the async methods.
     state = {
         "nodes": [
-            {"id": "!12345678", "long_name": "Test Node 1", "short_name": "TN1",
-             "snr": 5.0, "snr_avg": 5.0, "battery_level": 80, "latitude": 40.0,
-             "longitude": -74.0, "hops_away": 1},
-            {"id": "!87654321", "long_name": "Test Node 2", "short_name": "TN2",
-             "snr": -2.0, "snr_avg": -2.0, "battery_level": 50, "latitude": 41.0,
-             "longitude": -73.0, "hops_away": 2},
+            {
+                "id": "!12345678",
+                "long_name": "Test Node 1",
+                "short_name": "TN1",
+                "snr": 5.0,
+                "snr_avg": 5.0,
+                "battery_level": 80,
+                "latitude": 40.0,
+                "longitude": -74.0,
+                "hops_away": 1,
+            },
+            {
+                "id": "!87654321",
+                "long_name": "Test Node 2",
+                "short_name": "TN2",
+                "snr": -2.0,
+                "snr_avg": -2.0,
+                "battery_level": 50,
+                "latitude": 41.0,
+                "longitude": -73.0,
+                "hops_away": 2,
+            },
         ],
         "channels": [{"index": 0, "name": "LongFast", "role": "PRIMARY"}],
         "messages": [
-            {"id": "msg1", "text": "Hello world", "from_id": "!12345678",
-             "channel": 0, "timestamp": 1000000, "conversation": "ch:0"},
+            {
+                "id": "msg1",
+                "text": "Hello world",
+                "from_id": "!12345678",
+                "channel": 0,
+                "timestamp": 1000000,
+                "conversation": "ch:0",
+            },
         ],
         "waypoints": [],
         "tags": {},
@@ -73,7 +98,11 @@ def mock_connection():
     }
 
     async def _get_status():
-        return {"connected": True, "uptime": 1000, "my_info": {"my_node_id": "!99999999"}}
+        return {
+            "connected": True,
+            "uptime": 1000,
+            "my_info": {"my_node_id": "!99999999"},
+        }
 
     async def _get_nodes():
         return list(state["nodes"])
@@ -144,8 +173,12 @@ def mock_connection():
         return list(state["packet_log"])
 
     async def _get_sniffer_stats():
-        return {"packets_per_minute": 0, "unique_nodes": 0, "total_captured": 0,
-                "portnum_distribution": {}}
+        return {
+            "packets_per_minute": 0,
+            "unique_nodes": 0,
+            "total_captured": 0,
+            "portnum_distribution": {},
+        }
 
     async def _get_device_config():
         return dict(state["device_config"])
@@ -211,12 +244,14 @@ def mock_connection():
 
     return conn
 
+
 @pytest.fixture
 def mock_mqtt():
     mqtt = MagicMock()
     mqtt.start = AsyncMock()
     mqtt.stop = AsyncMock()
     return mqtt
+
 
 @pytest.fixture
 def mock_telegram():
@@ -226,6 +261,7 @@ def mock_telegram():
     tg.forward_mesh_message = AsyncMock()
     return tg
 
+
 @pytest.fixture
 def app(mock_config, mock_connection, mock_mqtt, mock_telegram):
     app = build_app(mock_config)
@@ -233,22 +269,27 @@ def app(mock_config, mock_connection, mock_mqtt, mock_telegram):
     app["connection"] = mock_connection
     app["mqtt_bridge"] = mock_mqtt
     app["telegram_bot"] = mock_telegram
-    
+
     # Also override the startup tasks so it doesn't try to run real loops
     app.on_startup.clear()
-    
+
     async def mock_startup(app):
         pass
+
     app.on_startup.append(mock_startup)
-    
-    with patch("app.routes._relay_to_integration", new_callable=AsyncMock) as mock_relay:
+
+    with patch(
+        "app.routes._relay_to_integration", new_callable=AsyncMock
+    ) as mock_relay:
         mock_relay.return_value = {"nodes": []}
         yield app
+
 
 @pytest_asyncio.fixture
 async def aio_server(aiohttp_server, app):
     server = await aiohttp_server(app)
     return server
+
 
 # ---------------------------------------------------------------------------
 # Minimal stub JS for CDN libraries that the Web UI imports.
@@ -384,7 +425,9 @@ async def async_page():
             context = await browser.new_context()
             page = await context.new_page()
             # Inject stubs before any scripts load to bypass SRI hash errors on intercept
-            await page.add_init_script(_LEAFLET_STUB + "\n" + _CHARTJS_STUB + "\n" + _VIS_STUB)
+            await page.add_init_script(
+                _LEAFLET_STUB + "\n" + _CHARTJS_STUB + "\n" + _VIS_STUB
+            )
             # Abort all CDN requests so they fail fast
             await page.route("**unpkg.com**", _abort_cdn)
             await page.route("**cdn.jsdelivr.net**", _abort_cdn)
@@ -392,4 +435,3 @@ async def async_page():
             await browser.close()
     except Exception as exc:  # pragma: no cover - env-dependent  # noqa: BLE001
         pytest.skip(f"Playwright browser unavailable: {exc}")
-

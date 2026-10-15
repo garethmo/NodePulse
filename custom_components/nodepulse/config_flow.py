@@ -12,6 +12,7 @@ Steps:
 We also implement OptionsFlowHandler so the user can change the scan interval
 after initial setup without removing and re-adding the integration.
 """
+
 import logging
 from typing import Any, Dict, Optional
 
@@ -38,17 +39,28 @@ logger = logging.getLogger(__name__)
 
 # Validation schema for the initial setup step.
 # The suggested value uses the correct modern HAOS Supervisor DNS name.
-_STEP_USER_SCHEMA = vol.Schema({
-    vol.Required(CONF_HOST, description={"suggested_value": "http://local-nodepulse"}): str,
-    vol.Optional(CONF_ACCESS_KEY, default=""): str,
-    vol.Optional(CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL): vol.All(int, vol.Range(min=10, max=300)),
-})
+_STEP_USER_SCHEMA = vol.Schema(
+    {
+        vol.Required(
+            CONF_HOST, description={"suggested_value": "http://local-nodepulse"}
+        ): str,
+        vol.Optional(CONF_ACCESS_KEY, default=""): str,
+        vol.Optional(CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL): vol.All(
+            int, vol.Range(min=10, max=300)
+        ),
+    }
+)
 
 # Schema for the options flow (allows updating scan_interval post-setup).
-_OPTIONS_SCHEMA = vol.Schema({
-    vol.Optional(CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL): vol.All(int, vol.Range(min=10, max=300)),
-    vol.Optional(CONF_IGNORED_NODES, default=""): str,
-})
+_OPTIONS_SCHEMA = vol.Schema(
+    {
+        vol.Optional(CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL): vol.All(
+            int, vol.Range(min=10, max=300)
+        ),
+        vol.Optional(CONF_IGNORED_NODES, default=""): str,
+    }
+)
+
 
 # Extra validation to ensure only supported keys are present
 def _validate_options_data(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -157,16 +169,22 @@ class NodePulseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     data={
                         CONF_HOST: working_host,
                         CONF_ACCESS_KEY: access_key,
-                        CONF_SCAN_INTERVAL: user_input.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
+                        CONF_SCAN_INTERVAL: user_input.get(
+                            CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
+                        ),
                     },
                     options={
-                        CONF_SCAN_INTERVAL: user_input.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
+                        CONF_SCAN_INTERVAL: user_input.get(
+                            CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
+                        ),
                         CONF_IGNORED_NODES: [],
                     },
                 )
 
             errors["base"] = "cannot_connect"
-            logger.warning("Could not validate connection to NodePulse addon (host=%s)", host)
+            logger.warning(
+                "Could not validate connection to NodePulse addon (host=%s)", host
+            )
 
         return self.async_show_form(
             step_id="user",
@@ -194,7 +212,7 @@ class NodePulseOptionsFlow(config_entries.OptionsFlow):
             # This prevents addon-specific fields (e.g., telegram_forward_channels)
             # from being saved to the integration config entry.
             user_input = _validate_options_data(user_input)
-            
+
             # Normalise the comma-separated ignored_nodes string into a clean
             # list (stripped, canonical "!hex" form) so the coordinator can
             # filter by direct membership rather than re-parsing a string.
@@ -218,14 +236,18 @@ class NodePulseOptionsFlow(config_entries.OptionsFlow):
         )
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema({
-                vol.Optional(
-                    CONF_SCAN_INTERVAL,
-                    default=self._config_entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
-                ): vol.All(int, vol.Range(min=10, max=300)),
-                vol.Optional(
-                    CONF_IGNORED_NODES,
-                    default=current_ignored,
-                ): str,
-            }),
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_SCAN_INTERVAL,
+                        default=self._config_entry.options.get(
+                            CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
+                        ),
+                    ): vol.All(int, vol.Range(min=10, max=300)),
+                    vol.Optional(
+                        CONF_IGNORED_NODES,
+                        default=current_ignored,
+                    ): str,
+                }
+            ),
         )

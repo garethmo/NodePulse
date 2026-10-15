@@ -17,6 +17,7 @@ Legacy / fallback patterns:
   http://addon_<slug>          ← Docker Compose / manual install
   http://<slug>                ← bare slug (rare custom setups)
 """
+
 import logging
 from typing import List
 

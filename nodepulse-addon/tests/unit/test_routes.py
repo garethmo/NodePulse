@@ -1,6 +1,7 @@
 """
 Unit tests for app/routes.py
 """
+
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -13,7 +14,15 @@ from app import routes
 # ----------------------------------------------------------------------
 # Helper to create a mock request
 # ----------------------------------------------------------------------
-def make_request(app_dict=None, method="GET", path="/", headers=None, body=None, query=None, match_info=None):
+def make_request(
+    app_dict=None,
+    method="GET",
+    path="/",
+    headers=None,
+    body=None,
+    query=None,
+    match_info=None,
+):
     """Create a mock aiohttp request."""
     request = MagicMock()
     request.method = method
@@ -38,6 +47,7 @@ def make_request(app_dict=None, method="GET", path="/", headers=None, body=None,
         request.content.read = AsyncMock(return_value=b"")
     request.json = AsyncMock(return_value=body or {})
     return request
+
 
 # ----------------------------------------------------------------------
 # _validate_destination tests
@@ -70,7 +80,10 @@ class TestValidateDestination:
 class TestApplyAccessKey:
     def test_apply_access_key_with_header(self):
         mock_conn = MagicMock()
-        request = make_request(app_dict={"connection": mock_conn}, headers={"X-NodePulse-Access-Key": "test-key"})
+        request = make_request(
+            app_dict={"connection": mock_conn},
+            headers={"X-NodePulse-Access-Key": "test-key"},
+        )
         routes._apply_access_key(request)
         mock_conn.set_access_key.assert_called_once_with("test-key")
 
@@ -142,7 +155,9 @@ class TestHandleStatus:
         for k, v in config_attrs.items():
             setattr(mock_config, k, v)
 
-        request = make_request(app_dict={"connection": mock_conn, "config": mock_config})
+        request = make_request(
+            app_dict={"connection": mock_conn, "config": mock_config}
+        )
         resp = await routes.handle_status(request)
         assert resp.status == 200
         body = json.loads(resp.body)
@@ -191,7 +206,9 @@ class TestHandleStatus:
         for k, v in config_attrs.items():
             setattr(mock_config, k, v)
 
-        request = make_request(app_dict={"connection": mock_conn, "config": mock_config})
+        request = make_request(
+            app_dict={"connection": mock_conn, "config": mock_config}
+        )
         resp = await routes.handle_status(request)
         assert resp.status == 200
         body = json.loads(resp.body)
@@ -206,12 +223,14 @@ class TestHandleStatus:
         mock_conn._scheduled_messages_lock.__enter__ = MagicMock(return_value=None)
         mock_conn._scheduled_messages_lock.__exit__ = MagicMock(return_value=None)
         mock_config = MagicMock()
-        request = make_request(app_dict={"connection": mock_conn, "config": mock_config})
+        request = make_request(
+            app_dict={"connection": mock_conn, "config": mock_config}
+        )
         resp = await routes.handle_status(request)
         assert resp.status == 500
         body = json.loads(resp.body)
         assert body == {"error": "Failed to retrieve status"}
-        
+
 
 # ----------------------------------------------------------------------
 # handle_nodes tests
@@ -221,7 +240,9 @@ class TestHandleNodes:
     async def test_handle_nodes_success(self):
         mock_conn = AsyncMock()
         mock_conn.get_nodes.return_value = [{"id": "!12345678", "name": "Node1"}]
-        request = make_request(app_dict={"connection": mock_conn}, method="GET", path="/api/nodes")
+        request = make_request(
+            app_dict={"connection": mock_conn}, method="GET", path="/api/nodes"
+        )
         resp = await routes.handle_nodes(request)
         assert resp.status == 200
         body = json.loads(resp.body)
@@ -233,7 +254,9 @@ class TestHandleNodes:
         """Test that handle_nodes returns 500 on connection error."""
         mock_conn = AsyncMock()
         mock_conn.get_nodes.side_effect = Exception("DB error")
-        request = make_request(app_dict={"connection": mock_conn}, method="GET", path="/api/nodes")
+        request = make_request(
+            app_dict={"connection": mock_conn}, method="GET", path="/api/nodes"
+        )
         resp = await routes.handle_nodes(request)
         assert resp.status == 500
         body = json.loads(resp.body)
@@ -248,7 +271,9 @@ class TestHandleClearStaleNodes:
     async def test_handle_clear_stale_nodes_success(self):
         mock_conn = AsyncMock()
         mock_conn.clear_stale_nodes.return_value = 5
-        request = make_request(app_dict={"connection": mock_conn}, method="POST", path="/api/nodes/clear")
+        request = make_request(
+            app_dict={"connection": mock_conn}, method="POST", path="/api/nodes/clear"
+        )
         resp = await routes.handle_clear_stale_nodes(request)
         assert resp.status == 200
         body = json.loads(resp.body)
@@ -275,7 +300,9 @@ class TestHandleClearStaleNodes:
     async def test_handle_clear_stale_nodes_error(self):
         mock_conn = AsyncMock()
         mock_conn.clear_stale_nodes.side_effect = Exception("DB error")
-        request = make_request(app_dict={"connection": mock_conn}, method="POST", path="/api/nodes/clear")
+        request = make_request(
+            app_dict={"connection": mock_conn}, method="POST", path="/api/nodes/clear"
+        )
         resp = await routes.handle_clear_stale_nodes(request)
         assert resp.status == 500
         body = json.loads(resp.body)
@@ -305,7 +332,11 @@ class TestHandleCleanInvalidGPS:
     async def test_handle_clean_invalid_gps_error(self):
         mock_conn = AsyncMock()
         mock_conn.clean_invalid_gps_nodes.side_effect = Exception("DB error")
-        request = make_request(app_dict={"connection": mock_conn}, method="POST", path="/api/nodes/clean-invalid-gps")
+        request = make_request(
+            app_dict={"connection": mock_conn},
+            method="POST",
+            path="/api/nodes/clean-invalid-gps",
+        )
         resp = await routes.handle_clean_invalid_gps(request)
         assert resp.status == 500
         body = json.loads(resp.body)
@@ -320,7 +351,12 @@ class TestHandleDeleteNode:
     async def test_handle_delete_node_success(self):
         mock_conn = AsyncMock()
         mock_conn.delete_node.return_value = True
-        request = make_request(app_dict={"connection": mock_conn}, method="DELETE", path="/api/nodes/!123", match_info={"node_id": "!123"})
+        request = make_request(
+            app_dict={"connection": mock_conn},
+            method="DELETE",
+            path="/api/nodes/!123",
+            match_info={"node_id": "!123"},
+        )
         resp = await routes.handle_delete_node(request)
         assert resp.status == 200
         body = json.loads(resp.body)
@@ -331,7 +367,12 @@ class TestHandleDeleteNode:
     async def test_handle_delete_node_not_found(self):
         mock_conn = AsyncMock()
         mock_conn.delete_node.return_value = False  # Return False to indicate not found
-        request = make_request(app_dict={"connection": mock_conn}, method="DELETE", path="/api/nodes/!missing", match_info={"node_id": "!missing"})
+        request = make_request(
+            app_dict={"connection": mock_conn},
+            method="DELETE",
+            path="/api/nodes/!missing",
+            match_info={"node_id": "!missing"},
+        )
         resp = await routes.handle_delete_node(request)
         assert resp.status == 404
         body = json.loads(resp.body)
@@ -343,7 +384,12 @@ class TestHandleDeleteNode:
         """Test that handle_delete_node returns 500 when delete_node raises."""
         mock_conn = AsyncMock()
         mock_conn.delete_node.side_effect = Exception("DB error")
-        request = make_request(app_dict={"connection": mock_conn}, method="DELETE", path="/api/nodes/!error", match_info={"node_id": "!error"})
+        request = make_request(
+            app_dict={"connection": mock_conn},
+            method="DELETE",
+            path="/api/nodes/!error",
+            match_info={"node_id": "!error"},
+        )
         resp = await routes.handle_delete_node(request)
         assert resp.status == 500
         body = json.loads(resp.body)
@@ -357,8 +403,14 @@ class TestHandleSearchMessages:
     @pytest.mark.asyncio
     async def test_handle_search_messages_success(self):
         mock_conn = AsyncMock()
-        mock_conn.get_messages.return_value = [{"id": "!1", "text": "test message", "timestamp": 1234567890}]
-        request = make_request(app_dict={"connection": mock_conn}, method="GET", path="/api/messages/search")
+        mock_conn.get_messages.return_value = [
+            {"id": "!1", "text": "test message", "timestamp": 1234567890}
+        ]
+        request = make_request(
+            app_dict={"connection": mock_conn},
+            method="GET",
+            path="/api/messages/search",
+        )
         request.query = {"q": "test", "limit": "50"}
         resp = await routes.handle_search_messages(request)
         assert resp.status == 200
@@ -369,7 +421,11 @@ class TestHandleSearchMessages:
     @pytest.mark.asyncio
     async def test_handle_search_messages_missing_query(self):
         mock_conn = AsyncMock()
-        request = make_request(app_dict={"connection": mock_conn}, method="GET", path="/api/messages/search")
+        request = make_request(
+            app_dict={"connection": mock_conn},
+            method="GET",
+            path="/api/messages/search",
+        )
         request.query = {}
         resp = await routes.handle_search_messages(request)
         assert resp.status == 400
@@ -390,6 +446,7 @@ class TestHandleMessages:
         assert isinstance(body, list)
         mock_conn.get_messages.assert_called_once()
 
+
 # ----------------------------------------------------------------------
 # handle_export_messages tests
 # ----------------------------------------------------------------------
@@ -397,8 +454,13 @@ class TestHandleExportMessages:
     @pytest.mark.asyncio
     async def test_handle_export_messages_success(self):
         mock_conn = AsyncMock()
-        mock_conn.get_messages.return_value = [{"id": "!1", "text": "msg", "conversation": "ch:0"}]
-        request = make_request(app_dict={"connection": mock_conn}, query={"format": "json", "conversation": "ch:0"})
+        mock_conn.get_messages.return_value = [
+            {"id": "!1", "text": "msg", "conversation": "ch:0"}
+        ]
+        request = make_request(
+            app_dict={"connection": mock_conn},
+            query={"format": "json", "conversation": "ch:0"},
+        )
         resp = await routes.handle_export_messages(request)
         assert resp.status == 200
         mock_conn.get_messages.assert_called_once()
@@ -412,7 +474,9 @@ class TestHandleGetWaypoints:
     async def test_handle_get_waypoints_success(self):
         mock_conn = AsyncMock()
         mock_conn.get_waypoints.return_value = [{"name": "wp1", "lat": 1, "lng": 2}]
-        request = make_request(app_dict={"connection": mock_conn}, method="GET", path="/api/waypoints")
+        request = make_request(
+            app_dict={"connection": mock_conn}, method="GET", path="/api/waypoints"
+        )
         resp = await routes.handle_get_waypoints(request)
         assert resp.status == 200
         body = json.loads(resp.body)
@@ -428,7 +492,12 @@ class TestHandleAddWaypoint:
     async def test_handle_add_waypoint_success(self):
         mock_conn = AsyncMock()
         mock_conn.add_waypoint.return_value = {"name": "wp1"}
-        request = make_request(app_dict={"connection": mock_conn}, method="POST", path="/api/waypoints", body={"name": "wp1", "lat": 1, "lng": 2})
+        request = make_request(
+            app_dict={"connection": mock_conn},
+            method="POST",
+            path="/api/waypoints",
+            body={"name": "wp1", "lat": 1, "lng": 2},
+        )
         resp = await routes.handle_add_waypoint(request)
         assert resp.status == 200
         mock_conn.add_waypoint.assert_called_once()
@@ -438,7 +507,12 @@ class TestHandleAddWaypoint:
         """Test that handle_add_waypoint returns 500 on internal error."""
         mock_conn = AsyncMock()
         mock_conn.add_waypoint.side_effect = Exception("DB error")
-        request = make_request(app_dict={"connection": mock_conn}, method="POST", path="/api/waypoints", body={"name": "wp1", "lat": 1, "lng": 2})
+        request = make_request(
+            app_dict={"connection": mock_conn},
+            method="POST",
+            path="/api/waypoints",
+            body={"name": "wp1", "lat": 1, "lng": 2},
+        )
         resp = await routes.handle_add_waypoint(request)
         assert resp.status == 500
         body = json.loads(resp.body)
@@ -453,7 +527,13 @@ class TestHandleUpdateWaypoint:
     async def test_handle_update_waypoint_success(self):
         mock_conn = AsyncMock()
         mock_conn.update_waypoint.return_value = {"name": "wp1", "lat": 5}
-        request = make_request(app_dict={"connection": mock_conn}, method="PUT", path="/api/waypoints/wp1", body={"lat": 5}, match_info={"waypoint_id": "wp1"})
+        request = make_request(
+            app_dict={"connection": mock_conn},
+            method="PUT",
+            path="/api/waypoints/wp1",
+            body={"lat": 5},
+            match_info={"waypoint_id": "wp1"},
+        )
         resp = await routes.handle_update_waypoint(request)
         assert resp.status == 200
         mock_conn.update_waypoint.assert_called_once_with("wp1", {"lat": 5})
@@ -463,7 +543,13 @@ class TestHandleUpdateWaypoint:
         """Test that handle_update_waypoint returns 500 on internal error."""
         mock_conn = AsyncMock()
         mock_conn.update_waypoint.side_effect = Exception("Update failed")
-        request = make_request(app_dict={"connection": mock_conn}, method="PUT", path="/api/waypoints/wp1", body={"lat": 5}, match_info={"waypoint_id": "wp1"})
+        request = make_request(
+            app_dict={"connection": mock_conn},
+            method="PUT",
+            path="/api/waypoints/wp1",
+            body={"lat": 5},
+            match_info={"waypoint_id": "wp1"},
+        )
         resp = await routes.handle_update_waypoint(request)
         assert resp.status == 500
         body = json.loads(resp.body)
@@ -478,7 +564,12 @@ class TestHandleDeleteWaypoint:
     async def test_delete_waypoint_success(self):
         mock_conn = AsyncMock()
         mock_conn.delete_waypoint.return_value = True
-        request = make_request(app_dict={"connection": mock_conn}, method="DELETE", path="/api/waypoints/wp1", match_info={"waypoint_id": "wp1"})
+        request = make_request(
+            app_dict={"connection": mock_conn},
+            method="DELETE",
+            path="/api/waypoints/wp1",
+            match_info={"waypoint_id": "wp1"},
+        )
         resp = await routes.handle_delete_waypoint(request)
         assert resp.status == 200
         body = json.loads(resp.body)
@@ -488,8 +579,15 @@ class TestHandleDeleteWaypoint:
     @pytest.mark.asyncio
     async def test_delete_waypoint_not_found(self):
         mock_conn = AsyncMock()
-        mock_conn.delete_waypoint.return_value = False  # Return False to indicate not found
-        request = make_request(app_dict={"connection": mock_conn}, method="DELETE", path="/api/waypoints/wp1", match_info={"waypoint_id": "wp1"})
+        mock_conn.delete_waypoint.return_value = (
+            False  # Return False to indicate not found
+        )
+        request = make_request(
+            app_dict={"connection": mock_conn},
+            method="DELETE",
+            path="/api/waypoints/wp1",
+            match_info={"waypoint_id": "wp1"},
+        )
         resp = await routes.handle_delete_waypoint(request)
         assert resp.status == 404
         body = json.loads(resp.body)
@@ -501,7 +599,12 @@ class TestHandleDeleteWaypoint:
         """Test that handle_delete_waypoint returns 500 when delete_node raises."""
         mock_conn = AsyncMock()
         mock_conn.delete_waypoint.side_effect = Exception("DB error")
-        request = make_request(app_dict={"connection": mock_conn}, method="DELETE", path="/api/waypoints/wp1", match_info={"waypoint_id": "wp1"})
+        request = make_request(
+            app_dict={"connection": mock_conn},
+            method="DELETE",
+            path="/api/waypoints/wp1",
+            match_info={"waypoint_id": "wp1"},
+        )
         resp = await routes.handle_delete_waypoint(request)
         assert resp.status == 500
         body = json.loads(resp.body)
@@ -516,7 +619,9 @@ class TestHandleChannels:
     async def test_handle_channels_success(self):
         mock_conn = AsyncMock()
         mock_conn.refresh_channels.return_value = [{"channel": 0, "name": "Primary"}]
-        request = make_request(app_dict={"connection": mock_conn}, method="GET", path="/api/channels")
+        request = make_request(
+            app_dict={"connection": mock_conn}, method="GET", path="/api/channels"
+        )
         resp = await routes.handle_channels(request)
         assert resp.status == 200
         body = json.loads(resp.body)
@@ -532,7 +637,12 @@ class TestHandleSend:
     async def test_handle_send_delegates(self):
         mock_conn = AsyncMock()
         mock_conn.send_message.return_value = True
-        request = make_request(app_dict={"connection": mock_conn}, method="POST", path="/api/send", body={"destination": "!12345678", "text": "hello", "channel": 0})
+        request = make_request(
+            app_dict={"connection": mock_conn},
+            method="POST",
+            path="/api/send",
+            body={"destination": "!12345678", "text": "hello", "channel": 0},
+        )
         resp = await routes.handle_send(request)
         assert resp.status == 200
         mock_conn.send_message.assert_called_once()
@@ -546,7 +656,12 @@ class TestHandleTraceroute:
     async def test_handle_traceroute_delegates(self):
         mock_conn = AsyncMock()
         mock_conn.request_traceroute.return_value = None
-        request = make_request(app_dict={"connection": mock_conn}, method="POST", path="/api/traceroute", body={"destination": "!12345678"})
+        request = make_request(
+            app_dict={"connection": mock_conn},
+            method="POST",
+            path="/api/traceroute",
+            body={"destination": "!12345678"},
+        )
         resp = await routes.handle_traceroute(request)
         assert resp.status == 200
         mock_conn.request_traceroute.assert_called_once_with("!12345678")
@@ -556,7 +671,12 @@ class TestHandleTraceroute:
         """Test that handle_traceroute returns 500 on internal error."""
         mock_conn = AsyncMock()
         mock_conn.request_traceroute.side_effect = Exception("DB error")
-        request = make_request(app_dict={"connection": mock_conn}, method="POST", path="/api/traceroute", body={"destination": "!12345678"})
+        request = make_request(
+            app_dict={"connection": mock_conn},
+            method="POST",
+            path="/api/traceroute",
+            body={"destination": "!12345678"},
+        )
         resp = await routes.handle_traceroute(request)
         assert resp.status == 500
         body = json.loads(resp.body)
@@ -571,7 +691,12 @@ class TestHandleRequestPosition:
     async def test_handle_request_position_delegates(self):
         mock_conn = AsyncMock()
         mock_conn.request_position.return_value = None
-        request = make_request(app_dict={"connection": mock_conn}, method="POST", path="/api/position/request", body={"destination": "!12345678"})
+        request = make_request(
+            app_dict={"connection": mock_conn},
+            method="POST",
+            path="/api/position/request",
+            body={"destination": "!12345678"},
+        )
         resp = await routes.handle_request_position(request)
         assert resp.status == 200
         mock_conn.request_position.assert_called_once_with("!12345678")
@@ -581,7 +706,12 @@ class TestHandleRequestPosition:
         """Test that handle_request_position returns 500 on internal error."""
         mock_conn = AsyncMock()
         mock_conn.request_position.side_effect = Exception("Network error")
-        request = make_request(app_dict={"connection": mock_conn}, method="POST", path="/api/position/request", body={"destination": "!12345678"})
+        request = make_request(
+            app_dict={"connection": mock_conn},
+            method="POST",
+            path="/api/position/request",
+            body={"destination": "!12345678"},
+        )
         resp = await routes.handle_request_position(request)
         assert resp.status == 500
         body = json.loads(resp.body)
@@ -596,7 +726,9 @@ class TestHandleFavorites:
     async def test_handle_favorites_success(self):
         mock_conn = AsyncMock()
         mock_conn.get_favorites.return_value = ["!12345678", "!87654321"]
-        request = make_request(app_dict={"connection": mock_conn}, method="GET", path="/api/favorites")
+        request = make_request(
+            app_dict={"connection": mock_conn}, method="GET", path="/api/favorites"
+        )
         resp = await routes.handle_favorites(request)
         assert resp.status == 200
         body = json.loads(resp.body)
@@ -607,7 +739,9 @@ class TestHandleFavorites:
     async def test_handle_favorites_error(self):
         mock_conn = AsyncMock()
         mock_conn.get_favorites.side_effect = Exception("DB error")
-        request = make_request(app_dict={"connection": mock_conn}, method="GET", path="/api/favorites")
+        request = make_request(
+            app_dict={"connection": mock_conn}, method="GET", path="/api/favorites"
+        )
         resp = await routes.handle_favorites(request)
         assert resp.status == 500
         body = json.loads(resp.body)
@@ -618,7 +752,9 @@ class TestHandleFavorites:
         mock_conn = AsyncMock()
         mock_conn.set_favorite.return_value = ["!12345678"]
         request = make_request(
-            app_dict={"connection": mock_conn}, method="PUT", path="/api/favorites",
+            app_dict={"connection": mock_conn},
+            method="PUT",
+            path="/api/favorites",
             body={"node_id": "!12345678", "favorited": True},
         )
         resp = await routes.handle_set_favorite(request)
@@ -631,7 +767,9 @@ class TestHandleFavorites:
     async def test_handle_set_favorite_invalid_node_id(self):
         mock_conn = AsyncMock()
         request = make_request(
-            app_dict={"connection": mock_conn}, method="PUT", path="/api/favorites",
+            app_dict={"connection": mock_conn},
+            method="PUT",
+            path="/api/favorites",
             body={"node_id": "bogus", "favorited": True},
         )
         resp = await routes.handle_set_favorite(request)
@@ -642,7 +780,9 @@ class TestHandleFavorites:
     async def test_handle_set_favorite_invalid_bool(self):
         mock_conn = AsyncMock()
         request = make_request(
-            app_dict={"connection": mock_conn}, method="PUT", path="/api/favorites",
+            app_dict={"connection": mock_conn},
+            method="PUT",
+            path="/api/favorites",
             body={"node_id": "!12345678", "favorited": "yes"},
         )
         resp = await routes.handle_set_favorite(request)
@@ -654,7 +794,9 @@ class TestHandleFavorites:
         mock_conn = AsyncMock()
         mock_conn.set_favorite.side_effect = Exception("DB error")
         request = make_request(
-            app_dict={"connection": mock_conn}, method="PUT", path="/api/favorites",
+            app_dict={"connection": mock_conn},
+            method="PUT",
+            path="/api/favorites",
             body={"node_id": "!12345678", "favorited": True},
         )
         resp = await routes.handle_set_favorite(request)
@@ -687,7 +829,6 @@ class TestDataStores:
         assert "size_kb" in nodes_store
         assert "entry_count" in nodes_store
         assert "exists" in nodes_store
-
 
 
 # ----------------------------------------------------------------------
@@ -732,7 +873,11 @@ class TestRelayTokenSelection:
                 recorded["headers"] = kwargs.get("headers", {})
                 auth = recorded["headers"].get("Authorization", "")
                 status = status_for_auth(auth) if status_for_auth else resp_status
-                body = resp_json if resp_json is not None else json.dumps({"node_ids": ["!12345678"]})
+                body = (
+                    resp_json
+                    if resp_json is not None
+                    else json.dumps({"node_ids": ["!12345678"]})
+                )
                 return _FakeResp(status, body)
 
         patcher = patch.object(routes.aiohttp, "ClientSession", _FakeSession)
@@ -740,48 +885,83 @@ class TestRelayTokenSelection:
 
     @pytest.mark.asyncio
     async def test_uses_supervisor_token_when_available(self):
-        request = make_request(app_dict={"config": MagicMock(ha_base_url="", ha_access_token="")})
+        request = make_request(
+            app_dict={"config": MagicMock(ha_base_url="", ha_access_token="")}
+        )
         patcher, recorded = self._patch_session()
-        with patcher, patch.dict("os.environ", {"SUPERVISOR_TOKEN": "sup-tok-123"}, clear=True):
-            await routes._relay_to_integration(request, "GET", "/api/nodepulse/tracked-nodes")
+        with (
+            patcher,
+            patch.dict("os.environ", {"SUPERVISOR_TOKEN": "sup-tok-123"}, clear=True),
+        ):
+            await routes._relay_to_integration(
+                request, "GET", "/api/nodepulse/tracked-nodes"
+            )
         assert recorded["headers"].get("Authorization") == "Bearer sup-tok-123"
 
     @pytest.mark.asyncio
     async def test_falls_back_to_ha_access_token(self):
-        request = make_request(app_dict={"config": MagicMock(ha_base_url="", ha_access_token="ll-tok-456")})
+        request = make_request(
+            app_dict={"config": MagicMock(ha_base_url="", ha_access_token="ll-tok-456")}
+        )
         patcher, recorded = self._patch_session()
         # No SUPERVISOR_TOKEN in the environment.
         with patcher, patch.dict("os.environ", {}, clear=True):
-            await routes._relay_to_integration(request, "GET", "/api/nodepulse/tracked-nodes")
+            await routes._relay_to_integration(
+                request, "GET", "/api/nodepulse/tracked-nodes"
+            )
         assert recorded["headers"].get("Authorization") == "Bearer ll-tok-456"
 
     @pytest.mark.asyncio
     async def test_supervisor_token_takes_precedence_over_access_token(self):
-        request = make_request(app_dict={"config": MagicMock(ha_base_url="", ha_access_token="ll-tok-456")})
+        request = make_request(
+            app_dict={"config": MagicMock(ha_base_url="", ha_access_token="ll-tok-456")}
+        )
         patcher, recorded = self._patch_session()
-        with patcher, patch.dict("os.environ", {"SUPERVISOR_TOKEN": "sup-tok-123"}, clear=True):
-            await routes._relay_to_integration(request, "GET", "/api/nodepulse/tracked-nodes")
+        with (
+            patcher,
+            patch.dict("os.environ", {"SUPERVISOR_TOKEN": "sup-tok-123"}, clear=True),
+        ):
+            await routes._relay_to_integration(
+                request, "GET", "/api/nodepulse/tracked-nodes"
+            )
         assert recorded["headers"].get("Authorization") == "Bearer sup-tok-123"
 
     @pytest.mark.asyncio
     async def test_retries_with_access_token_when_supervisor_token_rejected(self):
-        request = make_request(app_dict={"config": MagicMock(ha_base_url="", ha_access_token="ll-tok-456")})
+        request = make_request(
+            app_dict={"config": MagicMock(ha_base_url="", ha_access_token="ll-tok-456")}
+        )
+
         # All candidates reject the Supervisor token (401) but accept the long-lived token.
         def status_for_auth(auth):
             return 200 if auth == "Bearer ll-tok-456" else 401
+
         patcher, recorded = self._patch_session(status_for_auth=status_for_auth)
-        with patcher, patch.dict("os.environ", {"SUPERVISOR_TOKEN": "sup-tok-123"}, clear=True):
-            await routes._relay_to_integration(request, "GET", "/api/nodepulse/tracked-nodes")
+        with (
+            patcher,
+            patch.dict("os.environ", {"SUPERVISOR_TOKEN": "sup-tok-123"}, clear=True),
+        ):
+            await routes._relay_to_integration(
+                request, "GET", "/api/nodepulse/tracked-nodes"
+            )
         assert recorded["headers"].get("Authorization") == "Bearer ll-tok-456"
 
     @pytest.mark.asyncio
     async def test_no_token_raises_configuration_error(self):
-        request = make_request(app_dict={"config": MagicMock(ha_base_url="", ha_access_token="")})
+        request = make_request(
+            app_dict={"config": MagicMock(ha_base_url="", ha_access_token="")}
+        )
         patcher, recorded = self._patch_session()
-        with patcher, patch.dict("os.environ", {}, clear=True), \
-                pytest.raises(RuntimeError, match="No relay credential configured"):
-            await routes._relay_to_integration(request, "GET", "/api/nodepulse/tracked-nodes")
+        with (
+            patcher,
+            patch.dict("os.environ", {}, clear=True),
+            pytest.raises(RuntimeError, match="No relay credential configured"),
+        ):
+            await routes._relay_to_integration(
+                request, "GET", "/api/nodepulse/tracked-nodes"
+            )
         assert "headers" not in recorded
+
 
 # ----------------------------------------------------------------------
 # Remote node administration routes
@@ -792,11 +972,21 @@ class TestRemoteAdminRoutes:
         conn.remote_admin_available.return_value = {
             "available": True,
             "admin_channel_index": 1,
-            "actions": {"reboot": {"label": "Reboot", "danger": False, "confirm": False}},
+            "actions": {
+                "reboot": {"label": "Reboot", "danger": False, "confirm": False}
+            },
         }
         conn.get_remote_config.return_value = {"device": {}, "_schema": {}}
-        conn.set_remote_config.return_value = {"applied": True, "section": "device", "reboot_required": False}
-        conn.remote_admin_action.return_value = {"action": "reboot", "ok": True, "elapsed_s": 1.0}
+        conn.set_remote_config.return_value = {
+            "applied": True,
+            "section": "device",
+            "reboot_required": False,
+        }
+        conn.remote_admin_action.return_value = {
+            "action": "reboot",
+            "ok": True,
+            "elapsed_s": 1.0,
+        }
         return conn
 
     @pytest.mark.asyncio
@@ -811,7 +1001,9 @@ class TestRemoteAdminRoutes:
     @pytest.mark.asyncio
     async def test_get_remote_config_ok(self):
         conn = await self._conn()
-        request = make_request(app_dict={"connection": conn}, match_info={"node_id": "!1234abcd"})
+        request = make_request(
+            app_dict={"connection": conn}, match_info={"node_id": "!1234abcd"}
+        )
         resp = await routes.handle_get_remote_config(request)
         assert resp.status == 200
         data = json.loads(resp.body)
@@ -821,7 +1013,9 @@ class TestRemoteAdminRoutes:
     @pytest.mark.asyncio
     async def test_get_remote_config_invalid_node_id(self):
         conn = await self._conn()
-        request = make_request(app_dict={"connection": conn}, match_info={"node_id": "garbage"})
+        request = make_request(
+            app_dict={"connection": conn}, match_info={"node_id": "garbage"}
+        )
         resp = await routes.handle_get_remote_config(request)
         assert resp.status == 400
 
@@ -829,7 +1023,9 @@ class TestRemoteAdminRoutes:
     async def test_get_remote_config_timeout(self):
         conn = await self._conn()
         conn.get_remote_config.side_effect = ConnectionError("timed out")
-        request = make_request(app_dict={"connection": conn}, match_info={"node_id": "!1234abcd"})
+        request = make_request(
+            app_dict={"connection": conn}, match_info={"node_id": "!1234abcd"}
+        )
         resp = await routes.handle_get_remote_config(request)
         assert resp.status == 504
 
@@ -850,14 +1046,20 @@ class TestRemoteAdminRoutes:
     @pytest.mark.asyncio
     async def test_put_remote_config_missing_section(self):
         conn = await self._conn()
-        request = make_request(app_dict={"connection": conn}, match_info={"node_id": "!1234abcd", "section": ""})
+        request = make_request(
+            app_dict={"connection": conn},
+            match_info={"node_id": "!1234abcd", "section": ""},
+        )
         resp = await routes.handle_put_remote_config_section(request)
         assert resp.status == 400
 
     @pytest.mark.asyncio
     async def test_put_remote_config_invalid_json(self):
         conn = await self._conn()
-        request = make_request(app_dict={"connection": conn}, match_info={"node_id": "!1234abcd", "section": "device"})
+        request = make_request(
+            app_dict={"connection": conn},
+            match_info={"node_id": "!1234abcd", "section": "device"},
+        )
         request.json = AsyncMock(side_effect=ValueError("bad json"))
         resp = await routes.handle_put_remote_config_section(request)
         assert resp.status == 400
@@ -884,7 +1086,9 @@ class TestRemoteAdminRoutes:
         )
         resp = await routes.handle_admin_action(request)
         assert resp.status == 200
-        conn.remote_admin_action.assert_awaited_once_with("!1234abcd", "reboot", {"seconds": 5})
+        conn.remote_admin_action.assert_awaited_once_with(
+            "!1234abcd", "reboot", {"seconds": 5}
+        )
 
     @pytest.mark.asyncio
     async def test_admin_action_unknown_action(self):
@@ -919,7 +1123,9 @@ class TestRoutes28Features:
         conn.get_node_signal = AsyncMock(
             return_value={"id": "!abc123", "snr_avg": 5.2, "signal_quality": "good"}
         )
-        request = make_request(app_dict={"connection": conn}, match_info={"node_id": "!abc123"})
+        request = make_request(
+            app_dict={"connection": conn}, match_info={"node_id": "!abc123"}
+        )
         resp = await routes.handle_node_signal(request)
         assert resp.status == 200
         body = json.loads(resp.text)
@@ -930,7 +1136,9 @@ class TestRoutes28Features:
     async def test_handle_node_signal_404_when_unknown(self):
         conn = MagicMock()
         conn.get_node_signal = AsyncMock(return_value={})
-        request = make_request(app_dict={"connection": conn}, match_info={"node_id": "!abcdef12"})
+        request = make_request(
+            app_dict={"connection": conn}, match_info={"node_id": "!abcdef12"}
+        )
         resp = await routes.handle_node_signal(request)
         assert resp.status == 404
         assert "error" in json.loads(resp.text)
@@ -938,20 +1146,24 @@ class TestRoutes28Features:
     @pytest.mark.asyncio
     async def test_handle_node_signal_rejects_bad_id(self):
         conn = MagicMock()
-        request = make_request(app_dict={"connection": conn}, match_info={"node_id": "not-a-node"})
+        request = make_request(
+            app_dict={"connection": conn}, match_info={"node_id": "not-a-node"}
+        )
         resp = await routes.handle_node_signal(request)
         assert resp.status == 400
 
     @pytest.mark.asyncio
     async def test_handle_hops_distribution(self):
         conn = MagicMock()
-        conn.get_nodes = AsyncMock(return_value=[
-            {"id": "!a", "hops_away": 0},
-            {"id": "!b", "hops_away": 1},
-            {"id": "!c", "hops_away": 1},
-            {"id": "!d", "hops_away": 2},
-            {"id": "!e", "hops_away": None},  # ignored (no hops_away)
-        ])
+        conn.get_nodes = AsyncMock(
+            return_value=[
+                {"id": "!a", "hops_away": 0},
+                {"id": "!b", "hops_away": 1},
+                {"id": "!c", "hops_away": 1},
+                {"id": "!d", "hops_away": 2},
+                {"id": "!e", "hops_away": None},  # ignored (no hops_away)
+            ]
+        )
         request = make_request(app_dict={"connection": conn})
         resp = await routes.handle_hops(request)
         assert resp.status == 200
@@ -965,7 +1177,10 @@ class TestRoutes28Features:
     async def test_handle_beacon_unavailable_on_old_lib(self):
         conn = MagicMock()
         conn.get_beacon_config = AsyncMock(
-            return_value={"available": False, "reason": "meshtastic library predates 2.8"}
+            return_value={
+                "available": False,
+                "reason": "meshtastic library predates 2.8",
+            }
         )
         request = make_request(app_dict={"connection": conn})
         resp = await routes.handle_beacon(request)
@@ -975,14 +1190,25 @@ class TestRoutes28Features:
     @pytest.mark.asyncio
     async def test_handle_node_gpx_builds_track(self):
         conn = MagicMock()
-        conn.get_position_history = AsyncMock(return_value={
-            "!abc123": [
-                {"latitude": -29.85, "longitude": 31.02, "altitude": 120, "timestamp": 1700000000},
-                {"latitude": -29.86, "longitude": 31.05, "timestamp": 1700000100},
-            ]
-        })
-        conn.get_nodes = AsyncMock(return_value=[{"id": "!abc123", "long_name": "NodeA"}])
-        request = make_request(app_dict={"connection": conn}, match_info={"node_id": "!abc123"})
+        conn.get_position_history = AsyncMock(
+            return_value={
+                "!abc123": [
+                    {
+                        "latitude": -29.85,
+                        "longitude": 31.02,
+                        "altitude": 120,
+                        "timestamp": 1700000000,
+                    },
+                    {"latitude": -29.86, "longitude": 31.05, "timestamp": 1700000100},
+                ]
+            }
+        )
+        conn.get_nodes = AsyncMock(
+            return_value=[{"id": "!abc123", "long_name": "NodeA"}]
+        )
+        request = make_request(
+            app_dict={"connection": conn}, match_info={"node_id": "!abc123"}
+        )
         resp = await routes.handle_node_gpx(request)
         assert resp.status == 200
         body = resp.text
@@ -993,7 +1219,9 @@ class TestRoutes28Features:
     @pytest.mark.asyncio
     async def test_handle_node_gpx_rejects_bad_id(self):
         conn = MagicMock()
-        request = make_request(app_dict={"connection": conn}, match_info={"node_id": "bad"})
+        request = make_request(
+            app_dict={"connection": conn}, match_info={"node_id": "bad"}
+        )
         resp = await routes.handle_node_gpx(request)
         assert resp.status == 400
 
@@ -1004,4 +1232,3 @@ class TestRoutes28Features:
         assert resp.status == 503
         body = json.loads(resp.text)
         assert body["error"] == "Terrain analysis is not enabled"
-

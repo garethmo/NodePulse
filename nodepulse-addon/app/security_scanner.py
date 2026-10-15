@@ -20,6 +20,7 @@ Rules
 This module is intentionally read-only and stateless: it derives all findings
 directly from the live interface object without making any radio I/O calls.
 """
+
 import hashlib
 import logging
 from typing import Any
@@ -34,19 +35,36 @@ logger = logging.getLogger(__name__)
 # information documented in the Meshtastic spec and used by all stock-firmware
 # installs that have never changed their primary channel PSK.
 # https://meshtastic.org/docs/overview/encryption/
-_DEFAULT_PSK_BYTES: bytes = bytes([
-    0xd4, 0xf1, 0xbb, 0x3a, 0x20, 0x29, 0x07, 0x59,
-    0xf0, 0xbc, 0xff, 0xab, 0xcf, 0x4e, 0x69, 0x01,
-])
+_DEFAULT_PSK_BYTES: bytes = bytes(
+    [
+        0xD4,
+        0xF1,
+        0xBB,
+        0x3A,
+        0x20,
+        0x29,
+        0x07,
+        0x59,
+        0xF0,
+        0xBC,
+        0xFF,
+        0xAB,
+        0xCF,
+        0x4E,
+        0x69,
+        0x01,
+    ]
+)
 
 # Single-byte PSK value the firmware uses as a shorthand for the 128-bit
 # default key above.
-_PSK_DEFAULT_SHORTHAND: bytes = b'\x01'
+_PSK_DEFAULT_SHORTHAND: bytes = b"\x01"
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
 
 def _resolve_psk(raw_psk: bytes) -> bytes:
     """
@@ -126,6 +144,7 @@ def _channel_is_disabled(channel) -> bool:
 # Public API
 # ---------------------------------------------------------------------------
 
+
 def scan_channel_keys(interface) -> list[dict[str, Any]]:
     """
     Inspect every active channel's PSK and return a list of security findings.
@@ -155,7 +174,9 @@ def scan_channel_keys(interface) -> list[dict[str, Any]]:
     # Map fingerprint → channel_index for duplicate detection.
     seen_fingerprints: dict[str, int] = {}
 
-    for channel in raw_channels.values() if hasattr(raw_channels, "values") else raw_channels:
+    for channel in (
+        raw_channels.values() if hasattr(raw_channels, "values") else raw_channels
+    ):
         try:
             idx = int(getattr(channel, "index", len(findings)))
 
@@ -180,13 +201,16 @@ def scan_channel_keys(interface) -> list[dict[str, Any]]:
                 else:
                     seen_fingerprints[fp] = idx
 
-            findings.append({
-                "channel_index": idx,
-                "channel_name":  channel_name or ("Primary" if idx == 0 else f"Channel {idx}"),
-                "severity":      severity,
-                "reason":        reason,
-                "duplicate_of":  duplicate_of,
-            })
+            findings.append(
+                {
+                    "channel_index": idx,
+                    "channel_name": channel_name
+                    or ("Primary" if idx == 0 else f"Channel {idx}"),
+                    "severity": severity,
+                    "reason": reason,
+                    "duplicate_of": duplicate_of,
+                }
+            )
 
         except Exception as exc:  # pragma: no cover — defensive  # noqa: BLE001
             logger.debug("Security scan skipped a channel due to error: %s", exc)

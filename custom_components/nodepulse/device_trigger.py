@@ -13,6 +13,7 @@ Triggers are optionally scoped to a channel (``channel``) or direct-message
 When the coordinator surfaces a new message, the entity listener fires the
 underlying HA event that the device-automation framework listens for.
 """
+
 import logging
 from typing import Any, Dict, List
 
@@ -142,6 +143,7 @@ def async_attach_trigger(
     want_dm = config.get("is_dm")
 
     if trigger_type == "traceroute_complete":
+
         @callback
         def _match(event):
             return event.data.get(EVENT_NODE_ID) == node_id

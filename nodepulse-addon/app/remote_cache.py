@@ -9,10 +9,12 @@ logger = logging.getLogger(__name__)
 _DATA_DIR = os.environ.get("NODEPULSE_DATA_DIR", "/data")
 _CACHE_FILE = os.path.join(_DATA_DIR, "remote_configs.json")
 
+
 def _get_cache_path() -> str:
     """Return the correct path based on NODEPULSE_DATA_DIR environment variable."""
     os.makedirs(_DATA_DIR, exist_ok=True)
     return _CACHE_FILE
+
 
 def load_remote_cache() -> dict[str, dict[str, Any]]:
     """Load the remote config cache from disk."""
@@ -24,6 +26,7 @@ def load_remote_cache() -> dict[str, dict[str, Any]]:
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to load remote config cache: %s", exc)
     return {}
+
 
 def save_remote_cache(cache: dict[str, dict[str, Any]]) -> None:
     """Atomically save the remote config cache to disk.
@@ -43,10 +46,12 @@ def save_remote_cache(cache: dict[str, dict[str, Any]]) -> None:
         with contextlib.suppress(OSError):
             os.remove(tmp_path)
 
+
 def get_cached_remote_config(node_id: str) -> dict[str, Any] | None:
     """Get a cached remote config by node ID."""
     cache = load_remote_cache()
     return cache.get(node_id)
+
 
 def update_cached_remote_config(node_id: str, config: dict[str, Any]) -> None:
     """Update and persist a remote config in the cache."""
@@ -54,7 +59,10 @@ def update_cached_remote_config(node_id: str, config: dict[str, Any]) -> None:
     cache[node_id] = config
     save_remote_cache(cache)
 
-def patch_cached_remote_config(node_id: str, section: str, patch: dict[str, Any]) -> None:
+
+def patch_cached_remote_config(
+    node_id: str, section: str, patch: dict[str, Any]
+) -> None:
     """Patch a specific section of a cached remote config."""
     cache = load_remote_cache()
     if node_id in cache:

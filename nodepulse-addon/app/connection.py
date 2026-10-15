@@ -14,6 +14,7 @@ Design decision: We maintain ONE MeshInterface instance for the lifetime of
 the addon. Tearing down and recreating it on every poll would be expensive and
 risks causing state loss in the upstream meshtastic library.
 """
+
 import asyncio
 import collections
 import contextlib
@@ -116,6 +117,7 @@ def _broadcast_sse_event(event_type: str, payload: dict) -> None:
         for q in queues:
             _do_put(q, event)
 
+
 # Characters that would break out of an HTML/JS context if echoed verbatim.
 # Waypoint text arrives from the mesh (untrusted), so we strip these at the
 # ingest boundary as defense-in-depth on top of frontend escaping.
@@ -140,6 +142,7 @@ def _sanitize_mesh_text(value: Any, default: str = "") -> str:
             continue
         out.append(ch)
     return "".join(out).strip() or default
+
 
 # Persistent storage directory. Under HA Supervisor this is /data, which
 # survives addon restarts (unlike the container's ephemeral filesystem). We
@@ -259,7 +262,9 @@ def _node_id_from_num(num: Any) -> str | None:
     return normalize_node_id(num)
 
 
-def _is_co_located(lat1: Any, lon1: Any, lat2: Any, lon2: Any, threshold_km: float = 0.025) -> bool:
+def _is_co_located(
+    lat1: Any, lon1: Any, lat2: Any, lon2: Any, threshold_km: float = 0.025
+) -> bool:
     """Check if two GPS coordinates represent the same physical location (within threshold_km)."""
     if lat1 is None or lon1 is None or lat2 is None or lon2 is None:
         return False
@@ -320,9 +325,11 @@ def _channel_role_name(value: int) -> str:
     """
     try:
         from meshtastic.protobuf.channel_pb2 import Channel
+
         return Channel.Role.Name(value)
     except Exception:  # noqa: BLE001
         return str(value)
+
 
 # How long (seconds) to wait between reconnection attempts.
 # Using a capped exponential backoff to avoid hammering an offline node.
@@ -378,12 +385,12 @@ class MeshtasticConnection:
     """
 
     def __init__(
-        self, 
-        host: str, 
-        port: int, 
-        mode: str = "direct", 
+        self,
+        host: str,
+        port: int,
+        mode: str = "direct",
         access_key: str | None = None,
-        config: Any = None
+        config: Any = None,
     ) -> None:
         self._host = host
         self._port = port
@@ -517,7 +524,7 @@ class MeshtasticConnection:
         # inbound POSITION_APP replies to the node we actually asked, so we don't
         # treat every broadcast position as a response to our request.
         self._pending_position_dests: set = set()
-        
+
         # Last (lat, lng) the meshtastic library's node DB reported per node,
         # tracked across _get_nodes_sync polls. Used to decide whether the
         # library position is fresher than our own _capture_position cache
@@ -525,7 +532,7 @@ class MeshtasticConnection:
         # new fix; if they are unchanged while our cache moved, our captured
         # broadcast fix is newer and must win the merge.
         self._last_lib_pos: dict = {}  # node_id -> (lat, lng)
-        
+
         # Rate limiting for position requests to avoid TX queue overflow
         self._position_request_times: dict = {}  # destination -> last request timestamp
 
@@ -624,7 +631,9 @@ class MeshtasticConnection:
             try:
                 self._interface.access_key = key
             except AttributeError:
-                logger.debug("meshtastic library does not support access_key — ignoring")
+                logger.debug(
+                    "meshtastic library does not support access_key — ignoring"
+                )
 
     async def get_status(self) -> dict[str, Any]:
         """
@@ -657,7 +666,11 @@ class MeshtasticConnection:
 
         with self._lock:
             _iface_snap = self._interface
-            self_num = getattr(getattr(_iface_snap, "myInfo", None), "my_node_num", None) if _iface_snap else None
+            self_num = (
+                getattr(getattr(_iface_snap, "myInfo", None), "my_node_num", None)
+                if _iface_snap
+                else None
+            )
             self_id = ("!" + format(self_num, "08x")) if self_num is not None else None
 
         with self._nodes_lock:
@@ -687,7 +700,9 @@ class MeshtasticConnection:
             logger.debug("No stale nodes matching criteria to clear (days=%s)", days)
             return 0
 
-        logger.info("Bulk removing %s stale nodes (days=%s)", len(nodes_to_remove), days)
+        logger.info(
+            "Bulk removing %s stale nodes (days=%s)", len(nodes_to_remove), days
+        )
 
         removed_count = 0
         for nid in nodes_to_remove:
@@ -710,7 +725,11 @@ class MeshtasticConnection:
         """Synchronous implementation of clean_invalid_gps_nodes."""
         with self._lock:
             _iface_snap = self._interface
-            self_num = getattr(getattr(_iface_snap, "myInfo", None), "my_node_num", None) if _iface_snap else None
+            self_num = (
+                getattr(getattr(_iface_snap, "myInfo", None), "my_node_num", None)
+                if _iface_snap
+                else None
+            )
             self_id = ("!" + format(self_num, "08x")) if self_num is not None else None
 
         with self._nodes_lock:
@@ -726,18 +745,30 @@ class MeshtasticConnection:
                 # Check if node has invalid GPS coordinates
                 if lat is None or lng is None:
                     nodes_to_remove.append(nid)
-                    logger.debug("Node %s (%s) has invalid GPS coordinates (lat=%s, lng=%s)", 
-                                nid, n.get("long_name", n.get("short_name", "")), lat, lng)
+                    logger.debug(
+                        "Node %s (%s) has invalid GPS coordinates (lat=%s, lng=%s)",
+                        nid,
+                        n.get("long_name", n.get("short_name", "")),
+                        lat,
+                        lng,
+                    )
                 elif _are_coordinates_suspicious(lat, lng):
                     nodes_to_remove.append(nid)
-                    logger.debug("Node %s (%s) has suspicious GPS coordinates (lat=%s, lng=%s)", 
-                                nid, n.get("long_name", n.get("short_name", "")), lat, lng)
+                    logger.debug(
+                        "Node %s (%s) has suspicious GPS coordinates (lat=%s, lng=%s)",
+                        nid,
+                        n.get("long_name", n.get("short_name", "")),
+                        lat,
+                        lng,
+                    )
 
         if not nodes_to_remove:
             logger.info("No nodes with invalid GPS coordinates to clean")
             return 0
 
-        logger.info("Bulk removing %s nodes with invalid GPS coordinates", len(nodes_to_remove))
+        logger.info(
+            "Bulk removing %s nodes with invalid GPS coordinates", len(nodes_to_remove)
+        )
 
         removed_count = 0
         for nid in nodes_to_remove:
@@ -782,7 +813,11 @@ class MeshtasticConnection:
             if iface is not None:
                 # Prevent accidentally deleting the local gateway node from its own radio
                 my_info = getattr(iface, "myInfo", None)
-                my_num = getattr(my_info, "my_node_num", None) if my_info is not None else None
+                my_num = (
+                    getattr(my_info, "my_node_num", None)
+                    if my_info is not None
+                    else None
+                )
                 if my_num is not None and node_num == my_num:
                     logger.warning("Refusing to delete local gateway node %s", node_id)
                     return False
@@ -814,34 +849,55 @@ class MeshtasticConnection:
 
                 # If present on the device, remove it from the radio NodeDB
                 if node_on_device:
-                    logger.info("Node %s (%s) is present on device; removing from radio NodeDB", node_id, node_num)
+                    logger.info(
+                        "Node %s (%s) is present on device; removing from radio NodeDB",
+                        node_id,
+                        node_num,
+                    )
                     local_node = getattr(iface, "localNode", None)
                     if local_node is not None:
                         remove_method = getattr(local_node, "removeNode", None)
                         if callable(remove_method):
                             try:
-                                remove_arg = node_num if node_num is not None else node_id
+                                remove_arg = (
+                                    node_num if node_num is not None else node_id
+                                )
                                 remove_method(remove_arg)
-                                logger.debug("Sent removeNode admin command to radio for node %s", node_id)
+                                logger.debug(
+                                    "Sent removeNode admin command to radio for node %s",
+                                    node_id,
+                                )
                             except Exception as exc:  # noqa: BLE001
-                                logger.warning("Could not send removeNode to radio for %s: %s", node_id, exc)
+                                logger.warning(
+                                    "Could not send removeNode to radio for %s: %s",
+                                    node_id,
+                                    exc,
+                                )
                     device_removed = True
 
                     # Evict from library cache so it doesn't instantly reappear on subsequent polls
                     if isinstance(nodes_dict, dict):
-                        for k in [node_id, canonical_id, node_num, str(node_num) if node_num is not None else None]:
+                        for k in [
+                            node_id,
+                            canonical_id,
+                            node_num,
+                            str(node_num) if node_num is not None else None,
+                        ]:
                             if k is not None:
                                 nodes_dict.pop(k, None)
                     if isinstance(nodes_by_num, dict) and node_num is not None:
                         nodes_by_num.pop(node_num, None)
                 else:
-                    logger.debug("Node %s is not present on device NodeDB (store only)", node_id)
+                    logger.debug(
+                        "Node %s is not present on device NodeDB (store only)", node_id
+                    )
 
         # 2. Remove from persistent in-memory store
         with self._nodes_lock:
             before = len(self._nodes)
             self._nodes = [
-                n for n in self._nodes
+                n
+                for n in self._nodes
                 if n.get("id") != node_id
                 and (canonical_id is None or n.get("id") != canonical_id)
                 and (node_num is None or n.get("num") != node_num)
@@ -957,7 +1013,10 @@ class MeshtasticConnection:
                 logger.debug("Periodic favorite sync failed (ignored): %s", exc)
 
     async def send_message(
-        self, text: str, destination: str | None = None, channel: int = 0,
+        self,
+        text: str,
+        destination: str | None = None,
+        channel: int = 0,
         sender_name: str | None = None,
     ) -> bool:
         """
@@ -985,14 +1044,19 @@ class MeshtasticConnection:
         try:
             result = await asyncio.wait_for(
                 asyncio.to_thread(
-                    self._send_message_sync, text, destination, channel,
-                    want_ack=True, sender_name=sender_name,
+                    self._send_message_sync,
+                    text,
+                    destination,
+                    channel,
+                    want_ack=True,
+                    sender_name=sender_name,
                 ),
                 timeout=20.0,
             )
         except asyncio.TimeoutError:
             logger.error(
-                "Timed out after 20s sending mesh message (destination=%s)", destination or "broadcast"
+                "Timed out after 20s sending mesh message (destination=%s)",
+                destination or "broadcast",
             )
             return False
         logger.debug(
@@ -1028,16 +1092,21 @@ class MeshtasticConnection:
         with self._lock:
             last_dispatch = self._pending_traceroute_times.get(destination, 0)
             elapsed = time.time() - last_dispatch
-            if destination in self._pending_traceroute_dests and elapsed < _TRACEROUTE_COOLDOWN_S:
+            if (
+                destination in self._pending_traceroute_dests
+                and elapsed < _TRACEROUTE_COOLDOWN_S
+            ):
                 logger.debug(
                     "Traceroute to %s already pending and within cooldown (%.0fs elapsed) — skipping",
-                    destination, elapsed,
+                    destination,
+                    elapsed,
                 )
                 return True
             if len(self._pending_traceroute_dests) >= _MAX_PENDING_TRACEROUTES:
                 logger.warning(
                     "Too many pending traceroutes (%d) — rejecting request to %s",
-                    len(self._pending_traceroute_dests), destination,
+                    len(self._pending_traceroute_dests),
+                    destination,
                 )
                 return False
             # Remove any stale entry for this destination before re-adding so
@@ -1097,7 +1166,9 @@ class MeshtasticConnection:
                     self._traceroutes[destination] = timeout_record
                 self._save_traceroutes()
             except Exception as exc:  # noqa: BLE001
-                logger.info("Traceroute background dispatch failed (%s): %s", destination, exc)
+                logger.info(
+                    "Traceroute background dispatch failed (%s): %s", destination, exc
+                )
             finally:
                 # Always reclaim our queue slot. On success _capture_traceroute
                 # already removed it (matched by node id); the try/except makes
@@ -1114,14 +1185,20 @@ class MeshtasticConnection:
             current_time = time.time()
             last_request = self._position_request_times.get(destination, 0)
             if current_time - last_request < 10.0:
-                logger.debug("Position request rate limited for %s: last request %.1fs ago", destination, current_time - last_request)
+                logger.debug(
+                    "Position request rate limited for %s: last request %.1fs ago",
+                    destination,
+                    current_time - last_request,
+                )
                 return False
             self._position_request_times[destination] = current_time
             # Clean up old entries to prevent memory leak
             if len(self._position_request_times) > 100:
                 cutoff = current_time - 60.0
-                self._position_request_times = {k: v for k, v in self._position_request_times.items() if v > cutoff}
-        
+                self._position_request_times = {
+                    k: v for k, v in self._position_request_times.items() if v > cutoff
+                }
+
         ok = await asyncio.to_thread(self._request_position_sync, destination)
         # Merge the node's reply position into our cache.
         await asyncio.to_thread(self._refresh_node_from_interface, destination)
@@ -1151,7 +1228,9 @@ class MeshtasticConnection:
         """Mark/unmark a node as favorite and persist. Returns the full list."""
         return await asyncio.to_thread(self._set_favorite_sync, node_id, favorited)
 
-    async def get_position_history(self, node_id: str | None = None) -> dict[str, list[dict]]:
+    async def get_position_history(
+        self, node_id: str | None = None
+    ) -> dict[str, list[dict]]:
         """Return position history. If node_id is given, return only that node's trail."""
         return await asyncio.to_thread(self._get_position_history_sync, node_id)
 
@@ -1167,7 +1246,9 @@ class MeshtasticConnection:
         """Remove a waypoint by ID. Returns True if found and deleted."""
         return await asyncio.to_thread(self._delete_waypoint_sync, waypoint_id)
 
-    async def update_waypoint(self, waypoint_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
+    async def update_waypoint(
+        self, waypoint_id: str, updates: dict[str, Any]
+    ) -> dict[str, Any] | None:
         """Update a waypoint's fields (e.g. lat/lng after drag). Returns updated waypoint or None."""
         return await asyncio.to_thread(self._update_waypoint_sync, waypoint_id, updates)
 
@@ -1273,6 +1354,7 @@ class MeshtasticConnection:
         if iface is not None:
             try:
                 from meshtastic.protobuf.waypoint_pb2 import Waypoint
+
                 wp = Waypoint()
                 wp.latitudeI = round(float(waypoint.get("lat", 0)) * 1e7)
                 wp.longitudeI = round(float(waypoint.get("lng", 0)) * 1e7)
@@ -1329,7 +1411,7 @@ class MeshtasticConnection:
         findings = scan_channel_keys(iface)
         has_issues = any(f["severity"] != "secure" for f in findings)
         return {
-            "findings":   findings,
+            "findings": findings,
             "has_issues": has_issues,
             "scanned_at": int(time.time()),
         }
@@ -1363,7 +1445,9 @@ class MeshtasticConnection:
         # If localConfig is still empty (e.g. reconnect in progress), wait for it.
         local_node = iface.localNode
         if local_node is None:
-            raise ConnectionError("localNode is not available — radio may still be handshaking")
+            raise ConnectionError(
+                "localNode is not available — radio may still be handshaking"
+            )
 
         config_loaded = (
             local_node.localConfig is not None
@@ -1375,7 +1459,9 @@ class MeshtasticConnection:
                 request_full_config(iface)
                 local_node.waitForConfig(timeout=10)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("waitForConfig failed (continuing with partial config): %s", exc)
+                logger.warning(
+                    "waitForConfig failed (continuing with partial config): %s", exc
+                )
 
         return read_device_config(iface)
 
@@ -1419,9 +1505,14 @@ class MeshtasticConnection:
 
         logger.info(
             "Device config section saved (section=%s, reboot_required=%s)",
-            section, reboot_required,
+            section,
+            reboot_required,
         )
-        return {"applied": success, "section": section, "reboot_required": reboot_required}
+        return {
+            "applied": success,
+            "section": section,
+            "reboot_required": reboot_required,
+        }
 
     async def reload_device_config(self) -> tuple[bool, str]:
         """
@@ -1506,7 +1597,9 @@ class MeshtasticConnection:
                 "(or, for pre-2.5 firmware, it must share the admin channel)"
             ) from None
 
-    async def get_remote_config(self, node_id: str, force: bool = False) -> dict[str, Any]:
+    async def get_remote_config(
+        self, node_id: str, force: bool = False
+    ) -> dict[str, Any]:
         """
         Read a remote node's full configuration over the admin channel.
 
@@ -1523,8 +1616,9 @@ class MeshtasticConnection:
             what="Reading remote config",
         )
 
-
-    def _get_remote_config_sync(self, node_id: str, force: bool = False) -> dict[str, Any]:
+    def _get_remote_config_sync(
+        self, node_id: str, force: bool = False
+    ) -> dict[str, Any]:
         from .remote_admin import (
             REMOTE_CONFIG_TIMEOUT_S,
             _make_remote_node,
@@ -1567,12 +1661,14 @@ class MeshtasticConnection:
                     "Security → Admin Keys must include this gateway's public key "
                     "(or, for pre-2.5 firmware, it must share the admin channel)"
                 )
-            
+
             config_dict = read_remote_config(remote_node, iface)
             update_cached_remote_config(node_id, config_dict)
             return config_dict
 
-    async def get_remote_config_section(self, node_id: str, section: str) -> dict[str, Any]:
+    async def get_remote_config_section(
+        self, node_id: str, section: str
+    ) -> dict[str, Any]:
         """
         Fetch a single configuration section from a remote node.
         """
@@ -1582,7 +1678,9 @@ class MeshtasticConnection:
             what=f"Reading remote config section {section}",
         )
 
-    def _get_remote_config_section_sync(self, node_id: str, section: str) -> dict[str, Any]:
+    def _get_remote_config_section_sync(
+        self, node_id: str, section: str
+    ) -> dict[str, Any]:
         from .remote_admin import (
             _make_remote_node,
             read_remote_config,
@@ -1612,9 +1710,7 @@ class MeshtasticConnection:
             full_dict = read_remote_config(remote_node, iface)
 
             if section not in full_dict:
-                raise ConnectionError(
-                    f"Remote node did not return section '{section}'"
-                )
+                raise ConnectionError(f"Remote node did not return section '{section}'")
 
             section_data = full_dict[section]
 
@@ -1708,9 +1804,13 @@ class MeshtasticConnection:
         """Return live sniffer statistics computed over the last 60 seconds."""
         return await asyncio.to_thread(self._get_sniffer_stats_sync)
 
-    async def get_mesh_discovery(self, window_seconds: int = 300, limit: int = 100) -> dict[str, Any]:
+    async def get_mesh_discovery(
+        self, window_seconds: int = 300, limit: int = 100
+    ) -> dict[str, Any]:
         """Return mesh discovery data from packet log within time window."""
-        return await asyncio.to_thread(self._get_mesh_discovery_sync, window_seconds, limit)
+        return await asyncio.to_thread(
+            self._get_mesh_discovery_sync, window_seconds, limit
+        )
 
     async def expire_pending_acks(self) -> None:
         """Sweep timed-out pending ACKs and mark their messages failed.
@@ -1750,7 +1850,8 @@ class MeshtasticConnection:
                 if is_first_attempt:
                     logger.debug(
                         "Initiating first connection to Meshtastic node (host=%s, port=%s)",
-                        self._host, self._port,
+                        self._host,
+                        self._port,
                     )
                 elif self._mode == "proxy":
                     logger.warning(
@@ -1758,7 +1859,8 @@ class MeshtasticConnection:
                         "attempting reconnect. Check that the official Meshtastic HA "
                         "integration is running with its 'TCP Proxy' option enabled and "
                         "that proxy_host/proxy_port are correct.",
-                        self._host, self._port,
+                        self._host,
+                        self._port,
                     )
                 else:
                     logger.warning(
@@ -1766,7 +1868,8 @@ class MeshtasticConnection:
                         "(host=%s, port=%s). If this persists, the node may already "
                         "serve another TCP client (Meshtastic firmware allows only one). "
                         "Disconnect the other client or reboot the node.",
-                        self._host, self._port,
+                        self._host,
+                        self._port,
                     )
                 self._connected = False
 
@@ -1780,13 +1883,18 @@ class MeshtasticConnection:
                     delay = min(delay * 2, _RECONNECT_MAX_DELAY)
                     logger.error(
                         "Connect to %s:%s timed out after %ss — will retry in %ss",
-                        self._host, self._port, _CONNECT_TIMEOUT, delay,
+                        self._host,
+                        self._port,
+                        _CONNECT_TIMEOUT,
+                        delay,
                     )
                 except Exception as exc:  # noqa: BLE001
                     delay = min(delay * 2, _RECONNECT_MAX_DELAY)
                     logger.error(
                         "Reconnect failed — will retry in %ss (host=%s): %s",
-                        delay, self._host, exc,
+                        delay,
+                        self._host,
+                        exc,
                     )
             else:
                 # Healthy: report connected and poll again at the probe cadence.
@@ -1797,8 +1905,10 @@ class MeshtasticConnection:
                     try:
                         self._refresh_channels_sync()
                         logger.debug("Refreshed channels after (re)connection")
-                    except Exception as exc:  # pragma: no cover - defensive  # noqa: BLE001
-                        logger.debug("Post-connect channel refresh failed (ignored): %s", exc)
+                    except Exception as exc:  # pragma: no cover - defensive
+                        logger.debug(
+                            "Post-connect channel refresh failed (ignored): %s", exc
+                        )
                 self._connected = True
                 delay = _HEALTH_CHECK_INTERVAL
 
@@ -1829,7 +1939,9 @@ class MeshtasticConnection:
         # Guard check + setup under the lock — no blocking I/O here.
         with self._lock:
             if self._connecting:
-                logger.debug("_connect_sync called while connect already in-progress — skipping")
+                logger.debug(
+                    "_connect_sync called while connect already in-progress — skipping"
+                )
                 return
             self._connecting = True
 
@@ -1846,7 +1958,11 @@ class MeshtasticConnection:
             # TCPInterface() blocks until the TCP handshake completes (or
             # raises). We do this OUTSIDE _lock so other threads (health probe,
             # get_nodes) are never stalled waiting for a network timeout.
-            kwargs = {"hostname": self._host, "portNumber": self._port, "debugOut": None}
+            kwargs = {
+                "hostname": self._host,
+                "portNumber": self._port,
+                "debugOut": None,
+            }
             try:
                 kwargs["access_key"] = self._access_key
                 new_interface = meshtastic.tcp_interface.TCPInterface(**kwargs)
@@ -1864,7 +1980,10 @@ class MeshtasticConnection:
 
             # Ensure the key is set for library versions that only accept it
             # post-construction.
-            if self._access_key is not None and getattr(new_interface, "access_key", None) is None:
+            if (
+                self._access_key is not None
+                and getattr(new_interface, "access_key", None) is None
+            ):
                 with contextlib.suppress(AttributeError):
                     new_interface.access_key = self._access_key
 
@@ -1879,7 +1998,9 @@ class MeshtasticConnection:
                     "Ensure the official Meshtastic HA integration is installed "
                     "and its 'TCP Proxy' option is enabled, and that proxy_host/"
                     "proxy_port are correct. Underlying error: %s",
-                    self._host, self._port, exc,
+                    self._host,
+                    self._port,
+                    exc,
                 )
             elif _looks_like_slot_conflict(exc):
                 logger.error(
@@ -1891,12 +2012,16 @@ class MeshtasticConnection:
                     "Bluetooth (freeing the TCP slot for NodePulse), or disable it. "
                     "If you just disconnected the other client, reboot/power-cycle "
                     "the node so the firmware releases the slot. Underlying error: %s",
-                    self._host, self._port, exc,
+                    self._host,
+                    self._port,
+                    exc,
                 )
             else:
                 logger.error(
                     "Failed to connect to Meshtastic node at %s:%s: %s",
-                    self._host, self._port, exc,
+                    self._host,
+                    self._port,
+                    exc,
                 )
             raise
 
@@ -1912,7 +2037,9 @@ class MeshtasticConnection:
                     pub.subscribe(self._on_mesh_receive, "meshtastic.receive")
                     self._subscribed = True
                 except Exception as exc:  # pragma: no cover - defensive  # noqa: BLE001
-                    logger.warning("Could not subscribe to meshtastic receive events: %s", exc)
+                    logger.warning(
+                        "Could not subscribe to meshtastic receive events: %s", exc
+                    )
 
         logger.debug(
             "Connected to Meshtastic node (host=%s, port=%s)", self._host, self._port
@@ -2036,15 +2163,23 @@ class MeshtasticConnection:
             # entry so subsequent packets will bump last_heard and the HA push
             # triggered by this packet will see a current timestamp.
             from_num = packet.get("from")
-            is_from_broadcast = (
-                from_num in (0xFFFFFFFF, -1, None)
-                or (isinstance(from_num, int) and (from_num & 0xFFFFFFFF) == 0xFFFFFFFF)
+            is_from_broadcast = from_num in (0xFFFFFFFF, -1, None) or (
+                isinstance(from_num, int) and (from_num & 0xFFFFFFFF) == 0xFFFFFFFF
             )
-            from_id_snr = _node_id_from_num(from_num) if (from_num and not is_from_broadcast) else None
+            from_id_snr = (
+                _node_id_from_num(from_num)
+                if (from_num and not is_from_broadcast)
+                else None
+            )
             if from_id_snr and from_id_snr not in ("!ffffffff", "!00000000"):
                 with self._nodes_lock:
                     node = next(
-                        (n for n in self._nodes if normalize_node_id(n.get("id")) == from_id_snr), None
+                        (
+                            n
+                            for n in self._nodes
+                            if normalize_node_id(n.get("id")) == from_id_snr
+                        ),
+                        None,
                     )
                     if node is not None:
                         node["last_heard"] = now_ts
@@ -2055,15 +2190,21 @@ class MeshtasticConnection:
             # This ensures bidirectional communication updates the "last heard"
             # timestamp for both ends of a direct message.
             to_num = packet.get("to")
-            is_to_broadcast = (
-                to_num in (0xFFFFFFFF, -1, None)
-                or (isinstance(to_num, int) and (to_num & 0xFFFFFFFF) == 0xFFFFFFFF)
+            is_to_broadcast = to_num in (0xFFFFFFFF, -1, None) or (
+                isinstance(to_num, int) and (to_num & 0xFFFFFFFF) == 0xFFFFFFFF
             )
-            to_id_snr = _node_id_from_num(to_num) if (to_num and not is_to_broadcast) else None
+            to_id_snr = (
+                _node_id_from_num(to_num) if (to_num and not is_to_broadcast) else None
+            )
             if to_id_snr and to_id_snr not in ("!ffffffff", "!00000000"):
                 with self._nodes_lock:
                     node = next(
-                        (n for n in self._nodes if normalize_node_id(n.get("id")) == to_id_snr), None
+                        (
+                            n
+                            for n in self._nodes
+                            if normalize_node_id(n.get("id")) == to_id_snr
+                        ),
+                        None,
                     )
                     if node is not None:
                         node["last_heard"] = now_ts
@@ -2095,22 +2236,28 @@ class MeshtasticConnection:
             # Broadcast a signal_update SSE event whenever fresh SNR/RSSI
             # arrives so the Web UI can refresh the node row in real-time.
             if from_id_snr and (rx_snr is not None or rx_rssi is not None):
-                _broadcast_sse_event("signal_update", {
-                    "node_id": from_id_snr,
-                    "rx_snr": rx_snr,
-                    "rx_rssi": rx_rssi,
-                    "timestamp": int(time.time()),
-                })
+                _broadcast_sse_event(
+                    "signal_update",
+                    {
+                        "node_id": from_id_snr,
+                        "rx_snr": rx_snr,
+                        "rx_rssi": rx_rssi,
+                        "timestamp": int(time.time()),
+                    },
+                )
 
             # --- Neighbour info -------------------------------------------
             if portnum == "NEIGHBORINFO_APP":
                 self._capture_neighborinfo(packet)
                 # Broadcast so the topology view can update its neighbor graph
                 # and HA can refresh the neighbor-count sensor.
-                _broadcast_sse_event("neighborinfo", {
-                    "node_id": from_id_snr,
-                    "timestamp": int(time.time()),
-                })
+                _broadcast_sse_event(
+                    "neighborinfo",
+                    {
+                        "node_id": from_id_snr,
+                        "timestamp": int(time.time()),
+                    },
+                )
                 # Neighbor data feeds the topology map and neighbor-count sensor
                 # in HA. The 3-s debounce on _trigger_ha_push absorbs any burst.
                 self._trigger_ha_push()
@@ -2124,10 +2271,13 @@ class MeshtasticConnection:
             # The 3-second debounce on _trigger_ha_push() absorbs any burst
             # of NODEINFO packets that follows a reconnect or radio reset.
             if portnum == "NODEINFO_APP":
-                _broadcast_sse_event("nodeinfo", {
-                    "node_id": from_id_snr,
-                    "timestamp": int(time.time()),
-                })
+                _broadcast_sse_event(
+                    "nodeinfo",
+                    {
+                        "node_id": from_id_snr,
+                        "timestamp": int(time.time()),
+                    },
+                )
                 self._trigger_ha_push()
                 return
 
@@ -2135,10 +2285,13 @@ class MeshtasticConnection:
             if portnum == "TRACEROUTE_APP":
                 self._capture_traceroute(packet)
                 # Notify SSE clients and HA that a traceroute completed.
-                _broadcast_sse_event("traceroute", {
-                    "node_id": from_id_snr,
-                    "timestamp": int(time.time()),
-                })
+                _broadcast_sse_event(
+                    "traceroute",
+                    {
+                        "node_id": from_id_snr,
+                        "timestamp": int(time.time()),
+                    },
+                )
                 self._trigger_ha_push()
                 return
 
@@ -2146,13 +2299,20 @@ class MeshtasticConnection:
             if portnum == "POSITION_APP":
                 self._capture_position(packet)
                 pos = decoded.get("position") or {}
-                _broadcast_sse_event("position", {
-                    "node_id": from_id_snr,
-                    "lat": pos.get("latitudeI", 0) / 1e7 if pos.get("latitudeI") else None,
-                    "lng": pos.get("longitudeI", 0) / 1e7 if pos.get("longitudeI") else None,
-                    "altitude": pos.get("altitude"),
-                    "timestamp": int(time.time()),
-                })
+                _broadcast_sse_event(
+                    "position",
+                    {
+                        "node_id": from_id_snr,
+                        "lat": pos.get("latitudeI", 0) / 1e7
+                        if pos.get("latitudeI")
+                        else None,
+                        "lng": pos.get("longitudeI", 0) / 1e7
+                        if pos.get("longitudeI")
+                        else None,
+                        "altitude": pos.get("altitude"),
+                        "timestamp": int(time.time()),
+                    },
+                )
                 # Treat every position packet as real-time priority: push HA
                 # immediately so device_tracker entities update without waiting
                 # for the next polling cycle.
@@ -2177,20 +2337,26 @@ class MeshtasticConnection:
             # --- Device telemetry (2.8 Signal Quality: noise floor) -------
             if portnum == "DEVICE_METRICS_APP":
                 self._capture_telemetry(packet)
-                _broadcast_sse_event("telemetry", {
-                    "node_id": from_id_snr,
-                    "timestamp": int(time.time()),
-                })
+                _broadcast_sse_event(
+                    "telemetry",
+                    {
+                        "node_id": from_id_snr,
+                        "timestamp": int(time.time()),
+                    },
+                )
                 return
 
             # --- Environmental telemetry (temperature, humidity, pressure, gas) -------
             if portnum == "TELEMETRY_APP":
                 logger.debug("TELEMETRY_APP packet received from %s", from_id_snr)
                 self._capture_environment_telemetry(packet)
-                _broadcast_sse_event("telemetry", {
-                    "node_id": from_id_snr,
-                    "timestamp": int(time.time()),
-                })
+                _broadcast_sse_event(
+                    "telemetry",
+                    {
+                        "node_id": from_id_snr,
+                        "timestamp": int(time.time()),
+                    },
+                )
                 # Note: We do NOT trigger HA push here. Environmental metrics change
                 # slowly and are already included in the regular /api/nodes poll.
                 # Triggering a push on every telemetry packet would overwhelm HA.
@@ -2200,7 +2366,12 @@ class MeshtasticConnection:
             # --- Text messages ------------------------------------------
             # Only process packets explicitly meant for text messaging (or packets
             # where meshtastic library already populated a clean decoded['text'] field).
-            is_text_port = portnum in ("TEXT_MESSAGE_APP", 1, "TEXT_MESSAGE_COMPACT_APP", 69)
+            is_text_port = portnum in (
+                "TEXT_MESSAGE_APP",
+                1,
+                "TEXT_MESSAGE_COMPACT_APP",
+                69,
+            )
             text = decoded.get("text")
 
             if not text and is_text_port and "payload" in decoded:
@@ -2247,7 +2418,9 @@ class MeshtasticConnection:
                 recent = msg_list[-20:] if len(msg_list) > 20 else msg_list
                 channel_raw_early = packet.get("channel")
                 try:
-                    channel_early = int(channel_raw_early) if channel_raw_early is not None else 0
+                    channel_early = (
+                        int(channel_raw_early) if channel_raw_early is not None else 0
+                    )
                 except (ValueError, TypeError):
                     channel_early = 0
                 for m in recent:
@@ -2257,12 +2430,19 @@ class MeshtasticConnection:
                     except (ValueError, TypeError):
                         m_ch = 0
                     if (
-                        (m.get("outgoing") or m.get("from_telegram") or m.get("from_id") == self_id)
+                        (
+                            m.get("outgoing")
+                            or m.get("from_telegram")
+                            or m.get("from_id") == self_id
+                        )
                         and m.get("text") == text
                         and m_ch == channel_early
                         and (m.get("timestamp", 0) >= cutoff)
                     ):
-                        logger.debug("Suppressed on-air echo for self-sent message: %s", text[:50])
+                        logger.debug(
+                            "Suppressed on-air echo for self-sent message: %s",
+                            text[:50],
+                        )
                         return
 
             name = None
@@ -2290,17 +2470,30 @@ class MeshtasticConnection:
                         or ""
                     )
                     name = from_short or from_long
-                    logger.debug("Resolved node name from live interface: %s (short: %s, long: %s)", 
-                                from_id, from_short, from_long)
+                    logger.debug(
+                        "Resolved node name from live interface: %s (short: %s, long: %s)",
+                        from_id,
+                        from_short,
+                        from_long,
+                    )
                 else:
-                    logger.debug("Node not found in live interface: %s (num: %s)", from_id, from_num)
+                    logger.debug(
+                        "Node not found in live interface: %s (num: %s)",
+                        from_id,
+                        from_num,
+                    )
 
             # Fallback to the persistent node store for senders we don't have a
             # live user dict for (e.g. nodes heard via MQTT or traceroute).
             if not from_short or not from_long:
                 with self._nodes_lock:
                     persisted = next(
-                        (n for n in self._nodes if normalize_node_id(n.get("id")) == from_id), None
+                        (
+                            n
+                            for n in self._nodes
+                            if normalize_node_id(n.get("id")) == from_id
+                        ),
+                        None,
                     )
                 if persisted:
                     if not from_short:
@@ -2321,8 +2514,12 @@ class MeshtasticConnection:
                         )
                     if not name:
                         name = from_short or from_long
-                    logger.debug("Resolved node name from persistent store: %s (short: %s, long: %s)", 
-                                from_id, from_short, from_long)
+                    logger.debug(
+                        "Resolved node name from persistent store: %s (short: %s, long: %s)",
+                        from_id,
+                        from_short,
+                        from_long,
+                    )
                 else:
                     logger.debug("Node not found in persistent store: %s", from_id)
 
@@ -2358,7 +2555,9 @@ class MeshtasticConnection:
             entry = {
                 "from_id": from_id,
                 "to_id": to_id,
-                "from_name": (name if name and name.strip() else from_id) or from_id or "Unknown",
+                "from_name": (name if name and name.strip() else from_id)
+                or from_id
+                or "Unknown",
                 "from_short": from_short,
                 "from_long": from_long,
                 "text": text,
@@ -2380,21 +2579,24 @@ class MeshtasticConnection:
 
             # Broadcast new message to SSE clients in real-time so the Web UI
             # updates within milliseconds instead of waiting for the next poll.
-            _broadcast_sse_event("message", {
-                "id": entry["id"],
-                "from_id": from_id,
-                "to_id": to_id,
-                "from_name": entry["from_name"],
-                "from_short": entry["from_short"],
-                "text": text,
-                "channel": channel,
-                "conversation": entry["conversation"],
-                "is_dm": is_dm,
-                "outgoing": entry["outgoing"],
-                "rx_snr": entry["rx_snr"],
-                "rx_rssi": entry["rx_rssi"],
-                "timestamp": entry["timestamp"],
-            })
+            _broadcast_sse_event(
+                "message",
+                {
+                    "id": entry["id"],
+                    "from_id": from_id,
+                    "to_id": to_id,
+                    "from_name": entry["from_name"],
+                    "from_short": entry["from_short"],
+                    "text": text,
+                    "channel": channel,
+                    "conversation": entry["conversation"],
+                    "is_dm": is_dm,
+                    "outgoing": entry["outgoing"],
+                    "rx_snr": entry["rx_snr"],
+                    "rx_rssi": entry["rx_rssi"],
+                    "timestamp": entry["timestamp"],
+                },
+            )
 
             # Push a lightweight refresh trigger to the HA coordinator so HA
             # entity states update immediately (bypasses the polling interval).
@@ -2408,7 +2610,7 @@ class MeshtasticConnection:
             if callback is not None:
                 try:
                     callback(entry)
-                except Exception as exc:  # defensive: never crash the receive thread  # noqa: BLE001
+                except Exception as exc:  # defensive: never crash the receive thread
                     logger.debug("Telegram forward callback error (ignored): %s", exc)
         except Exception as exc:  # pragma: no cover - defensive  # noqa: BLE001
             logger.debug("Error handling received packet (ignored): %s", exc)
@@ -2461,11 +2663,13 @@ class MeshtasticConnection:
             tokens.append((ha_access_token, False))
 
         if not tokens:
-            logger.debug("HA push skipped: no SUPERVISOR_TOKEN or ha_access_token configured")
+            logger.debug(
+                "HA push skipped: no SUPERVISOR_TOKEN or ha_access_token configured"
+            )
             return
 
         candidates = [
-            "http://supervisor/core",     # Supervisor proxy — only valid target for SUPERVISOR_TOKEN
+            "http://supervisor/core",  # Supervisor proxy — only valid target for SUPERVISOR_TOKEN
             "http://homeassistant:8123",
             "http://supervisor:8123",
             "http://hassio:8123",
@@ -2489,17 +2693,24 @@ class MeshtasticConnection:
                     for base in candidates:
                         # Never send the Supervisor token to a direct HA-core
                         # URL — it always 401s and trips the IP-ban logger.
-                        if is_supervisor_token and not base.rstrip("/").endswith("supervisor/core"):
+                        if is_supervisor_token and not base.rstrip("/").endswith(
+                            "supervisor/core"
+                        ):
                             continue
                         url = f"{base}/api/nodepulse/push"
                         try:
-                            async with session.post(url, headers=headers, json={}, timeout=timeout) as resp:
+                            async with session.post(
+                                url, headers=headers, json={}, timeout=timeout
+                            ) as resp:
                                 if resp.status in (200, 201):
                                     self._ha_push_working_host = base
                                     logger.debug("HA push succeeded (host=%s)", base)
                                     return
                                 if resp.status == 503:
-                                    logger.debug("HA push: 503 not_ready from %s (integration loading)", base)
+                                    logger.debug(
+                                        "HA push: 503 not_ready from %s (integration loading)",
+                                        base,
+                                    )
                                     return
                                 if resp.status in (401, 403, 404):
                                     continue
@@ -2524,17 +2735,17 @@ class MeshtasticConnection:
         try:
             decoded = packet.get("decoded", {}) or {}
             entry = {
-                "id":        packet.get("id"),
-                "from_id":   _node_id_from_num(packet.get("from")),
-                "to_id":     _node_id_from_num(packet.get("to")),
-                "portnum":   decoded.get("portnum") or "UNKNOWN",
-                "channel":   packet.get("channel", 0),
-                "rx_snr":    packet.get("rxSnr"),
-                "rx_rssi":   packet.get("rxRssi"),
+                "id": packet.get("id"),
+                "from_id": _node_id_from_num(packet.get("from")),
+                "to_id": _node_id_from_num(packet.get("to")),
+                "portnum": decoded.get("portnum") or "UNKNOWN",
+                "channel": packet.get("channel", 0),
+                "rx_snr": packet.get("rxSnr"),
+                "rx_rssi": packet.get("rxRssi"),
                 "hop_limit": packet.get("hopLimit"),
                 "hop_start": packet.get("hopStart"),
-                "want_ack":  bool(packet.get("wantAck")),
-                "via_mqtt":  bool(packet.get("viaMqtt")),
+                "want_ack": bool(packet.get("wantAck")),
+                "via_mqtt": bool(packet.get("viaMqtt")),
                 "decoded_ok": bool(decoded.get("portnum")),
                 "timestamp": int(time.time()),
                 # Full decoded payload serialised to a JSON-safe dict. Bytes
@@ -2550,7 +2761,7 @@ class MeshtasticConnection:
             # entries automatically when full, so this never stalls the receive
             # thread or overwhelms slow clients.
             _broadcast_sse_event("packet", entry)
-        except Exception as exc:  # defensive — never crash the receive thread  # noqa: BLE001
+        except Exception as exc:  # defensive — never crash the receive thread
             logger.debug("Error capturing packet to log (ignored): %s", exc)
 
     def _capture_outbound_packet_log(
@@ -2663,13 +2874,19 @@ class MeshtasticConnection:
                 or packet.get("error_reason")
                 or "NONE"
             )
-            status = "delivered" if error_reason in ("NONE", 0, "", None, "ERR_NONE") else "failed"
+            status = (
+                "delivered"
+                if error_reason in ("NONE", 0, "", None, "ERR_NONE")
+                else "failed"
+            )
 
             conv_key = None
             msg_id = None
             with self._msg_lock:
                 # Pop by both raw request_id and normalized uint32
-                msg_id = self._pending_acks.pop(request_id, None) or self._pending_acks.pop(norm_id, None)
+                msg_id = self._pending_acks.pop(
+                    request_id, None
+                ) or self._pending_acks.pop(norm_id, None)
                 self._pending_ack_times.pop(request_id, None)
                 self._pending_ack_times.pop(norm_id, None)
                 if msg_id is None:
@@ -2682,13 +2899,16 @@ class MeshtasticConnection:
                         break
             self._schedule_save(self._messages, _MESSAGES_FILE)
             if msg_id:
-                _broadcast_sse_event("ack_update", {
-                    "id": msg_id,
-                    "conversation": conv_key,
-                    "ack_status": status,
-                    "ack_at": int(time.time()),
-                    "packet_id": norm_id,
-                })
+                _broadcast_sse_event(
+                    "ack_update",
+                    {
+                        "id": msg_id,
+                        "conversation": conv_key,
+                        "ack_status": status,
+                        "ack_at": int(time.time()),
+                        "packet_id": norm_id,
+                    },
+                )
             logger.debug("ACK received for msg_id=%s: status=%s", msg_id, status)
         except Exception as exc:  # defensive  # noqa: BLE001
             logger.debug("Error handling routing ACK (ignored): %s", exc)
@@ -2709,7 +2929,8 @@ class MeshtasticConnection:
         with self._msg_lock:
             # Snapshot under lock to avoid racing with _capture_routing_ack.
             timed_out = [
-                pid for pid, sent_at in list(self._pending_ack_times.items())
+                pid
+                for pid, sent_at in list(self._pending_ack_times.items())
                 if now - sent_at > _ACK_TIMEOUT_S
             ]
             if not timed_out:
@@ -2720,19 +2941,25 @@ class MeshtasticConnection:
                 if msg_id is None:
                     continue
                 for msg in self._messages:
-                    if msg.get("id") == msg_id and msg.get("ack_status") in ("sending", "sent"):
+                    if msg.get("id") == msg_id and msg.get("ack_status") in (
+                        "sending",
+                        "sent",
+                    ):
                         msg["ack_status"] = "failed"
                         msg["ack_at"] = int(time.time())
                         expired_updates.append((msg_id, msg.get("conversation")))
                         break
         self._schedule_save(self._messages, _MESSAGES_FILE)
         for msg_id, conv_key in expired_updates:
-            _broadcast_sse_event("ack_update", {
-                "id": msg_id,
-                "conversation": conv_key,
-                "ack_status": "failed",
-                "ack_at": int(time.time()),
-            })
+            _broadcast_sse_event(
+                "ack_update",
+                {
+                    "id": msg_id,
+                    "conversation": conv_key,
+                    "ack_status": "failed",
+                    "ack_at": int(time.time()),
+                },
+            )
         logger.debug("Expired %s timed-out pending ACKs", len(timed_out))
 
     # ----------------------------------------------------------------
@@ -2773,6 +3000,7 @@ class MeshtasticConnection:
     def _get_packet_log_sync(self, limit: int) -> list[dict[str, Any]]:
         """Return the most recent `limit` entries from the packet ring buffer."""
         import itertools
+
         with self._packet_log_lock:
             return list(itertools.islice(self._packet_log, limit))
 
@@ -2797,12 +3025,17 @@ class MeshtasticConnection:
             "total_captured": total,
         }
 
-    def _get_mesh_discovery_sync(self, window_seconds: int, limit: int) -> dict[str, Any]:
+    def _get_mesh_discovery_sync(
+        self, window_seconds: int, limit: int
+    ) -> dict[str, Any]:
         """Compute mesh discovery from packet log within time window."""
         import time
+
         now = time.time()
         with self._packet_log_lock:
-            recent = [p for p in self._packet_log if (now - p["timestamp"]) <= window_seconds]
+            recent = [
+                p for p in self._packet_log if (now - p["timestamp"]) <= window_seconds
+            ]
             total_analyzed = len(recent)
 
         # Group packets by from_id
@@ -2869,24 +3102,32 @@ class MeshtasticConnection:
             hop_vals = data["hop_limits"]
             timestamps = data["timestamps"]
 
-            result.append({
-                "node_id": node_id,
-                "short_name": names.get("short_name", ""),
-                "long_name": names.get("long_name", ""),
-                "last_seen": max(timestamps) if timestamps else 0,
-                "packet_count": data["packet_count"],
-                "channels": sorted(data["channels"]),
-                "portnums": sorted(data["portnums"]),
-                "best_snr": max(snr_vals) if snr_vals else None,
-                "worst_snr": min(snr_vals) if snr_vals else None,
-                "avg_snr": round(sum(snr_vals) / len(snr_vals), 1) if snr_vals else None,
-                "best_rssi": max(rssi_vals) if rssi_vals else None,
-                "worst_rssi": min(rssi_vals) if rssi_vals else None,
-                "avg_rssi": round(sum(rssi_vals) / len(rssi_vals)) if rssi_vals else None,
-                "avg_hop_limit": round(sum(hop_vals) / len(hop_vals), 1) if hop_vals else None,
-                "is_direct": data["direct_count"] > data["via_mqtt_count"],
-                "via_mqtt": data["via_mqtt_count"] > 0,
-            })
+            result.append(
+                {
+                    "node_id": node_id,
+                    "short_name": names.get("short_name", ""),
+                    "long_name": names.get("long_name", ""),
+                    "last_seen": max(timestamps) if timestamps else 0,
+                    "packet_count": data["packet_count"],
+                    "channels": sorted(data["channels"]),
+                    "portnums": sorted(data["portnums"]),
+                    "best_snr": max(snr_vals) if snr_vals else None,
+                    "worst_snr": min(snr_vals) if snr_vals else None,
+                    "avg_snr": round(sum(snr_vals) / len(snr_vals), 1)
+                    if snr_vals
+                    else None,
+                    "best_rssi": max(rssi_vals) if rssi_vals else None,
+                    "worst_rssi": min(rssi_vals) if rssi_vals else None,
+                    "avg_rssi": round(sum(rssi_vals) / len(rssi_vals))
+                    if rssi_vals
+                    else None,
+                    "avg_hop_limit": round(sum(hop_vals) / len(hop_vals), 1)
+                    if hop_vals
+                    else None,
+                    "is_direct": data["direct_count"] > data["via_mqtt_count"],
+                    "via_mqtt": data["via_mqtt_count"] > 0,
+                }
+            )
 
         # Sort by last_seen descending, then packet_count descending
         result.sort(key=lambda x: (x["last_seen"], x["packet_count"]), reverse=True)
@@ -2907,7 +3148,9 @@ class MeshtasticConnection:
             if isinstance(data, dict):
                 with self._tags_lock:
                     self._tags = {str(k): v for k, v in data.items()}
-                logger.debug("Restored %s tagged nodes from %s", len(self._tags), _TAGS_FILE)
+                logger.debug(
+                    "Restored %s tagged nodes from %s", len(self._tags), _TAGS_FILE
+                )
         except Exception as exc:  # noqa: BLE001
             logger.debug("Could not load persisted tags (ignored): %s", exc)
 
@@ -2943,12 +3186,14 @@ class MeshtasticConnection:
             if not os.path.exists(_FAVORITES_FILE):
                 return
             with self._persist_lock, open(_FAVORITES_FILE, encoding="utf-8") as fh:
-                    data = json.load(fh)
+                data = json.load(fh)
             if isinstance(data, list):
                 with self._favorites_lock:
                     self._favorites = {str(n) for n in data if n}
                 logger.debug(
-                    "Restored %s favorited nodes from %s", len(self._favorites), _FAVORITES_FILE
+                    "Restored %s favorited nodes from %s",
+                    len(self._favorites),
+                    _FAVORITES_FILE,
                 )
         except Exception as exc:  # noqa: BLE001
             logger.debug("Could not load persisted favorites (ignored): %s", exc)
@@ -2983,7 +3228,11 @@ class MeshtasticConnection:
                     nodes_snapshot = []
 
                 local_node = getattr(iface, "localNode", None)
-                legacy_favorites = getattr(local_node, "favorites", None) if local_node is not None else None
+                legacy_favorites = (
+                    getattr(local_node, "favorites", None)
+                    if local_node is not None
+                    else None
+                )
 
             device_favorites_present: set[str] = set()
             device_non_favorites_present: set[str] = set()
@@ -3023,7 +3272,9 @@ class MeshtasticConnection:
 
             logger.debug(
                 "Synced favorites from device (+%s, -%s, total: %s)",
-                len(device_favorites_present), len(device_non_favorites_present), len(self._favorites),
+                len(device_favorites_present),
+                len(device_non_favorites_present),
+                len(self._favorites),
             )
             self._save_favorites()
         except Exception as exc:  # noqa: BLE001
@@ -3051,7 +3302,7 @@ class MeshtasticConnection:
                 self._favorites.discard(node_id)
             result = sorted(self._favorites)
         self._save_favorites()
-        
+
         # Send admin message to device to mark node as favorite in NodeDB
         # This makes communication with favorite nodes not count against hop limits
         try:
@@ -3066,7 +3317,7 @@ class MeshtasticConnection:
                     logger.info("Removed node %s from favorites on device", node_id)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to set favorite on device for %s: %s", node_id, exc)
-        
+
         return result
 
     def _load_position_history(self) -> None:
@@ -3074,8 +3325,11 @@ class MeshtasticConnection:
         try:
             if not os.path.exists(_POSITION_HISTORY_FILE):
                 return
-            with self._persist_lock, open(_POSITION_HISTORY_FILE, encoding="utf-8") as fh:
-                    data = json.load(fh)
+            with (
+                self._persist_lock,
+                open(_POSITION_HISTORY_FILE, encoding="utf-8") as fh,
+            ):
+                data = json.load(fh)
             if isinstance(data, dict):
                 with self._pos_hist_lock:
                     self._pos_history = {}
@@ -3084,7 +3338,8 @@ class MeshtasticConnection:
                             self._pos_history[str(k)] = v[-_POS_HISTORY_MAX:]
                 logger.debug(
                     "Restored position history for %s nodes from %s",
-                    len(self._pos_history), _POSITION_HISTORY_FILE,
+                    len(self._pos_history),
+                    _POSITION_HISTORY_FILE,
                 )
         except Exception as exc:  # noqa: BLE001
             logger.debug("Could not load persisted position history (ignored): %s", exc)
@@ -3098,7 +3353,15 @@ class MeshtasticConnection:
         except Exception as exc:  # noqa: BLE001
             logger.debug("Could not persist position history (ignored): %s", exc)
 
-    def _record_position(self, node_id: str, lat: float, lng: float, alt: float | None = None, snr: float | None = None, rssi: float | None = None) -> None:
+    def _record_position(
+        self,
+        node_id: str,
+        lat: float,
+        lng: float,
+        alt: float | None = None,
+        snr: float | None = None,
+        rssi: float | None = None,
+    ) -> None:
         """Append a position fix to a node's trail, capping at _POS_HISTORY_MAX."""
         if node_id is None or lat is None or lng is None:
             return
@@ -3117,7 +3380,9 @@ class MeshtasticConnection:
                 trail = trail[-_POS_HISTORY_MAX:]
             self._pos_history[node_id] = trail
 
-    def _get_position_history_sync(self, node_id: str | None = None) -> dict[str, list[dict]]:
+    def _get_position_history_sync(
+        self, node_id: str | None = None
+    ) -> dict[str, list[dict]]:
         with self._pos_hist_lock:
             if node_id:
                 trail = self._pos_history.get(node_id, [])
@@ -3137,16 +3402,24 @@ class MeshtasticConnection:
                 archived_messages = []
                 if os.path.exists(_MESSAGES_ARCHIVE_DIR):
                     for filename in sorted(os.listdir(_MESSAGES_ARCHIVE_DIR)):
-                        if filename.endswith('.json'):
+                        if filename.endswith(".json"):
                             filepath = os.path.join(_MESSAGES_ARCHIVE_DIR, filename)
                             try:
                                 with open(filepath, encoding="utf-8") as fh:
                                     data = json.load(fh)
                                 if isinstance(data, list):
                                     archived_messages.extend(data)
-                                    logger.debug("Loaded %s messages from archive %s", len(data), filename)
+                                    logger.debug(
+                                        "Loaded %s messages from archive %s",
+                                        len(data),
+                                        filename,
+                                    )
                             except Exception as exc:  # noqa: BLE001
-                                logger.debug("Could not load archive file %s (ignored): %s", filename, exc)
+                                logger.debug(
+                                    "Could not load archive file %s (ignored): %s",
+                                    filename,
+                                    exc,
+                                )
 
                 # Then load recent messages
                 recent_messages = []
@@ -3155,7 +3428,11 @@ class MeshtasticConnection:
                         data = json.load(fh)
                     if isinstance(data, list):
                         recent_messages = data
-                        logger.debug("Loaded %s recent messages from %s", len(data), _MESSAGES_FILE)
+                        logger.debug(
+                            "Loaded %s recent messages from %s",
+                            len(data),
+                            _MESSAGES_FILE,
+                        )
 
                 # Combine: archived + recent, deduplicate by ID, then keep only the most recent maxlen entries
                 all_messages = archived_messages + recent_messages
@@ -3172,30 +3449,54 @@ class MeshtasticConnection:
                     elif not msg_id:
                         unique_messages.append(msg)
 
-                self._messages = collections.deque(unique_messages[-self._messages.maxlen:], maxlen=self._messages.maxlen)
-                logger.debug("Restored %s total messages (oldest from archive: %s, recent: %s, deduped to %s)",
-                            len(self._messages), len(archived_messages), len(recent_messages), len(unique_messages))
+                self._messages = collections.deque(
+                    unique_messages[-self._messages.maxlen :],
+                    maxlen=self._messages.maxlen,
+                )
+                logger.debug(
+                    "Restored %s total messages (oldest from archive: %s, recent: %s, deduped to %s)",
+                    len(self._messages),
+                    len(archived_messages),
+                    len(recent_messages),
+                    len(unique_messages),
+                )
         except Exception as exc:  # pragma: no cover - defensive  # noqa: BLE001
             logger.debug("Could not load persisted messages (ignored): %s", exc)
 
-    
     def _load_scheduled_messages(self) -> None:
         """Restore scheduled messages from disk, discarding expired ones."""
         try:
             if os.path.exists(_SCHEDULED_MESSAGES_FILE):
-                with self._persist_lock, open(_SCHEDULED_MESSAGES_FILE, encoding="utf-8") as fh:
+                with (
+                    self._persist_lock,
+                    open(_SCHEDULED_MESSAGES_FILE, encoding="utf-8") as fh,
+                ):
                     data = json.load(fh)
                 if isinstance(data, list):
                     now = time.time()
                     # Discard expired entries whose scheduled time was more than 5 min ago
-                    valid = [tuple(x) for x in data if isinstance(x, (list, tuple)) and len(x) >= 4 and x[0] > (now - 300)]
+                    valid = [
+                        tuple(x)
+                        for x in data
+                        if isinstance(x, (list, tuple))
+                        and len(x) >= 4
+                        and x[0] > (now - 300)
+                    ]
                     with self._scheduled_messages_lock:
                         self._scheduled_messages = valid
                     if len(valid) != len(data):
-                        logger.info("Purged %d expired scheduled message(s) on startup", len(data) - len(valid))
-                        self._schedule_save(self._scheduled_messages, _SCHEDULED_MESSAGES_FILE)
+                        logger.info(
+                            "Purged %d expired scheduled message(s) on startup",
+                            len(data) - len(valid),
+                        )
+                        self._schedule_save(
+                            self._scheduled_messages, _SCHEDULED_MESSAGES_FILE
+                        )
         except Exception as exc:  # noqa: BLE001
-            logger.debug("Could not load persisted scheduled messages (ignored): %s", exc)
+            logger.debug(
+                "Could not load persisted scheduled messages (ignored): %s", exc
+            )
+
     def _save_messages(self) -> None:
         """Persist the current message buffer to disk (best-effort).
 
@@ -3241,7 +3542,9 @@ class MeshtasticConnection:
             with self._persist_lock:
                 self._write_json_no_lock(recent_messages, _MESSAGES_FILE)
                 for date_str, date_messages in old_messages_by_date.items():
-                    archive_file = os.path.join(_MESSAGES_ARCHIVE_DIR, f"messages_{date_str}.json")
+                    archive_file = os.path.join(
+                        _MESSAGES_ARCHIVE_DIR, f"messages_{date_str}.json"
+                    )
                     # Load existing archived messages for this date
                     existing = []
                     if os.path.exists(archive_file):
@@ -3255,7 +3558,11 @@ class MeshtasticConnection:
 
                     # Deduplicate by ID before merging
                     existing_ids = {msg.get("id") for msg in existing if msg.get("id")}
-                    new_to_add = [msg for msg in date_messages if msg.get("id") not in existing_ids]
+                    new_to_add = [
+                        msg
+                        for msg in date_messages
+                        if msg.get("id") not in existing_ids
+                    ]
 
                     # Merge and save (without _write_json to avoid double-locking)
                     tmp_path = archive_file + ".tmp"
@@ -3265,18 +3572,31 @@ class MeshtasticConnection:
                         fh.flush()
                         os.fsync(fh.fileno())
                     os.replace(tmp_path, archive_file)
-                    logger.debug("Archived %s messages to %s (total %s, added %s new)",
-                                len(date_messages), archive_file, len(merged), len(new_to_add))
+                    logger.debug(
+                        "Archived %s messages to %s (total %s, added %s new)",
+                        len(date_messages),
+                        archive_file,
+                        len(merged),
+                        len(new_to_add),
+                    )
 
-            logger.debug("Saved %s recent messages, archived %s old messages across %s dates",
-                        len(recent_messages), len(snapshot) - len(recent_messages), len(old_messages_by_date))
+            logger.debug(
+                "Saved %s recent messages, archived %s old messages across %s dates",
+                len(recent_messages),
+                len(snapshot) - len(recent_messages),
+                len(old_messages_by_date),
+            )
         except Exception as exc:  # pragma: no cover - defensive  # noqa: BLE001
             logger.debug("Could not persist messages (ignored): %s", exc)
-    def schedule_message(self, execute_time: float, destination: str, text: str, channel: int) -> None:
-        with self._scheduled_messages_lock:
-            self._scheduled_messages.append((execute_time, destination, text, channel, 0))
-        self._schedule_save(self._scheduled_messages, _SCHEDULED_MESSAGES_FILE)
 
+    def schedule_message(
+        self, execute_time: float, destination: str, text: str, channel: int
+    ) -> None:
+        with self._scheduled_messages_lock:
+            self._scheduled_messages.append(
+                (execute_time, destination, text, channel, 0)
+            )
+        self._schedule_save(self._scheduled_messages, _SCHEDULED_MESSAGES_FILE)
 
     def _process_scheduled_messages(self, current_time: float) -> list[dict[str, Any]]:
         """Remove and return dispatch info for any scheduled messages due now.
@@ -3288,14 +3608,12 @@ class MeshtasticConnection:
         """
         with self._scheduled_messages_lock:
             to_send = [
-                entry for entry in self._scheduled_messages
-                if entry[0] <= current_time
+                entry for entry in self._scheduled_messages if entry[0] <= current_time
             ]
             # Remove due entries from the queue before returning so a crash in
             # the caller doesn't re-queue the same messages on the next tick.
             self._scheduled_messages = [
-                entry for entry in self._scheduled_messages
-                if entry[0] > current_time
+                entry for entry in self._scheduled_messages if entry[0] > current_time
             ]
             if to_send:
                 self._schedule_save(self._scheduled_messages, _SCHEDULED_MESSAGES_FILE)
@@ -3351,8 +3669,8 @@ class MeshtasticConnection:
                 "lat": lat,
                 "lng": lng,
                 "icon": _sanitize_mesh_text(wp.get("icon"), "📍"),
-                "expire": wp.get("expire"),          # Unix timestamp or None
-                "locked_to": wp.get("lockedTo"),     # node num or None
+                "expire": wp.get("expire"),  # Unix timestamp or None
+                "locked_to": wp.get("lockedTo"),  # node num or None
                 "from_id": from_id,
                 "timestamp": int(time.time()),
                 "source": "mesh",
@@ -3378,13 +3696,15 @@ class MeshtasticConnection:
         with self._waypoints_lock:
             # Filter out expired waypoints at read time.
             return [
-                w for w in self._waypoints
+                w
+                for w in self._waypoints
                 if w.get("expire") is None or w["expire"] == 0 or w["expire"] > now
             ]
 
     def _add_waypoint_sync(self, waypoint: dict[str, Any]) -> dict[str, Any]:
         """Store a locally-created waypoint, assign an ID, and persist."""
         import uuid
+
         entry = {
             "id": f"local-{uuid.uuid4().hex[:8]}",
             "wp_id": None,
@@ -3404,14 +3724,20 @@ class MeshtasticConnection:
         self._save_waypoints()
         return entry
 
-    def _update_waypoint_sync(self, waypoint_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
+    def _update_waypoint_sync(
+        self, waypoint_id: str, updates: dict[str, Any]
+    ) -> dict[str, Any] | None:
         """Update a waypoint's fields in-place and persist."""
         with self._waypoints_lock:
             for wp in self._waypoints:
                 if wp.get("id") == waypoint_id:
                     for key in ("lat", "lng", "name", "description", "icon"):
                         if key in updates:
-                            wp[key] = _sanitize_mesh_text(updates[key]) if key != "lat" and key != "lng" else updates[key]
+                            wp[key] = (
+                                _sanitize_mesh_text(updates[key])
+                                if key != "lat" and key != "lng"
+                                else updates[key]
+                            )
                     snapshot = dict(wp)
                     break
             else:
@@ -3435,13 +3761,16 @@ class MeshtasticConnection:
             if not os.path.exists(_WAYPOINTS_FILE):
                 return
             with self._persist_lock, open(_WAYPOINTS_FILE, encoding="utf-8") as fh:
-                    data = json.load(fh)
+                data = json.load(fh)
             if isinstance(data, list):
                 with self._waypoints_lock:
-                    self._waypoints = [w for w in data if isinstance(w, dict) and w.get("id")]
+                    self._waypoints = [
+                        w for w in data if isinstance(w, dict) and w.get("id")
+                    ]
                 logger.debug(
                     "Restored %s waypoints from %s",
-                    len(self._waypoints), _WAYPOINTS_FILE,
+                    len(self._waypoints),
+                    _WAYPOINTS_FILE,
                 )
         except Exception as exc:  # pragma: no cover - defensive  # noqa: BLE001
             logger.debug("Could not load persisted waypoints (ignored): %s", exc)
@@ -3502,7 +3831,10 @@ class MeshtasticConnection:
         self._persist_stopping = True
         try:
             self._persist_queue.put(None)
-            if hasattr(self, "_persist_worker_thread") and self._persist_worker_thread.is_alive():
+            if (
+                hasattr(self, "_persist_worker_thread")
+                and self._persist_worker_thread.is_alive()
+            ):
                 self._persist_worker_thread.join(timeout=3.0)
         except Exception as exc:  # noqa: BLE001
             logger.debug("Error stopping persistence worker (ignored): %s", exc)
@@ -3554,12 +3886,13 @@ class MeshtasticConnection:
             if not os.path.exists(_TRACEROUTES_FILE):
                 return
             with self._persist_lock, open(_TRACEROUTES_FILE, encoding="utf-8") as fh:
-                    data = json.load(fh)
+                data = json.load(fh)
             if isinstance(data, dict):
                 self._traceroutes = {str(k): v for k, v in data.items()}
                 logger.debug(
                     "Restored %s traceroute results from %s",
-                    len(self._traceroutes), _TRACEROUTES_FILE,
+                    len(self._traceroutes),
+                    _TRACEROUTES_FILE,
                 )
         except Exception as exc:  # pragma: no cover - defensive  # noqa: BLE001
             logger.debug("Could not load persisted traceroutes (ignored): %s", exc)
@@ -3570,11 +3903,13 @@ class MeshtasticConnection:
             if not os.path.exists(_CHANNELS_FILE):
                 return
             with self._persist_lock, open(_CHANNELS_FILE, encoding="utf-8") as fh:
-                    data = json.load(fh)
+                data = json.load(fh)
             if isinstance(data, list):
                 with self._channels_lock:
                     self._channels = data
-                logger.debug("Restored %s channels from %s", len(self._channels), _CHANNELS_FILE)
+                logger.debug(
+                    "Restored %s channels from %s", len(self._channels), _CHANNELS_FILE
+                )
         except Exception as exc:  # pragma: no cover - defensive  # noqa: BLE001
             logger.debug("Could not load persisted channels (ignored): %s", exc)
 
@@ -3600,7 +3935,7 @@ class MeshtasticConnection:
             if not os.path.exists(_NODES_FILE):
                 return
             with self._persist_lock, open(_NODES_FILE, encoding="utf-8") as fh:
-                    data = json.load(fh)
+                data = json.load(fh)
             if isinstance(data, list):
                 with self._nodes_lock:
                     self._nodes = []
@@ -3620,7 +3955,9 @@ class MeshtasticConnection:
                             # after every restart.
                             lat = n.get("latitude")
                             lng = n.get("longitude")
-                            lat, lng = self._validate_and_correct_coordinates(nid, lat, lng)
+                            lat, lng = self._validate_and_correct_coordinates(
+                                nid, lat, lng
+                            )
                             n["latitude"] = lat
                             n["longitude"] = lng
 
@@ -3628,7 +3965,8 @@ class MeshtasticConnection:
                             self._nodes.append(n)
                 logger.debug(
                     "Restored %s persisted nodes from %s",
-                    len(self._nodes), _NODES_FILE,
+                    len(self._nodes),
+                    _NODES_FILE,
                 )
         except Exception as exc:  # pragma: no cover - defensive  # noqa: BLE001
             logger.debug("Could not load persisted nodes (ignored): %s", exc)
@@ -3662,23 +4000,25 @@ class MeshtasticConnection:
                     return
                 self._last_node_save = now
                 self._pending_node_save = False
-                
+
                 # Filter to only save nodes with valid GPS coordinates
                 # This prevents cluttering the persistence file with nodes that have no location data
                 nodes_with_coords = [
-                    n for n in self._nodes 
+                    n
+                    for n in self._nodes
                     if n.get("latitude") is not None and n.get("longitude") is not None
                 ]
-                
+
                 # Log how many nodes are being filtered out
                 total_nodes = len(self._nodes)
                 nodes_with_gps = len(nodes_with_coords)
                 if total_nodes > nodes_with_gps:
                     logger.info(
                         "Filtering %s nodes without GPS coordinates from persistence (keeping %s with valid GPS)",
-                        total_nodes - nodes_with_gps, nodes_with_gps
+                        total_nodes - nodes_with_gps,
+                        nodes_with_gps,
                     )
-                
+
                 # Cap persisted nodes: keep the most recently heard first.
                 nodes_sorted = sorted(
                     nodes_with_coords,
@@ -3732,6 +4072,7 @@ class MeshtasticConnection:
         """
         try:
             from meshtastic.protobuf.mesh_pb2 import RouteDiscovery
+
             decoded = packet.get("decoded", {}) or {}
             payload = decoded.get("payload")
             if not payload:
@@ -3741,6 +4082,7 @@ class MeshtasticConnection:
             as_dict = {}
             try:
                 from google.protobuf.json_format import MessageToDict
+
                 as_dict = MessageToDict(rd)
             except Exception:  # noqa: BLE001
                 as_dict = {}
@@ -3794,13 +4136,15 @@ class MeshtasticConnection:
 
             logger.debug(
                 "Captured traceroute for %s (target=%s): route=%s route_back=%s rtt=%sms",
-                from_id, target_id, route, route_back, rtt_ms,
+                from_id,
+                target_id,
+                route,
+                route_back,
+                rtt_ms,
             )
 
             with self._nodes_lock:
-                node = next(
-                    (n for n in self._nodes if n.get("id") == target_id), None
-                )
+                node = next((n for n in self._nodes if n.get("id") == target_id), None)
                 if node is not None:
                     node["traceroute"] = record
                     # A completed traceroute proves the node is live — bump.
@@ -3829,6 +4173,7 @@ class MeshtasticConnection:
         """
         try:
             from meshtastic.protobuf.mesh_pb2 import Position
+
             decoded = packet.get("decoded", {}) or {}
             payload = decoded.get("payload")
 
@@ -3869,7 +4214,12 @@ class MeshtasticConnection:
             now_ts = int(time.time())
             with self._nodes_lock:
                 node = next(
-                    (n for n in self._nodes if normalize_node_id(n.get("id")) == from_id), None
+                    (
+                        n
+                        for n in self._nodes
+                        if normalize_node_id(n.get("id")) == from_id
+                    ),
+                    None,
                 )
                 if node is not None:
                     node["last_heard"] = now_ts
@@ -3894,7 +4244,12 @@ class MeshtasticConnection:
             # Update the node cache with the position data
             with self._nodes_lock:
                 node = next(
-                    (n for n in self._nodes if normalize_node_id(n.get("id")) == from_id), None
+                    (
+                        n
+                        for n in self._nodes
+                        if normalize_node_id(n.get("id")) == from_id
+                    ),
+                    None,
                 )
                 if node is not None:
                     if lat is not None:
@@ -3907,22 +4262,34 @@ class MeshtasticConnection:
                         node["last_position_fix"] = int(time.time())
                         # Increment position fix count for periodic broadcasts
                         if not is_requested_reply:
-                            node["position_fix_count"] = node.get("position_fix_count", 0) + 1
+                            node["position_fix_count"] = (
+                                node.get("position_fix_count", 0) + 1
+                            )
                     node["last_heard"] = int(time.time())
                     logger.info(
                         "Updated node %s GPS position: lat=%s lng=%s alt=%s (requested=%s)",
-                        from_id, lat, lng, alt, is_requested_reply
+                        from_id,
+                        lat,
+                        lng,
+                        alt,
+                        is_requested_reply,
                     )
 
             if is_requested_reply:
                 logger.debug(
                     "Captured requested position for %s: lat=%s lng=%s alt=%s",
-                    from_id, lat, lng, alt,
+                    from_id,
+                    lat,
+                    lng,
+                    alt,
                 )
             else:
                 logger.debug(
                     "Captured periodic position broadcast from %s: lat=%s lng=%s alt=%s",
-                    from_id, lat, lng, alt,
+                    from_id,
+                    lat,
+                    lng,
+                    alt,
                 )
         except Exception as exc:  # pragma: no cover - defensive  # noqa: BLE001
             logger.debug("Error capturing position (ignored): %s", exc)
@@ -3937,6 +4304,7 @@ class MeshtasticConnection:
         """
         try:
             from meshtastic.protobuf.telemetry_pb2 import Telemetry
+
             decoded = packet.get("decoded", {}) or {}
             payload = decoded.get("payload")
             if not payload:
@@ -3953,9 +4321,7 @@ class MeshtasticConnection:
             if not from_id:
                 return
             with self._nodes_lock:
-                node = next(
-                    (n for n in self._nodes if n.get("id") == from_id), None
-                )
+                node = next((n for n in self._nodes if n.get("id") == from_id), None)
                 if node is not None:
                     node["noise_floor"] = nf
                     # Any metric update implies the node was heard — bump.
@@ -3973,6 +4339,7 @@ class MeshtasticConnection:
         """
         try:
             from meshtastic.protobuf.telemetry_pb2 import Telemetry
+
             decoded = packet.get("decoded", {}) or {}
             payload = decoded.get("payload")
             if not payload:
@@ -3981,7 +4348,9 @@ class MeshtasticConnection:
             tel.ParseFromString(payload)
             env = getattr(tel, "environment_metrics", None)
             if env is None:
-                logger.debug("TELEMETRY_APP packet received but no environment_metrics field")
+                logger.debug(
+                    "TELEMETRY_APP packet received but no environment_metrics field"
+                )
                 return
 
             from_id = _node_id_from_num(packet.get("from"))
@@ -4003,21 +4372,21 @@ class MeshtasticConnection:
                     updates["gas_resistance"] = value
 
             if not updates:
-                logger.debug("TELEMETRY_APP packet for %s had no environmental fields set", from_id)
+                logger.debug(
+                    "TELEMETRY_APP packet for %s had no environmental fields set",
+                    from_id,
+                )
                 return
 
             # First, try to find the node in our persistent cache
             with self._nodes_lock:
-                node = next(
-                    (n for n in self._nodes if n.get("id") == from_id), None
-                )
+                node = next((n for n in self._nodes if n.get("id") == from_id), None)
                 if node is not None:
                     node.update(updates)
                     # Any metric update implies the node was heard — bump.
                     node["last_heard"] = int(time.time())
                     logger.info(
-                        "Updated environmental telemetry for %s: %s",
-                        from_id, updates
+                        "Updated environmental telemetry for %s: %s", from_id, updates
                     )
                     return
 
@@ -4045,11 +4414,15 @@ class MeshtasticConnection:
                         self._nodes.append(new_node)
                         logger.info(
                             "Created new node entry from telemetry for %s: %s",
-                            from_id, updates
+                            from_id,
+                            updates,
                         )
                         return
 
-            logger.debug("Node %s not found in cache or live interface for environmental telemetry", from_id)
+            logger.debug(
+                "Node %s not found in cache or live interface for environmental telemetry",
+                from_id,
+            )
         except Exception as exc:  # noqa: BLE001 - never crash the receive thread
             logger.debug("Error capturing environmental telemetry: %s", exc)
             return
@@ -4064,6 +4437,7 @@ class MeshtasticConnection:
         """
         try:
             from meshtastic.protobuf.mesh_pb2 import NeighborInfo
+
             decoded = packet.get("decoded", {}) or {}
             payload = decoded.get("payload")
             if not payload:
@@ -4080,20 +4454,21 @@ class MeshtasticConnection:
             for nb in ni.neighbors:
                 nid = _node_id_from_num(nb.node_id)
                 if nid:
-                    neighbors.append({
-                        "id": nid,
-                        "snr": round(nb.snr, 1) if hasattr(nb, 'snr') else None,
-                    })
+                    neighbors.append(
+                        {
+                            "id": nid,
+                            "snr": round(nb.snr, 1) if hasattr(nb, "snr") else None,
+                        }
+                    )
 
             logger.debug(
                 "Neighbor info for %s: %d neighbors",
-                node_id, len(neighbors),
+                node_id,
+                len(neighbors),
             )
 
             with self._nodes_lock:
-                node = next(
-                    (n for n in self._nodes if n.get("id") == node_id), None
-                )
+                node = next((n for n in self._nodes if n.get("id") == node_id), None)
                 if node is not None:
                     node["neighbors"] = neighbors
                     node["neighbor_info_updated"] = int(time.time())
@@ -4114,7 +4489,7 @@ class MeshtasticConnection:
                 with self._persist_lock:
                     if os.path.exists(_MESSAGES_ARCHIVE_DIR):
                         for filename in sorted(os.listdir(_MESSAGES_ARCHIVE_DIR)):
-                            if filename.endswith('.json'):
+                            if filename.endswith(".json"):
                                 filepath = os.path.join(_MESSAGES_ARCHIVE_DIR, filename)
                                 try:
                                     with open(filepath, encoding="utf-8") as fh:
@@ -4122,7 +4497,11 @@ class MeshtasticConnection:
                                     if isinstance(data, list):
                                         archived_messages.extend(data)
                                 except Exception as exc:  # noqa: BLE001
-                                    logger.debug("Could not load archive file %s (ignored): %s", filename, exc)
+                                    logger.debug(
+                                        "Could not load archive file %s (ignored): %s",
+                                        filename,
+                                        exc,
+                                    )
             except Exception as exc:  # noqa: BLE001
                 logger.debug("Could not load archived messages (ignored): %s", exc)
 
@@ -4138,8 +4517,12 @@ class MeshtasticConnection:
                 elif not msg_id:
                     unique_messages.append(msg)
 
-            logger.debug("Returning %d messages (in-memory: %d, archived: %d)",
-                        len(unique_messages), len(messages), len(archived_messages))
+            logger.debug(
+                "Returning %d messages (in-memory: %d, archived: %d)",
+                len(unique_messages),
+                len(messages),
+                len(archived_messages),
+            )
             return unique_messages
         else:
             logger.debug("Returning %d messages from in-memory store", len(messages))
@@ -4164,8 +4547,12 @@ class MeshtasticConnection:
 
         # 2. Check underlying socket state (for TCPInterface)
         sock = getattr(iface, "_socket", None) or getattr(iface, "socket", None)
-        if sock is not None and (getattr(sock, "_closed", False) or sock.fileno() == -1):
-            logger.debug("Health probe failed: underlying socket is closed or fileno == -1")
+        if sock is not None and (
+            getattr(sock, "_closed", False) or sock.fileno() == -1
+        ):
+            logger.debug(
+                "Health probe failed: underlying socket is closed or fileno == -1"
+            )
             return False
 
         # 3. Check reader background thread if present (StreamInterface / TCPInterface)
@@ -4191,7 +4578,11 @@ class MeshtasticConnection:
     def _get_status_sync(self) -> dict[str, Any]:
         with self._lock:
             if not self._connected or self._interface is None:
-                return {"connected": False, "my_info": None, "status_timestamp": int(time.time())}
+                return {
+                    "connected": False,
+                    "my_info": None,
+                    "status_timestamp": int(time.time()),
+                }
 
             my_info = getattr(self._interface, "myInfo", None)
             my_node_num = getattr(my_info, "my_node_num", None)
@@ -4227,31 +4618,47 @@ class MeshtasticConnection:
                 # Firmware version is NOT in the User protobuf — it lives in
                 # interface.metadata (DeviceMetadata).
                 metadata = getattr(self._interface, "metadata", None)
-                firmware_version = getattr(metadata, "firmware_version", "") if metadata is not None else ""
+                firmware_version = (
+                    getattr(metadata, "firmware_version", "")
+                    if metadata is not None
+                    else ""
+                )
                 # Region is NOT in the User protobuf — it lives in the LoRa config.
                 region = ""
                 try:
                     lora = getattr(self._interface.localNode, "localConfig", None)
                     if lora is not None and lora.lora.region != 0:
-                        region = config_pb2.Config.LoRaConfig.RegionCode.Name(lora.lora.region)
+                        region = config_pb2.Config.LoRaConfig.RegionCode.Name(
+                            lora.lora.region
+                        )
                 except Exception:  # noqa: BLE001
                     pass
                 # Role — prefer the device config role (authoritative, always
                 # present); the serialised user dict can omit the default CLIENT.
                 role = ""
                 try:
-                    local_config = getattr(self._interface.localNode, "localConfig", None)
+                    local_config = getattr(
+                        self._interface.localNode, "localConfig", None
+                    )
                     if local_config is not None and local_config.device.role != 0:
-                        role = self._normalize_role(config_pb2.Config.DeviceConfig.Role.Name(local_config.device.role))
+                        role = self._normalize_role(
+                            config_pb2.Config.DeviceConfig.Role.Name(
+                                local_config.device.role
+                            )
+                        )
                 except Exception:  # noqa: BLE001
                     pass
                 if not role:
                     role = self._normalize_role(user.get("role"))
                 if not role:
-                    meta_role = getattr(metadata, "role", 0) if metadata is not None else 0
+                    meta_role = (
+                        getattr(metadata, "role", 0) if metadata is not None else 0
+                    )
                     if meta_role != 0:
                         try:
-                            role = self._normalize_role(config_pb2.Config.DeviceConfig.Role.Name(meta_role))
+                            role = self._normalize_role(
+                                config_pb2.Config.DeviceConfig.Role.Name(meta_role)
+                            )
                         except Exception:  # noqa: BLE001
                             role = ""
                 if not role:
@@ -4284,7 +4691,9 @@ class MeshtasticConnection:
                     "uptime": self_uptime,
                     "last_heard": self_last_heard,
                     "macaddr": self_macaddr,
-                } if my_info else None,
+                }
+                if my_info
+                else None,
                 "node_count": len(self._interface.nodes or {}),
                 "status_timestamp": int(time.time()),
             }
@@ -4377,13 +4786,15 @@ class MeshtasticConnection:
                                     n["traceroute"] = rec
                                     break
                         else:
-                            nodes.append({
-                                "id": tid,
-                                "traceroute": rec,
-                                "stale": True,
-                                "long_name": "",
-                                "short_name": "",
-                            })
+                            nodes.append(
+                                {
+                                    "id": tid,
+                                    "traceroute": rec,
+                                    "stale": True,
+                                    "long_name": "",
+                                    "short_name": "",
+                                }
+                            )
                             known.add(tid)
                 return nodes
             iface = self._interface
@@ -4391,6 +4802,7 @@ class MeshtasticConnection:
         # _lock is now released — proceed with the merge.
 
         from .remote_cache import load_remote_cache
+
         remote_cache = load_remote_cache()
 
         result: list[dict[str, Any]] = []
@@ -4432,9 +4844,15 @@ class MeshtasticConnection:
                 # cache and sensors use snake_case. Map them here, supporting
                 # both conventions so any library version works.
                 env_temp = environment.get("temperature")
-                env_hum = environment.get("relativeHumidity") or environment.get("relative_humidity")
-                env_pres = environment.get("barometricPressure") or environment.get("barometric_pressure")
-                env_gas = environment.get("gasResistance") or environment.get("gas_resistance")
+                env_hum = environment.get("relativeHumidity") or environment.get(
+                    "relative_humidity"
+                )
+                env_pres = environment.get("barometricPressure") or environment.get(
+                    "barometric_pressure"
+                )
+                env_gas = environment.get("gasResistance") or environment.get(
+                    "gas_resistance"
+                )
 
                 # Extract short name, falling back to truncated long name if not provided
                 long_name = user.get("longName", "")
@@ -4452,13 +4870,18 @@ class MeshtasticConnection:
                 lng = position.get("longitude")
                 lat_i = position.get("latitudeI")
                 lng_i = position.get("longitudeI")
-                
+
                 # Use integer microdegrees if available, but only if we have both
                 # and they are non-zero (0 means not set in protobuf)
-                if lat is None and lng is None and lat_i not in (None, 0) and lng_i not in (None, 0):
+                if (
+                    lat is None
+                    and lng is None
+                    and lat_i not in (None, 0)
+                    and lng_i not in (None, 0)
+                ):
                     lat = lat_i * 1e-7
                     lng = lng_i * 1e-7
-                
+
                 # If we still don't have a complete coordinate pair, set both to None
                 if lat is None or lng is None:
                     lat = None
@@ -4476,7 +4899,8 @@ class MeshtasticConnection:
                     "snr": node_data.get("snr"),
                     # rssi is not stored in the library's NodeDB — inject the
                     # most recent rxRssi reading captured from inbound packets.
-                    "rssi": self._rssi_history.get(node_id) and int(self._rssi_history[node_id][-1]),
+                    "rssi": self._rssi_history.get(node_id)
+                    and int(self._rssi_history[node_id][-1]),
                     "hops_away": node_data.get("hopsAway"),
                     "is_licensed": user.get("isLicensed", False),
                     "latitude": lat,
@@ -4509,10 +4933,10 @@ class MeshtasticConnection:
 
                     # Snapshot fields that must survive the update() call because
                     # the library may omit them on any given poll cycle.
-                    prev_lat       = prev.get("latitude")
-                    prev_lng       = prev.get("longitude")
-                    prev_alt       = prev.get("altitude")
-                    prev_fix       = prev.get("last_position_fix")
+                    prev_lat = prev.get("latitude")
+                    prev_lng = prev.get("longitude")
+                    prev_alt = prev.get("altitude")
+                    prev_fix = prev.get("last_position_fix")
                     prev_fix_count = prev.get("position_fix_count")
                     prev_traceroute = prev.get("traceroute")
                     # Snapshot environmental metrics - the library doesn't populate
@@ -4544,7 +4968,10 @@ class MeshtasticConnection:
                         cached[node_id]["traceroute"] = prev_traceroute
 
                     # Restore position fix count - incremented by periodic broadcasts
-                    if prev_fix_count is not None and entry.get("position_fix_count") is None:
+                    if (
+                        prev_fix_count is not None
+                        and entry.get("position_fix_count") is None
+                    ):
                         cached[node_id]["position_fix_count"] = prev_fix_count
 
                     # Restore environmental metrics from our cache if the library
@@ -4553,7 +4980,10 @@ class MeshtasticConnection:
                         cached[node_id]["temperature"] = prev_temp
                     if prev_hum is not None and entry.get("relative_humidity") is None:
                         cached[node_id]["relative_humidity"] = prev_hum
-                    if prev_pres is not None and entry.get("barometric_pressure") is None:
+                    if (
+                        prev_pres is not None
+                        and entry.get("barometric_pressure") is None
+                    ):
                         cached[node_id]["barometric_pressure"] = prev_pres
                     if prev_gas is not None and entry.get("gas_resistance") is None:
                         cached[node_id]["gas_resistance"] = prev_gas
@@ -4563,11 +4993,18 @@ class MeshtasticConnection:
                     # it didn't. This prevents brief poll cycles where the radio
                     # omits a field from clearing it to None in the UI.
                     nullable_fields = (
-                        "snr", "rssi", "hops_away",
-                        "battery_level", "voltage",
-                        "channel_utilization", "air_util_tx", "uptime",
-                        "temperature", "relative_humidity",
-                        "barometric_pressure", "gas_resistance",
+                        "snr",
+                        "rssi",
+                        "hops_away",
+                        "battery_level",
+                        "voltage",
+                        "channel_utilization",
+                        "air_util_tx",
+                        "uptime",
+                        "temperature",
+                        "relative_humidity",
+                        "barometric_pressure",
+                        "gas_resistance",
                         "position_fix_count",
                     )
                     for field in nullable_fields:
@@ -4601,7 +5038,8 @@ class MeshtasticConnection:
                     entry_lat = entry.get("latitude")
                     entry_lng = entry.get("longitude")
                     lib_moved = (
-                        entry_lat is not None and entry_lng is not None
+                        entry_lat is not None
+                        and entry_lng is not None
                         and (entry_lat, entry_lng) != self._last_lib_pos.get(node_id)
                     )
 
@@ -4612,7 +5050,8 @@ class MeshtasticConnection:
                         # Only update _last_lib_pos when we actually accept the library coords
                         self._last_lib_pos[node_id] = (entry_lat, entry_lng)
                     elif (
-                        prev_lat is not None and prev_lng is not None
+                        prev_lat is not None
+                        and prev_lng is not None
                         and (prev_lat, prev_lng) != (entry_lat, entry_lng)
                     ):
                         # Library unchanged (or empty) this cycle but _capture_position
@@ -4633,7 +5072,7 @@ class MeshtasticConnection:
 
                     if entry["altitude"] is None and prev_alt is not None:
                         cached[node_id]["altitude"] = prev_alt
-                    
+
                     # Append the node without coordinate offset.
                     # Offsets were causing issues with HA map tracking because
                     # the offset coordinates were being sent to the device_tracker
@@ -4653,12 +5092,15 @@ class MeshtasticConnection:
                     if entry["latitude"] is not None and entry["longitude"] is not None:
                         entry["last_position_fix"] = int(time.time())
                     cached[node_id] = entry
-                    
+
                     # Record the library's initial position to detect changes on
                     # subsequent polls (see cached-branch merge logic above).
                     if entry["latitude"] is not None and entry["longitude"] is not None:
-                        self._last_lib_pos[node_id] = (entry["latitude"], entry["longitude"])
-                    
+                        self._last_lib_pos[node_id] = (
+                            entry["latitude"],
+                            entry["longitude"],
+                        )
+
                     # Append the node without coordinate offset.
                     # Offsets were causing issues with HA map tracking because
                     # the offset coordinates were being sent to the device_tracker
@@ -4684,7 +5126,11 @@ class MeshtasticConnection:
             # Determine local self_id to prevent re-injecting duplicate ghosts of the gateway node
             with self._lock:
                 _iface_snap_tmp = self._interface
-            self_num_tmp = getattr(getattr(_iface_snap_tmp, "myInfo", None), "my_node_num", None) if _iface_snap_tmp else None
+            self_num_tmp = (
+                getattr(getattr(_iface_snap_tmp, "myInfo", None), "my_node_num", None)
+                if _iface_snap_tmp
+                else None
+            )
             gateway_id = normalize_node_id(self_num_tmp)
 
             for node in list(self._nodes):
@@ -4693,7 +5139,11 @@ class MeshtasticConnection:
                     # Already emitted from live radio data — skip.
                     continue
 
-                stale_name = (node.get("long_name") or node.get("short_name") or "").strip().lower()
+                stale_name = (
+                    (node.get("long_name") or node.get("short_name") or "")
+                    .strip()
+                    .lower()
+                )
                 stale_lat = node.get("latitude")
                 stale_lng = node.get("longitude")
 
@@ -4701,7 +5151,11 @@ class MeshtasticConnection:
                 # or an old duplicate record of the local gateway node.
                 is_ghost = False
                 for live in result:
-                    live_name = (live.get("long_name") or live.get("short_name") or "").strip().lower()
+                    live_name = (
+                        (live.get("long_name") or live.get("short_name") or "")
+                        .strip()
+                        .lower()
+                    )
                     live_lat = live.get("latitude")
                     live_lng = live.get("longitude")
 
@@ -4710,7 +5164,7 @@ class MeshtasticConnection:
                         if _is_co_located(stale_lat, stale_lng, live_lat, live_lng):
                             is_ghost = True
                             break
-                        if (stale_lat is None or live_lat is None):
+                        if stale_lat is None or live_lat is None:
                             is_ghost = True
                             break
 
@@ -4724,7 +5178,11 @@ class MeshtasticConnection:
                         break
 
                 if is_ghost:
-                    logger.debug("Skipping stale duplicate ghost of live node: %s (%s)", nid, stale_name)
+                    logger.debug(
+                        "Skipping stale duplicate ghost of live node: %s (%s)",
+                        nid,
+                        stale_name,
+                    )
                     cached.pop(nid, None)
                     continue
 
@@ -4732,19 +5190,28 @@ class MeshtasticConnection:
                 restored = dict(node)
                 restored["id"] = nid
                 restored["stale"] = True
-                
+
                 # Re-validate coordinates when restoring stale nodes to prevent
                 # restoring invalid coordinates (e.g., 0,0) from persistent cache.
                 restored_lat = restored.get("latitude")
                 restored_lng = restored.get("longitude")
                 if restored_lat is not None and restored_lng is not None:
-                    validated_lat, validated_lng = self._validate_and_correct_coordinates(nid, restored_lat, restored_lng)
+                    validated_lat, validated_lng = (
+                        self._validate_and_correct_coordinates(
+                            nid, restored_lat, restored_lng
+                        )
+                    )
                     if validated_lat is None or validated_lng is None:
                         restored["latitude"] = None
                         restored["longitude"] = None
                         restored["altitude"] = None
-                        logger.debug("Dropped suspicious coordinates when restoring stale node %s: lat=%s lng=%s", nid, restored_lat, restored_lng)
-                
+                        logger.debug(
+                            "Dropped suspicious coordinates when restoring stale node %s: lat=%s lng=%s",
+                            nid,
+                            restored_lat,
+                            restored_lng,
+                        )
+
                 # Append the stale node without coordinate offset.
                 # Offsets were causing issues with HA map tracking.
                 cached[nid] = restored
@@ -4788,7 +5255,11 @@ class MeshtasticConnection:
         if newly_discovered:
             with self._lock:
                 _iface_snap = self._interface
-            self_num = getattr(getattr(_iface_snap, "myInfo", None), "my_node_num", None) if _iface_snap else None
+            self_num = (
+                getattr(getattr(_iface_snap, "myInfo", None), "my_node_num", None)
+                if _iface_snap
+                else None
+            )
             self_id = normalize_node_id(self_num)
 
             # Auto Responder Logic - rate limited to avoid TX queue overflow
@@ -4796,10 +5267,15 @@ class MeshtasticConnection:
                 msg = getattr(self._config, "auto_responder_message", "")
                 if msg and newly_discovered:
                     # Only auto-respond to first 3 nodes per discovery cycle to prevent flooding
-                    auto_respond_nodes = [n for n in newly_discovered if n != self_id][:3]
+                    auto_respond_nodes = [n for n in newly_discovered if n != self_id][
+                        :3
+                    ]
                     for node_id in auto_respond_nodes:
-                        logger.info("Auto-responder triggered: Discovered new node %s", node_id)
+                        logger.info(
+                            "Auto-responder triggered: Discovered new node %s", node_id
+                        )
                         import threading
+
                         t = threading.Thread(
                             target=self._send_message_sync,
                             args=(msg, node_id, 0),
@@ -4808,34 +5284,54 @@ class MeshtasticConnection:
                         )
                         t.start()
                     if len(newly_discovered) > 3:
-                        logger.debug("Auto-responder rate limit: skipped %s additional nodes", len(newly_discovered) - 3)
+                        logger.debug(
+                            "Auto-responder rate limit: skipped %s additional nodes",
+                            len(newly_discovered) - 3,
+                        )
 
             for node_id in newly_discovered:
                 if node_id == self_id:
                     continue
 
                 # Auto Traceroute Logic
-                if self._config and getattr(self._config, "auto_traceroute_enabled", False):
+                if self._config and getattr(
+                    self._config, "auto_traceroute_enabled", False
+                ):
                     # Skip nodes we already hold a traceroute record for —
                     # without this, every restart (or cache reload) re-sweeps
                     # every rediscovered node even though we have their route.
                     with self._traceroutes_lock:
                         has_route = node_id in self._traceroutes
                     if has_route:
-                        logger.debug("Skipping auto-traceroute for %s: route already recorded", node_id)
+                        logger.debug(
+                            "Skipping auto-traceroute for %s: route already recorded",
+                            node_id,
+                        )
                         continue
                     if len(self._pending_traceroute_dests) >= _MAX_PENDING_TRACEROUTES:
-                        logger.debug("Skipping auto-traceroute for %s: queue full", node_id)
+                        logger.debug(
+                            "Skipping auto-traceroute for %s: queue full", node_id
+                        )
                         continue
-                    logger.info("Auto-traceroute triggered: Discovered new node %s", node_id)
+                    logger.info(
+                        "Auto-traceroute triggered: Discovered new node %s", node_id
+                    )
 
                     def _auto_traceroute_thread(dest: str) -> None:
                         with self._lock:
                             if dest in self._pending_traceroute_dests:
-                                logger.debug("Skipping auto-traceroute for %s: already pending", dest)
+                                logger.debug(
+                                    "Skipping auto-traceroute for %s: already pending",
+                                    dest,
+                                )
                                 return
-                            if len(self._pending_traceroute_dests) >= _MAX_PENDING_TRACEROUTES:
-                                logger.debug("Skipping auto-traceroute for %s: queue full", dest)
+                            if (
+                                len(self._pending_traceroute_dests)
+                                >= _MAX_PENDING_TRACEROUTES
+                            ):
+                                logger.debug(
+                                    "Skipping auto-traceroute for %s: queue full", dest
+                                )
                                 return
                             self._pending_traceroute_dests.append(dest)
                             self._pending_traceroute_times[dest] = time.time()
@@ -4848,6 +5344,7 @@ class MeshtasticConnection:
                                 del self._pending_traceroute_times[dest]
 
                     import threading
+
                     t = threading.Thread(
                         target=_auto_traceroute_thread,
                         args=(node_id,),
@@ -4885,10 +5382,14 @@ class MeshtasticConnection:
             nid = normalize_node_id(node.get("id"))
             if not nid or nid in seen_final:
                 if nid:
-                    logger.warning("Duplicate node ID removed before API response: %s", nid)
+                    logger.warning(
+                        "Duplicate node ID removed before API response: %s", nid
+                    )
                 continue
 
-            node_name = (node.get("long_name") or node.get("short_name") or "").strip().lower()
+            node_name = (
+                (node.get("long_name") or node.get("short_name") or "").strip().lower()
+            )
             lat = node.get("latitude")
             lng = node.get("longitude")
 
@@ -4896,20 +5397,36 @@ class MeshtasticConnection:
             is_dup = False
             if node_name and lat is not None and lng is not None:
                 for idx, accepted in enumerate(deduped_result):
-                    acc_name = (accepted.get("long_name") or accepted.get("short_name") or "").strip().lower()
+                    acc_name = (
+                        (accepted.get("long_name") or accepted.get("short_name") or "")
+                        .strip()
+                        .lower()
+                    )
                     acc_lat = accepted.get("latitude")
                     acc_lng = accepted.get("longitude")
-                    if acc_name and acc_name == node_name and _is_co_located(lat, lng, acc_lat, acc_lng):
+                    if (
+                        acc_name
+                        and acc_name == node_name
+                        and _is_co_located(lat, lng, acc_lat, acc_lng)
+                    ):
                         is_dup = True
                         # If the incoming node is active and the existing one was stale, swap them
                         if accepted.get("stale") and not node.get("stale"):
                             deduped_result[idx] = node
                             seen_final.discard(accepted.get("id"))
                             seen_final.add(nid)
-                            logger.info("Replaced stale duplicate with active node %s (%s)", nid, node_name)
+                            logger.info(
+                                "Replaced stale duplicate with active node %s (%s)",
+                                nid,
+                                node_name,
+                            )
                         else:
-                            logger.info("Deduplicated co-located node with identical name %s: kept %s, dropped %s",
-                                        node_name, accepted.get("id"), nid)
+                            logger.info(
+                                "Deduplicated co-located node with identical name %s: kept %s, dropped %s",
+                                node_name,
+                                accepted.get("id"),
+                                nid,
+                            )
                         break
 
             if not is_dup:
@@ -4942,7 +5459,9 @@ class MeshtasticConnection:
             if len(indices) <= 1:
                 continue
 
-            fix_counts = [(deduped_result[i].get("position_fix_count") or 0) for i in indices]
+            fix_counts = [
+                (deduped_result[i].get("position_fix_count") or 0) for i in indices
+            ]
             # Only act when at least one node has real GPS evidence at this spot.
             if not any(fc > 0 for fc in fix_counts):
                 continue
@@ -4968,7 +5487,9 @@ class MeshtasticConnection:
 
         return deduped_result
 
-    def _read_channels_from_interface(self, interface: Any | None = None) -> list[dict[str, Any]]:
+    def _read_channels_from_interface(
+        self, interface: Any | None = None
+    ) -> list[dict[str, Any]]:
         """Read the channel list straight from the connected node.
 
         Returns every channel slot the radio knows about. Names are sourced
@@ -4989,7 +5510,9 @@ class MeshtasticConnection:
         ch_from_node = getattr(local_node, "channels", None) if local_node else None
 
         local_config = getattr(iface, "localConfig", None)
-        ch_from_config = getattr(local_config, "channel_settings", None) if local_config else None
+        ch_from_config = (
+            getattr(local_config, "channel_settings", None) if local_config else None
+        )
 
         def _to_channel_list(src: Any) -> list[Any]:
             if not src:
@@ -5052,19 +5575,25 @@ class MeshtasticConnection:
             if role_upper == "DISABLED" and idx != 0:
                 continue
 
-            result.append({
-                "index": idx,
-                "name": name or role_upper.title() or f"Channel {idx}",
-                "role": role_upper,
-                "public": public_by_idx.get(idx, False),
-            })
+            result.append(
+                {
+                    "index": idx,
+                    "name": name or role_upper.title() or f"Channel {idx}",
+                    "role": role_upper,
+                    "public": public_by_idx.get(idx, False),
+                }
+            )
 
         # Guarantee slot 0 exists (PRIMARY) even if the radio omitted it.
         if not any(c["index"] == 0 for c in result):
             result.insert(0, {"index": 0, "name": "Primary", "role": "PRIMARY"})
 
-        logger.debug("Channel fetch: %d channels (node=%s, config=%s)", len(result),
-                     bool(ch_from_node), bool(ch_from_config))
+        logger.debug(
+            "Channel fetch: %d channels (node=%s, config=%s)",
+            len(result),
+            bool(ch_from_node),
+            bool(ch_from_config),
+        )
         return result
 
     def _get_channels_sync(self) -> list[dict[str, Any]]:
@@ -5113,8 +5642,12 @@ class MeshtasticConnection:
         return result
 
     def _send_message_sync(
-        self, text: str, destination: str | None, channel: int,
-        want_ack: bool = True, sender_name: str | None = None,
+        self,
+        text: str,
+        destination: str | None,
+        channel: int,
+        want_ack: bool = True,
+        sender_name: str | None = None,
     ) -> bool:
         # When sender_name is given the message originates from a third-party
         # relay (e.g. Telegram bridge) rather than the local user.  We store it
@@ -5150,7 +5683,12 @@ class MeshtasticConnection:
         if self_num is not None:
             with self._nodes_lock:
                 node = next(
-                    (n for n in self._nodes if normalize_node_id(n.get("id")) == self_id), None
+                    (
+                        n
+                        for n in self._nodes
+                        if normalize_node_id(n.get("id")) == self_id
+                    ),
+                    None,
                 )
                 if node is not None:
                     node["last_heard"] = int(time.time())
@@ -5181,7 +5719,9 @@ class MeshtasticConnection:
             # packet ID the firmware uses in the ROUTING_APP ACK reply.
             sent_packet = iface.sendText(
                 text,
-                destinationId=to_num if to_num is not None else meshtastic.BROADCAST_ADDR,
+                destinationId=to_num
+                if to_num is not None
+                else meshtastic.BROADCAST_ADDR,
                 wantAck=want_ack if is_dm else False,
                 channelIndex=channel,
             )
@@ -5217,7 +5757,9 @@ class MeshtasticConnection:
             if not is_relay and self_num is not None:
                 node_data = self._lookup_node(iface, self_num)
                 user = node_data.get("user", {})
-                self_name = user.get("longName") or user.get("shortName") or self_id or "You"
+                self_name = (
+                    user.get("longName") or user.get("shortName") or self_id or "You"
+                )
 
             entry = {
                 # The local node is always the on-mesh transmitter.
@@ -5230,7 +5772,9 @@ class MeshtasticConnection:
                 # `m.destination === msg.destination` always fails (undefined vs string).
                 "destination": to_id,  # None for broadcasts, "!hex" for DMs
                 "from_name": sender_name if is_relay else self_name,
-                "from_short": sender_name if is_relay else (user.get("shortName") or ""),
+                "from_short": sender_name
+                if is_relay
+                else (user.get("shortName") or ""),
                 "from_long": sender_name if is_relay else (user.get("longName") or ""),
                 "text": text,
                 "channel": channel,
@@ -5261,32 +5805,39 @@ class MeshtasticConnection:
                     self._pending_ack_times[norm_packet_id] = now_ts
             logger.debug(
                 "Message added to store: id=%s, conversation=%s, text=%s, outgoing=%s, timestamp=%s",
-                entry["id"], conversation, text[:50], entry["outgoing"], entry["timestamp"]
+                entry["id"],
+                conversation,
+                text[:50],
+                entry["outgoing"],
+                entry["timestamp"],
             )
 
             # Broadcast to SSE clients so Web UI tabs update immediately for sent/relayed messages
-            _broadcast_sse_event("message", {
-                "id": entry["id"],
-                "from_id": entry["from_id"],
-                "to_id": entry["to_id"],
-                "destination": entry.get("destination"),
-                "from_name": entry["from_name"],
-                "from_short": entry.get("from_short") or "",
-                "from_long": entry.get("from_long") or "",
-                "from_telegram": entry.get("from_telegram", False),
-                "from_ui": entry.get("from_ui", False),
-                "text": entry["text"],
-                "channel": entry["channel"],
-                "conversation": entry["conversation"],
-                "is_dm": entry["is_dm"],
-                "outgoing": entry["outgoing"],
-                "rx_snr": entry["rx_snr"],
-                "rx_rssi": entry["rx_rssi"],
-                "timestamp": entry["timestamp"],
-                "ack_status": entry.get("ack_status"),
-                "ack_at": entry.get("ack_at"),
-                "packet_id": packet_id,
-            })
+            _broadcast_sse_event(
+                "message",
+                {
+                    "id": entry["id"],
+                    "from_id": entry["from_id"],
+                    "to_id": entry["to_id"],
+                    "destination": entry.get("destination"),
+                    "from_name": entry["from_name"],
+                    "from_short": entry.get("from_short") or "",
+                    "from_long": entry.get("from_long") or "",
+                    "from_telegram": entry.get("from_telegram", False),
+                    "from_ui": entry.get("from_ui", False),
+                    "text": entry["text"],
+                    "channel": entry["channel"],
+                    "conversation": entry["conversation"],
+                    "is_dm": entry["is_dm"],
+                    "outgoing": entry["outgoing"],
+                    "rx_snr": entry["rx_snr"],
+                    "rx_rssi": entry["rx_rssi"],
+                    "timestamp": entry["timestamp"],
+                    "ack_status": entry.get("ack_status"),
+                    "ack_at": entry.get("ack_at"),
+                    "packet_id": packet_id,
+                },
+            )
 
             # Forward outbound Web UI messages to Telegram if configured
             callback = getattr(self, "_telegram_forward_callback", None)
@@ -5294,7 +5845,9 @@ class MeshtasticConnection:
                 try:
                     callback(entry)
                 except Exception as exc:  # noqa: BLE001
-                    logger.debug("Telegram forward callback error on send (ignored): %s", exc)
+                    logger.debug(
+                        "Telegram forward callback error on send (ignored): %s", exc
+                    )
 
             self._schedule_save(self._messages, _MESSAGES_FILE)
             return {
@@ -5368,12 +5921,15 @@ class MeshtasticConnection:
 
                 logger.debug(
                     "Dispatching traceroute to %s with hop_limit=%d",
-                    destination, hop_limit,
+                    destination,
+                    hop_limit,
                 )
 
                 # The call blocks until the RouteDiscovery reply arrives (the
                 # library waits internally for the acknowledgment flag).
-                iface.sendTraceRoute(dest_num if dest_num is not None else destination, hop_limit)
+                iface.sendTraceRoute(
+                    dest_num if dest_num is not None else destination, hop_limit
+                )
                 self._capture_outbound_packet_log(
                     to_id=destination,
                     portnum="TRACEROUTE_APP",
@@ -5389,27 +5945,27 @@ class MeshtasticConnection:
 
     def _attempt_coordinate_retrieval_for_nodes_without_gps(self) -> None:
         """Attempt to retrieve GPS coordinates for nodes that currently lack them.
-        
+
         This method can be called periodically to try to get complete coordinate
         data for nodes that don't have GPS information.
         """
         nodes_without_gps = []
-        
+
         with self._nodes_lock:
             for node in self._nodes:
                 if node.get("latitude") is None or node.get("longitude") is None:
                     node_id = normalize_node_id(node.get("id"))
                     if node_id:
                         nodes_without_gps.append((node_id, node))
-        
+
         if not nodes_without_gps:
             return
-        
+
         logger.info(
             "Attempting to retrieve GPS coordinates for %s nodes without location data",
-            len(nodes_without_gps)
+            len(nodes_without_gps),
         )
-        
+
         # Attempt to request position for nodes without GPS
         # We do this in a limited way to avoid overwhelming the network
         max_concurrent_requests = 3
@@ -5417,7 +5973,7 @@ class MeshtasticConnection:
             try:
                 # _request_position_sync handles its own locking internally
                 logger.debug(
-                    "Requesting position for node %s (%s) to get GPS data", 
+                    "Requesting position for node %s (%s) to get GPS data",
                     node_id,
                     node.get("long_name", node.get("short_name", "")),
                 )
@@ -5431,80 +5987,98 @@ class MeshtasticConnection:
             except Exception as exc:  # noqa: BLE001
                 logger.debug("Error requesting position for node %s: %s", node_id, exc)
 
-    def _has_duplicate_coordinates(self, node: dict[str, Any], existing_nodes: list[dict[str, Any]]) -> bool:
+    def _has_duplicate_coordinates(
+        self, node: dict[str, Any], existing_nodes: list[dict[str, Any]]
+    ) -> bool:
         """Check if a node has duplicate coordinates with any existing nodes.
-        
+
         Args:
             node: The node to check for duplicate coordinates
             existing_nodes: List of already-processed nodes to check against
-            
+
         Returns:
             True if the node has duplicate coordinates with any existing node, False otherwise
         """
         lat = node.get("latitude")
         lng = node.get("longitude")
-        
+
         # If node has no coordinates, it can't be a coordinate duplicate
         if lat is None or lng is None:
             return False
-        
+
         node_id = normalize_node_id(node.get("id"))
-        node_name = (node.get("long_name") or node.get("short_name") or "").strip().lower()
-        
+        node_name = (
+            (node.get("long_name") or node.get("short_name") or "").strip().lower()
+        )
+
         for existing in existing_nodes:
             ex_id = normalize_node_id(existing.get("id"))
             # Skip comparison with self
             if ex_id == node_id:
                 continue
-                
+
             ex_lat = existing.get("latitude")
             ex_lng = existing.get("longitude")
-            
-            if ex_lat is not None and ex_lng is not None and _is_co_located(lat, lng, ex_lat, ex_lng):
-                ex_name = (existing.get("long_name") or existing.get("short_name") or "").strip().lower()
-                
+
+            if (
+                ex_lat is not None
+                and ex_lng is not None
+                and _is_co_located(lat, lng, ex_lat, ex_lng)
+            ):
+                ex_name = (
+                    (existing.get("long_name") or existing.get("short_name") or "")
+                    .strip()
+                    .lower()
+                )
+
                 # Always consider exact coordinate matches as duplicates
                 if lat == ex_lat and lng == ex_lng:
                     return True
-                
+
                 # For close coordinates (within threshold), only flag as duplicate if same name
                 # This prevents false positives for nearby legitimate nodes
                 if ex_name == node_name:
                     return True
-        
+
         return False
 
-    def _validate_and_correct_coordinates(self, node_id: str, lat: Any, lng: Any) -> tuple[Any, Any]:
+    def _validate_and_correct_coordinates(
+        self, node_id: str, lat: Any, lng: Any
+    ) -> tuple[Any, Any]:
         """Validate coordinates and mark as None if suspicious.
-        
+
         This function checks if coordinates appear to be invalid or placeholder values.
         If coordinates are suspicious, they are marked as None to prevent displaying
         incorrect locations on the map. The system can later request fresh coordinates
         through the normal position request mechanism.
-        
+
         Args:
             node_id: Node identifier for logging
             lat: Latitude value to validate
             lng: Longitude value to validate
-            
+
         Returns:
             Tuple of (validated_lat, validated_lng) - both None if invalid/suspicious
         """
         # First check if coordinates are valid at all
         if lat is None or lng is None:
-            logger.debug("Node %s has missing coordinates (lat=%s, lng=%s)", node_id, lat, lng)
+            logger.debug(
+                "Node %s has missing coordinates (lat=%s, lng=%s)", node_id, lat, lng
+            )
             return None, None
-        
+
         # Check if coordinates look suspicious
         if _are_coordinates_suspicious(lat, lng):
             logger.warning(
                 "Node %s has suspicious coordinates (lat=%s, lng=%s) - marking as invalid to prevent incorrect map placement",
-                node_id, lat, lng
+                node_id,
+                lat,
+                lng,
             )
             # Mark as None to prevent incorrect map placement
             # User can manually request position update through UI/API if needed
             return None, None
-        
+
         # Coordinates appear valid
         return lat, lng
 
@@ -5529,7 +6103,10 @@ class MeshtasticConnection:
             # a POSITION_APP packet which the library funnels through
             # onResponsePosition -> _onPositionReceive, updating its node DB.
             # We then copy that fresh fix into our own nodes dict below.
-            iface.sendPosition(destinationId=dest_num if dest_num is not None else destination, wantResponse=True)
+            iface.sendPosition(
+                destinationId=dest_num if dest_num is not None else destination,
+                wantResponse=True,
+            )
             self._capture_outbound_packet_log(
                 to_id=destination,
                 portnum="POSITION_APP",
@@ -5565,9 +6142,8 @@ class MeshtasticConnection:
         canon_id = normalize_node_id(node_id)
         if not canon_id:
             return
-        lib_node = (
-            self._interface.nodes.get(node_id)
-            or self._interface.nodes.get(canon_id)
+        lib_node = self._interface.nodes.get(node_id) or self._interface.nodes.get(
+            canon_id
         )
         if lib_node is None:
             return
@@ -5591,12 +6167,12 @@ class MeshtasticConnection:
         lng = position.get("longitude")
         lat_i = position.get("latitudeI")
         lng_i = position.get("longitudeI")
-        
+
         # Use integer microdegrees if available, but only if we have both
         if lat is None and lng is None and lat_i is not None and lng_i is not None:
             lat = lat_i * 1e-7
             lng = lng_i * 1e-7
-        
+
         # If we still don't have a complete coordinate pair, set both to None
         if lat is None or lng is None:
             lat = None
@@ -5612,7 +6188,8 @@ class MeshtasticConnection:
             "last_heard": lib_node.get("lastHeard"),
             "snr": lib_node.get("snr"),
             # rssi is not in the library's NodeDB — use last packet-captured value.
-            "rssi": self._rssi_history.get(canon_id) and int(self._rssi_history[canon_id][-1]),
+            "rssi": self._rssi_history.get(canon_id)
+            and int(self._rssi_history[canon_id][-1]),
             "hops_away": lib_node.get("hopsAway"),
             "is_licensed": user.get("isLicensed", False),
             "latitude": lat,
@@ -5632,28 +6209,37 @@ class MeshtasticConnection:
 
         with self._nodes_lock:
             existing = next(
-                (n for n in self._nodes if normalize_node_id(n.get("id")) == canon_id), None
+                (n for n in self._nodes if normalize_node_id(n.get("id")) == canon_id),
+                None,
             )
             if existing is not None:
                 existing["id"] = canon_id
                 # Snapshot all prev values BEFORE update() so we can
                 # fall back to them for any field the library omitted.
                 prev_traceroute = existing.get("traceroute")
-                prev_lat        = existing.get("latitude")
-                prev_lng        = existing.get("longitude")
-                prev_alt        = existing.get("altitude")
-                prev_fix        = existing.get("last_position_fix")
-                prev_metrics    = {
-                    f: existing.get(f) for f in (
-                        "snr", "rssi", "hops_away",
-                        "battery_level", "voltage",
-                        "channel_utilization", "air_util_tx", "uptime",
-                        "temperature", "relative_humidity",
-                        "barometric_pressure", "gas_resistance",
+                prev_lat = existing.get("latitude")
+                prev_lng = existing.get("longitude")
+                prev_alt = existing.get("altitude")
+                prev_fix = existing.get("last_position_fix")
+                prev_metrics = {
+                    f: existing.get(f)
+                    for f in (
+                        "snr",
+                        "rssi",
+                        "hops_away",
+                        "battery_level",
+                        "voltage",
+                        "channel_utilization",
+                        "air_util_tx",
+                        "uptime",
+                        "temperature",
+                        "relative_humidity",
+                        "barometric_pressure",
+                        "gas_resistance",
                         "last_heard",
                     )
                 }
-                prev_strings    = {
+                prev_strings = {
                     f: existing.get(f)
                     for f in ("long_name", "short_name", "hw_model", "role")
                 }
@@ -5685,9 +6271,13 @@ class MeshtasticConnection:
                 # Position: use fresh fix if radio reported one, otherwise
                 # retain the last known good coordinates.
                 # IMPORTANT: Only restore when we have a complete coordinate pair
-                needs_restore = (patch["latitude"] is None and patch["longitude"] is None and 
-                                prev_lat is not None and prev_lng is not None)
-                
+                needs_restore = (
+                    patch["latitude"] is None
+                    and patch["longitude"] is None
+                    and prev_lat is not None
+                    and prev_lng is not None
+                )
+
                 if needs_restore:
                     # Restore complete coordinate pair from previous good data
                     existing["latitude"] = prev_lat
@@ -5704,6 +6294,9 @@ class MeshtasticConnection:
                 entry = dict(patch)
                 entry["id"] = canon_id
                 # Only set position fix timestamp if we have complete coordinates
-                if patch.get("latitude") is not None and patch.get("longitude") is not None:
+                if (
+                    patch.get("latitude") is not None
+                    and patch.get("longitude") is not None
+                ):
                     entry["last_position_fix"] = int(time.time())
                 self._nodes.append(entry)

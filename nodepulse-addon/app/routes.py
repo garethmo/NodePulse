@@ -9,6 +9,7 @@ here — that belongs in connection.py.
 All responses use JSON. Error responses always include a human-readable
 "error" key so clients can display a meaningful message.
 """
+
 import asyncio
 import contextlib
 import datetime
@@ -77,13 +78,13 @@ async def handle_events(request: web.Request) -> web.StreamResponse:
         while True:
             try:
                 # Wait for the next event, but wake up periodically to send keepalives.
-                event = await asyncio.wait_for(queue.get(), timeout=_SSE_KEEPALIVE_INTERVAL)
+                event = await asyncio.wait_for(
+                    queue.get(), timeout=_SSE_KEEPALIVE_INTERVAL
+                )
                 # Serialize and send a named SSE frame.
                 event_type = event.get("type", "message")
                 data = json.dumps(event.get("data", {}), ensure_ascii=False)
-                await resp.write(
-                    f"event: {event_type}\ndata: {data}\n\n".encode()
-                )
+                await resp.write(f"event: {event_type}\ndata: {data}\n\n".encode())
             except asyncio.TimeoutError:
                 # Send a keepalive comment to prevent proxy timeouts.
                 await resp.write(b": ping\n\n")
@@ -95,13 +96,15 @@ async def handle_events(request: web.Request) -> web.StreamResponse:
         unregister_sse_client(queue)
     return resp
 
+
 _ADDON_VERSION = None
+
 
 def _get_addon_version() -> str:
     global _ADDON_VERSION
     if _ADDON_VERSION is not None:
         return _ADDON_VERSION
-        
+
     try:
         _cfg_candidates = [
             os.path.join(os.path.dirname(__file__), "..", "config.json"),
@@ -116,6 +119,7 @@ def _get_addon_version() -> str:
         pass
     _ADDON_VERSION = ""
     return _ADDON_VERSION
+
 
 # A canonical Meshtastic node ID is a "!" followed by up to 8 hex digits. The
 # Web UI always sends IDs in this form, so we reject anything else before
@@ -132,6 +136,7 @@ def _validate_destination(body: dict[str, Any]):
     if not destination or not _NODE_ID_RE.match(destination):
         return None
     return destination
+
 
 # The NodePulse HA custom integration's relay endpoints (/api/nodepulse/*) are
 # served by Home Assistant *core* — NOT by this addon. So the addon must reach
@@ -151,9 +156,9 @@ _HA_CANDIDATES = (
     # HA core with trusted auth. Calling HA core directly (homeassistant:8123)
     # with the Supervisor token fails 401 and triggers HA's IP-ban subsystem.
     "http://supervisor/core",
-    "http://homeassistant:8123",      # Standard HAOS supervisor hostname
-    "http://supervisor:8123",         # Legacy/alternative
-    "http://hassio:8123",             # Legacy
+    "http://homeassistant:8123",  # Standard HAOS supervisor hostname
+    "http://supervisor:8123",  # Legacy/alternative
+    "http://hassio:8123",  # Legacy
 )
 # Fallback candidates tried when none of the supervisor hostnames resolve
 # (custom Docker, non-HAOS installs, core-in-venv). Tried AFTER the supervisor
@@ -162,7 +167,7 @@ _HA_CANDIDATES = (
 _HA_FALLBACK_CANDIDATES = (
     "http://localhost:8123",
     "http://127.0.0.1:8123",
-    "http://172.17.0.1:8123",        # Docker gateway (bridge mode for HAOS)
+    "http://172.17.0.1:8123",  # Docker gateway (bridge mode for HAOS)
     "http://host.docker.internal:8123",
 )
 
@@ -191,7 +196,9 @@ def _token_fingerprint(token: str) -> str:
     return f"len={len(token)} head={token[:4]} tail={token[-4:]}"
 
 
-async def _relay_to_integration(request: web.Request, method: str, path: str, json_body=None) -> dict:
+async def _relay_to_integration(
+    request: web.Request, method: str, path: str, json_body=None
+) -> dict:
     """
     Relay an HTTP request to the NodePulse integration's local API, trying each
     candidate HA base URL until one responds.
@@ -223,7 +230,10 @@ async def _relay_to_integration(request: web.Request, method: str, path: str, js
     ha_access_token = (request.app["config"].ha_access_token or "").strip()
     tokens: list[tuple[str, str]] = []
     seen_tokens: set[str] = set()
-    for label, tok in (("SUPERVISOR_TOKEN", supervisor_token), ("ha_access_token", ha_access_token)):
+    for label, tok in (
+        ("SUPERVISOR_TOKEN", supervisor_token),
+        ("ha_access_token", ha_access_token),
+    ):
         if tok and tok not in seen_tokens:
             seen_tokens.add(tok)
             tokens.append((label, tok))
@@ -270,7 +280,9 @@ async def _relay_to_integration(request: web.Request, method: str, path: str, js
                 # /core proxy — HA core itself rejects it with 401, and each
                 # failed attempt is logged by HA's http.ban subsystem. Skip
                 # non-proxy candidates for this credential entirely.
-                if token_label == "SUPERVISOR_TOKEN" and not base.rstrip("/").endswith("supervisor/core"):
+                if token_label == "SUPERVISOR_TOKEN" and not base.rstrip("/").endswith(
+                    "supervisor/core"
+                ):
                     continue
                 url = f"{base}{path}"
                 try:
@@ -285,7 +297,10 @@ async def _relay_to_integration(request: web.Request, method: str, path: str, js
                         kwargs["json"] = json_body
                     logger.debug(
                         "Relaying %s %s body=%s token=%s",
-                        method, url, json_body, _token_fingerprint(token),
+                        method,
+                        url,
+                        json_body,
+                        _token_fingerprint(token),
                     )
                     async with session.request(method, url, **kwargs) as resp:
                         last_status = resp.status
@@ -294,19 +309,25 @@ async def _relay_to_integration(request: web.Request, method: str, path: str, js
                         last_body = raw
                         logger.debug(
                             "Relay response from %s: status=%s headers=%s body=%s",
-                            url, resp.status, dict(resp.headers), raw[:500],
+                            url,
+                            resp.status,
+                            dict(resp.headers),
+                            raw[:500],
                         )
                         if resp.status in (200, 201):
                             # Cache this base so we go straight here next time.
                             if _working_ha_base != base:
                                 _working_ha_base = base
-                                logger.debug("HA relay: caching working base URL as %s", base)
+                                logger.debug(
+                                    "HA relay: caching working base URL as %s", base
+                                )
                             try:
                                 return json.loads(raw)
                             except Exception as exc:
                                 logger.error(
                                     "Integration at %s returned OK but invalid JSON: %s",
-                                    base, exc,
+                                    base,
+                                    exc,
                                 )
                                 raise RuntimeError(
                                     f"Integration at {base} returned an unparseable response"
@@ -320,7 +341,8 @@ async def _relay_to_integration(request: web.Request, method: str, path: str, js
                             logger.debug(
                                 "Relay candidate %s returned %s (unauthorized) "
                                 "with %s %s — trying next",
-                                base, resp.status,
+                                base,
+                                resp.status,
                                 f"{token_label} (Bearer)" if token else "no auth",
                                 _token_fingerprint(token),
                             )
@@ -341,13 +363,17 @@ async def _relay_to_integration(request: web.Request, method: str, path: str, js
                 except Exception as exc:  # noqa: BLE001
                     # If the cached URL fails, clear it so we re-probe next time.
                     if base == _working_ha_base:
-                        logger.debug("Cached HA base %s is no longer reachable — resetting", base)
+                        logger.debug(
+                            "Cached HA base %s is no longer reachable — resetting", base
+                        )
                         _working_ha_base = None
                     logger.debug("Relay candidate %s failed: %s", base, exc)
                     continue
     logger.error(
         "Could not reach NodePulse integration. last_url=%s last_status=%s last_body=%s",
-        last_url, last_status, (last_body or "")[:500],
+        last_url,
+        last_status,
+        (last_body or "")[:500],
     )
     if last_status in (401, 403):
         detail = ""
@@ -358,8 +384,8 @@ async def _relay_to_integration(request: web.Request, method: str, path: str, js
             detail = (last_body or "")[:200]
         raise RuntimeError(
             f"NodePulse integration rejected the request (HTTP {last_status}): {detail} "
-            if detail else
-            f"NodePulse integration rejected the request (HTTP {last_status}). "
+            if detail
+            else f"NodePulse integration rejected the request (HTTP {last_status}). "
             "This usually means the SUPERVISOR_TOKEN is missing or mismatched "
             "between the addon container and HA core. On HAOS ensure the addon "
             "is installed via the Supervisor add-on store. On custom Docker/venv, "
@@ -409,6 +435,7 @@ def _error_response(message: str, status: int = 500) -> web.Response:
 # Route: GET /api/status
 # ---------------------------------------------------------------------------
 
+
 async def handle_status(request: web.Request) -> web.Response:
     """
     Return the current connection state, node identity, and addon configuration.
@@ -436,7 +463,9 @@ async def handle_status(request: web.Request) -> web.Response:
             "disable_token_validation": config.disable_token_validation,
             "ignored_nodes": list(getattr(config, "ignored_nodes", [])),
             "access_key_set": bool(config.access_key),
-            "scheduled_messages_enabled": getattr(config, "scheduled_messages_enabled", True),
+            "scheduled_messages_enabled": getattr(
+                config, "scheduled_messages_enabled", True
+            ),
             # MQTT Bridge settings
             "mqtt_enabled": config.mqtt_enabled,
             "mqtt_address": config.mqtt_address,
@@ -474,7 +503,9 @@ async def handle_status(request: web.Request) -> web.Response:
         with conn._scheduled_messages_lock:
             status["scheduled_count"] = len(conn._scheduled_messages)
             if conn._scheduled_messages:
-                status["next_scheduled_time"] = min(m[0] for m in conn._scheduled_messages)
+                status["next_scheduled_time"] = min(
+                    m[0] for m in conn._scheduled_messages
+                )
             else:
                 status["next_scheduled_time"] = None
 
@@ -487,6 +518,7 @@ async def handle_status(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 # Route: GET /api/nodes
 # ---------------------------------------------------------------------------
+
 
 async def handle_nodes(request: web.Request) -> web.Response:
     """
@@ -566,6 +598,7 @@ async def handle_clean_invalid_gps(request: web.Request) -> web.Response:
 # Route: GET /api/data-stores
 # ---------------------------------------------------------------------------
 
+
 async def handle_data_stores(request: web.Request) -> web.Response:
     """
     Return information about all local data stores including file sizes,
@@ -574,7 +607,7 @@ async def handle_data_stores(request: web.Request) -> web.Response:
     try:
         data_dir = os.environ.get("NODEPULSE_DATA_DIR", "/data")
         stores = {}
-        
+
         # Define the data files we want to track
         data_files = {
             "nodes.json": "Cached node data with GPS positions and metrics",
@@ -587,7 +620,7 @@ async def handle_data_stores(request: web.Request) -> web.Response:
             "channels.json": "Mesh channel configuration",
             "scheduled_messages.json": "Scheduled message queue",
         }
-        
+
         async def _get_json_file_len(filepath: str) -> Any:
             def _read() -> Any:
                 try:
@@ -598,8 +631,9 @@ async def handle_data_stores(request: web.Request) -> web.Response:
                         return None
                 except (OSError, json.JSONDecodeError):
                     return "Error reading"
+
             return await asyncio.to_thread(_read)
-        
+
         for filename, description in data_files.items():
             filepath = os.path.join(data_dir, filename)
             if os.path.exists(filepath):
@@ -607,17 +641,17 @@ async def handle_data_stores(request: web.Request) -> web.Response:
                 size_bytes = stat.st_size
                 size_kb = round(size_bytes / 1024, 2)
                 modified = stat.st_mtime
-                
+
                 # Try to load and count entries
                 entry_count = await _get_json_file_len(filepath)
-                
+
                 stores[filename] = {
                     "description": description,
                     "size_bytes": size_bytes,
                     "size_kb": size_kb,
                     "entry_count": entry_count,
                     "last_modified": modified,
-                    "exists": True
+                    "exists": True,
                 }
             else:
                 stores[filename] = {
@@ -626,28 +660,28 @@ async def handle_data_stores(request: web.Request) -> web.Response:
                     "size_kb": 0,
                     "entry_count": 0,
                     "last_modified": None,
-                    "exists": False
+                    "exists": False,
                 }
-        
+
         # Check messages archive directory
         archive_dir = os.path.join(data_dir, "messages_archive")
         archive_count = 0
         archive_size = 0
         if os.path.exists(archive_dir):
             for entry in os.scandir(archive_dir):
-                if entry.is_file() and entry.name.endswith('.json'):
+                if entry.is_file() and entry.name.endswith(".json"):
                     archive_count += 1
                     archive_size += entry.stat().st_size
-        
+
         stores["messages_archive"] = {
             "description": "Archived message history files",
             "size_bytes": archive_size,
             "size_kb": round(archive_size / 1024, 2),
             "entry_count": archive_count,
             "last_modified": None,
-            "exists": os.path.exists(archive_dir)
+            "exists": os.path.exists(archive_dir),
         }
-        
+
         return _json_response({"stores": stores})
     except Exception as exc:  # noqa: BLE001
         logger.error("Error getting data stores info: %s", exc)
@@ -658,10 +692,11 @@ async def handle_data_stores(request: web.Request) -> web.Response:
 # Route: GET /api/data-stores/{filename}
 # ---------------------------------------------------------------------------
 
+
 async def handle_download_data_file(request: web.Request) -> web.Response:
     """
     Download a specific data file from the addon's data directory.
-    
+
     Returns the file content as JSON with appropriate Content-Disposition header
     for browser download. Only allows downloading whitelisted files for security.
     """
@@ -683,7 +718,9 @@ async def handle_download_data_file(request: web.Request) -> web.Response:
         }
 
         if filename not in allowed_files:
-            return _error_response(f"File '{filename}' is not allowed for download", status=403)
+            return _error_response(
+                f"File '{filename}' is not allowed for download", status=403
+            )
 
         data_dir = os.environ.get("NODEPULSE_DATA_DIR", "/data")
         filepath = os.path.join(data_dir, filename)
@@ -692,17 +729,17 @@ async def handle_download_data_file(request: web.Request) -> web.Response:
         # (guards against any future relaxation of the allowlist)
         if not os.path.realpath(filepath).startswith(os.path.realpath(data_dir)):
             return _error_response("Access denied", status=403)
-        
+
         if not os.path.exists(filepath):
             return _error_response(f"File '{filename}' not found", status=404)
-        
+
         if not os.path.isfile(filepath):
             return _error_response(f"'{filename}' is not a file", status=400)
-        
+
         # Return as JSON with download headers using FileResponse for async streaming
         response = web.FileResponse(filepath)
-        response.headers['Content-Type'] = 'application/json'
-        response.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
+        response.headers["Content-Type"] = "application/json"
+        response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
         return response
     except Exception as exc:  # noqa: BLE001
         logger.error("Error downloading data file %s: %s", filename, exc)
@@ -712,6 +749,7 @@ async def handle_download_data_file(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 # Route: GET /api/node/{node_id}/signal
 # ---------------------------------------------------------------------------
+
 
 async def handle_node_signal(request: web.Request) -> web.Response:
     """
@@ -726,7 +764,9 @@ async def handle_node_signal(request: web.Request) -> web.Response:
     conn: MeshtasticConnection = request.app["connection"]
     node_id = request.match_info.get("node_id", "").strip()
     if not _NODE_ID_RE.match(node_id):
-        return _error_response("node_id must be a valid !hex Meshtastic node ID", status=400)
+        return _error_response(
+            "node_id must be a valid !hex Meshtastic node ID", status=400
+        )
     _apply_access_key(request)
     try:
         result = await conn.get_node_signal(node_id)
@@ -744,6 +784,7 @@ async def handle_node_signal(request: web.Request) -> web.Response:
 # Route: GET /api/node/{node_id}/gpx
 # ---------------------------------------------------------------------------
 
+
 async def handle_node_gpx(request: web.Request) -> web.Response:
     """
     Export a single node's position history as a downloadable GPX 1.1 track.
@@ -755,13 +796,17 @@ async def handle_node_gpx(request: web.Request) -> web.Response:
     conn: MeshtasticConnection = request.app["connection"]
     node_id = request.match_info.get("node_id", "").strip()
     if not _NODE_ID_RE.match(node_id):
-        return _error_response("node_id must be a valid !hex Meshtastic node ID", status=400)
+        return _error_response(
+            "node_id must be a valid !hex Meshtastic node ID", status=400
+        )
     try:
         history = await conn.get_position_history(node_id)
         points = (history or {}).get(node_id, []) if isinstance(history, dict) else []
         nodes = await conn.get_nodes()
         node = next((n for n in nodes if n.get("id") == node_id), None)
-        name = (node or {}).get("long_name") or (node or {}).get("short_name") or node_id
+        name = (
+            (node or {}).get("long_name") or (node or {}).get("short_name") or node_id
+        )
         gpx = _build_gpx_track(node_id, name, points)
         filename = f"nodepulse_{node_id.lstrip('!')}_track.gpx"
         return web.Response(
@@ -777,7 +822,16 @@ async def handle_node_gpx(request: web.Request) -> web.Response:
 def _build_gpx_track(node_id: str, name: str, points: list[dict]) -> str:
     """Build a GPX 1.1 document with a single <trk> from position history."""
     now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    escapes = {k: v for k, v in [("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"), ('"', "&quot;"), ("'", "&apos;")]}
+    escapes = {
+        k: v
+        for k, v in [
+            ("&", "&amp;"),
+            ("<", "&lt;"),
+            (">", "&gt;"),
+            ('"', "&quot;"),
+            ("'", "&apos;"),
+        ]
+    }
 
     def esc(s):
         return "".join(escapes.get(c, c) for c in str(s))
@@ -786,7 +840,9 @@ def _build_gpx_track(node_id: str, name: str, points: list[dict]) -> str:
         if not ts:
             return now
         try:
-            return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
         except Exception:  # noqa: BLE001
             return now
 
@@ -800,9 +856,9 @@ def _build_gpx_track(node_id: str, name: str, points: list[dict]) -> str:
         alt_str = f"        <ele>{alt}</ele>\n" if alt is not None else ""
         trkpts.append(
             f'      <trkpt lat="{lat}" lon="{lng}">\n'
-            f'{alt_str}'
-            f'        <time>{_fmt(p.get("timestamp"))}</time>\n'
-            f'      </trkpt>'
+            f"{alt_str}"
+            f"        <time>{_fmt(p.get('timestamp'))}</time>\n"
+            f"      </trkpt>"
         )
     track = "\n".join(trkpts)
     return (
@@ -810,23 +866,24 @@ def _build_gpx_track(node_id: str, name: str, points: list[dict]) -> str:
         '<gpx version="1.1" creator="NodePulse" '
         'xmlns="http://www.topografix.com/GPX/1/1" '
         'xmlns:gpxtpx="http://www.garmin.com/xmlschemas/TrackPointExtension/v1">\n'
-        '  <metadata>\n'
-        f'    <name>NodePulse Track {esc(name)}</name>\n'
-        f'    <time>{now}</time>\n'
-        '  </metadata>\n'
-        '  <trk>\n'
-        f'    <name>{esc(name)} ({esc(node_id)})</name>\n'
-        '    <trkseg>\n'
-        f'{track}\n'
-        '    </trkseg>\n'
-        '  </trk>\n'
-        '</gpx>'
+        "  <metadata>\n"
+        f"    <name>NodePulse Track {esc(name)}</name>\n"
+        f"    <time>{now}</time>\n"
+        "  </metadata>\n"
+        "  <trk>\n"
+        f"    <name>{esc(name)} ({esc(node_id)})</name>\n"
+        "    <trkseg>\n"
+        f"{track}\n"
+        "    </trkseg>\n"
+        "  </trk>\n"
+        "</gpx>"
     )
 
 
 # ---------------------------------------------------------------------------
 # Route: GET /api/hops
 # ---------------------------------------------------------------------------
+
 
 async def handle_hops(request: web.Request) -> web.Response:
     """
@@ -855,12 +912,16 @@ async def handle_hops(request: web.Request) -> web.Response:
             total += 1
             if h > max_hops:
                 max_hops = h
-        distribution = [{"hops": h, "count": buckets.get(h, 0)} for h in range(0, max_hops + 1)]
-        return _json_response({
-            "distribution": distribution,
-            "total": total,
-            "max_hops": max_hops,
-        })
+        distribution = [
+            {"hops": h, "count": buckets.get(h, 0)} for h in range(0, max_hops + 1)
+        ]
+        return _json_response(
+            {
+                "distribution": distribution,
+                "total": total,
+                "max_hops": max_hops,
+            }
+        )
     except Exception as exc:  # noqa: BLE001
         logger.error("Error computing hop distribution: %s", exc)
         return _error_response("Failed to compute hop distribution")
@@ -869,6 +930,7 @@ async def handle_hops(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 # Route: GET /api/beacon
 # ---------------------------------------------------------------------------
+
 
 async def handle_beacon(request: web.Request) -> web.Response:
     """
@@ -893,6 +955,7 @@ async def handle_beacon(request: web.Request) -> web.Response:
 # Route: DELETE /api/node/{node_id}
 # ---------------------------------------------------------------------------
 
+
 async def handle_delete_node(request: web.Request) -> web.Response:
     """Remove a single node from the persistent store by its hex ID."""
     conn: MeshtasticConnection = request.app["connection"]
@@ -913,6 +976,7 @@ async def handle_delete_node(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 # Route: GET /api/messages/search
 # ---------------------------------------------------------------------------
+
 
 async def handle_search_messages(request: web.Request) -> web.Response:
     """
@@ -935,10 +999,7 @@ async def handle_search_messages(request: web.Request) -> web.Response:
         messages = await conn.get_messages()
 
         # Case-insensitive substring match on message text
-        matched = [
-            m for m in messages
-            if q.lower() in (m.get("text") or "").lower()
-        ]
+        matched = [m for m in messages if q.lower() in (m.get("text") or "").lower()]
 
         # Sort by timestamp descending (newest first)
         matched.sort(key=lambda m: m.get("timestamp", 0), reverse=True)
@@ -956,6 +1017,7 @@ async def handle_search_messages(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 # Route: GET /api/messages
 # ---------------------------------------------------------------------------
+
 
 async def handle_messages(request: web.Request) -> web.Response:
     """
@@ -982,6 +1044,7 @@ async def handle_messages(request: web.Request) -> web.Response:
 # Route: GET /api/messages/export
 # ---------------------------------------------------------------------------
 
+
 async def handle_export_messages(request: web.Request) -> web.Response:
     """
     Export message history as downloadable JSON or CSV file.
@@ -1007,34 +1070,50 @@ async def handle_export_messages(request: web.Request) -> web.Response:
 
             output = io.StringIO()
             writer = csv.writer(output)
-            writer.writerow([
-                "id", "timestamp", "datetime", "from_id", "from_name",
-                "conversation", "outgoing", "channel", "ack_status", "text"
-            ])
+            writer.writerow(
+                [
+                    "id",
+                    "timestamp",
+                    "datetime",
+                    "from_id",
+                    "from_name",
+                    "conversation",
+                    "outgoing",
+                    "channel",
+                    "ack_status",
+                    "text",
+                ]
+            )
 
             for m in messages:
                 ts = m.get("timestamp") or 0
-                dt_str = datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).isoformat() if ts else ""
-                writer.writerow([
-                    m.get("id", ""),
-                    ts,
-                    dt_str,
-                    m.get("from_id", ""),
-                    m.get("from_name", ""),
-                    m.get("conversation", ""),
-                    m.get("outgoing", False),
-                    m.get("channel", ""),
-                    m.get("ack_status") or m.get("status") or "",
-                    m.get("text", ""),
-                ])
+                dt_str = (
+                    datetime.datetime.fromtimestamp(
+                        ts, datetime.timezone.utc
+                    ).isoformat()
+                    if ts
+                    else ""
+                )
+                writer.writerow(
+                    [
+                        m.get("id", ""),
+                        ts,
+                        dt_str,
+                        m.get("from_id", ""),
+                        m.get("from_name", ""),
+                        m.get("conversation", ""),
+                        m.get("outgoing", False),
+                        m.get("channel", ""),
+                        m.get("ack_status") or m.get("status") or "",
+                        m.get("text", ""),
+                    ]
+                )
 
             filename = f"nodepulse_messages_{now_str}.csv"
             return web.Response(
                 body=output.getvalue().encode("utf-8"),
                 content_type="text/csv",
-                headers={
-                    "Content-Disposition": f'attachment; filename="{filename}"'
-                },
+                headers={"Content-Disposition": f'attachment; filename="{filename}"'},
             )
 
         # Default: JSON
@@ -1043,9 +1122,7 @@ async def handle_export_messages(request: web.Request) -> web.Response:
         return web.Response(
             body=body_str.encode("utf-8"),
             content_type="application/json",
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}"'
-            },
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
     except Exception as exc:  # noqa: BLE001
         logger.error("Error exporting messages: %s", exc)
@@ -1055,6 +1132,7 @@ async def handle_export_messages(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 # Routes: /api/waypoints
 # ---------------------------------------------------------------------------
+
 
 async def handle_get_waypoints(request: web.Request) -> web.Response:
     """Return all active (non-expired) waypoints."""
@@ -1152,12 +1230,17 @@ async def handle_delete_waypoint(request: web.Request) -> web.Response:
 # Route: GET /api/channels
 # ---------------------------------------------------------------------------
 
+
 async def handle_channels(request: web.Request) -> web.Response:
     """Return the channel list configured on the connected Meshtastic node."""
     conn: MeshtasticConnection = request.app["connection"]
     try:
         channels = await conn.refresh_channels()
-        logger.debug("Channels fetched: count=%s, data=%s", len(channels) if channels else 0, channels)
+        logger.debug(
+            "Channels fetched: count=%s, data=%s",
+            len(channels) if channels else 0,
+            channels,
+        )
         return _json_response(channels)
     except Exception as exc:  # noqa: BLE001
         logger.error("Error fetching channels: %s", exc)
@@ -1167,6 +1250,7 @@ async def handle_channels(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 # Route: POST /api/send
 # ---------------------------------------------------------------------------
+
 
 async def handle_send(request: web.Request) -> web.Response:
     """
@@ -1192,7 +1276,9 @@ async def handle_send(request: web.Request) -> web.Response:
 
     text = body.get("text", "").strip()
     if not text:
-        return _error_response("'text' field is required and must not be empty", status=400)
+        return _error_response(
+            "'text' field is required and must not be empty", status=400
+        )
 
     destination = body.get("destination")  # None → broadcast
 
@@ -1214,9 +1300,13 @@ async def handle_send(request: web.Request) -> web.Response:
         except (TypeError, ValueError):
             return _error_response("'schedule_at' must be a unix timestamp", status=400)
         if not getattr(request.app["config"], "scheduled_messages_enabled", True):
-            return _error_response("Scheduled messages are disabled in config", status=403)
+            return _error_response(
+                "Scheduled messages are disabled in config", status=403
+            )
         # Add to the scheduled messages queue via connection manager
-        conn.schedule_message(float(schedule_at), (body.get("destination") or "").strip(), text, channel)
+        conn.schedule_message(
+            float(schedule_at), (body.get("destination") or "").strip(), text, channel
+        )
         return _json_response({"scheduled": True, "schedule_at": schedule_at})
     else:
         try:
@@ -1226,13 +1316,17 @@ async def handle_send(request: web.Request) -> web.Response:
                 destination or "broadcast",
                 channel,
             )
-            success = await conn.send_message(text, destination=destination, channel=channel)
+            success = await conn.send_message(
+                text, destination=destination, channel=channel
+            )
             if success:
                 resp_payload = {"sent": True}
                 if isinstance(success, dict):
                     resp_payload.update(success)
                 return _json_response(resp_payload)
-            return _error_response("Message was not accepted by the Meshtastic interface", status=502)
+            return _error_response(
+                "Message was not accepted by the Meshtastic interface", status=502
+            )
         except Exception as exc:  # noqa: BLE001
             logger.error(
                 "Unhandled error in send handler (destination=%s): %s", destination, exc
@@ -1245,6 +1339,7 @@ async def handle_send(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 # Route: POST /api/traceRoute
 # ---------------------------------------------------------------------------
+
 
 async def handle_traceroute(request: web.Request) -> web.Response:
     """
@@ -1267,7 +1362,9 @@ async def handle_traceroute(request: web.Request) -> web.Response:
 
     destination = _validate_destination(body)
     if destination is None:
-        return _error_response("'destination' must be a node ID like '!abc12345'", status=400)
+        return _error_response(
+            "'destination' must be a node ID like '!abc12345'", status=400
+        )
 
     try:
         success = await conn.request_traceroute(destination)
@@ -1282,6 +1379,7 @@ async def handle_traceroute(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 # Route: POST /api/requestPosition
 # ---------------------------------------------------------------------------
+
 
 async def handle_request_position(request: web.Request) -> web.Response:
     """
@@ -1299,7 +1397,9 @@ async def handle_request_position(request: web.Request) -> web.Response:
 
     destination = _validate_destination(body)
     if destination is None:
-        return _error_response("'destination' must be a node ID like '!abc12345'", status=400)
+        return _error_response(
+            "'destination' must be a node ID like '!abc12345'", status=400
+        )
 
     try:
         success = await conn.request_position(destination)
@@ -1315,6 +1415,7 @@ async def handle_request_position(request: web.Request) -> web.Response:
 # Route: GET /api/tracked-nodes
 # ---------------------------------------------------------------------------
 
+
 async def handle_tracked_nodes(request: web.Request) -> web.Response:
     """
     Return the node IDs the user currently tracks as HA entities.
@@ -1325,7 +1426,9 @@ async def handle_tracked_nodes(request: web.Request) -> web.Response:
     UI has a single source of truth.
     """
     try:
-        data = await _relay_to_integration(request, "GET", "/api/nodepulse/tracked-nodes")
+        data = await _relay_to_integration(
+            request, "GET", "/api/nodepulse/tracked-nodes"
+        )
         node_ids = data.get("node_ids", [])
         return _json_response({"node_ids": node_ids})
     except RuntimeError as exc:
@@ -1343,6 +1446,7 @@ async def handle_tracked_nodes(request: web.Request) -> web.Response:
 # Route: GET /api/position-history
 # Route: GET /api/position-history/{node_id}
 # ---------------------------------------------------------------------------
+
 
 async def handle_position_history(request: web.Request) -> web.Response:
     """Return position history for all nodes, or for a single node if node_id is
@@ -1366,6 +1470,7 @@ async def handle_position_history(request: web.Request) -> web.Response:
 # Route: GET /api/tags
 # ---------------------------------------------------------------------------
 
+
 async def handle_tags(request: web.Request) -> web.Response:
     """Return all user-defined node tags: {node_id: [tag, ...], ...}."""
     conn: MeshtasticConnection = request.app["connection"]
@@ -1380,6 +1485,7 @@ async def handle_tags(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 # Route: PUT /api/tags
 # ---------------------------------------------------------------------------
+
 
 async def handle_set_tags(request: web.Request) -> web.Response:
     """
@@ -1396,7 +1502,9 @@ async def handle_set_tags(request: web.Request) -> web.Response:
 
     node_id = (body.get("node_id") or "").strip()
     if not node_id or not _NODE_ID_RE.match(node_id):
-        return _error_response("'node_id' must be a valid node ID like '!abc12345'", status=400)
+        return _error_response(
+            "'node_id' must be a valid node ID like '!abc12345'", status=400
+        )
 
     tags = body.get("tags")
     if tags is None or not isinstance(tags, list):
@@ -1416,6 +1524,7 @@ async def handle_set_tags(request: web.Request) -> web.Response:
 # Route: GET /api/favorites
 # ---------------------------------------------------------------------------
 
+
 async def handle_favorites(request: web.Request) -> web.Response:
     """Return the persisted list of favorite node IDs."""
     conn: MeshtasticConnection = request.app["connection"]
@@ -1430,6 +1539,7 @@ async def handle_favorites(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 # Route: PUT /api/favorites
 # ---------------------------------------------------------------------------
+
 
 async def handle_set_favorite(request: web.Request) -> web.Response:
     """
@@ -1446,7 +1556,9 @@ async def handle_set_favorite(request: web.Request) -> web.Response:
 
     node_id = (body.get("node_id") or "").strip()
     if not node_id or not _NODE_ID_RE.match(node_id):
-        return _error_response("'node_id' must be a valid node ID like '!abc12345'", status=400)
+        return _error_response(
+            "'node_id' must be a valid node ID like '!abc12345'", status=400
+        )
 
     favorited = body.get("favorited")
     if not isinstance(favorited, bool):
@@ -1485,17 +1597,22 @@ async def handle_track_node(request: web.Request) -> web.Response:
 
     try:
         await _relay_to_integration(
-            request, "POST", "/api/nodepulse/track",
+            request,
+            "POST",
+            "/api/nodepulse/track",
             json_body={"node_id": node_id, "enabled": enabled},
         )
         return _json_response({"node_id": node_id, "enabled": enabled})
     except RuntimeError as exc:
-        logger.error("Track-node relay rejected by integration (node=%s): %s", node_id, exc)
+        logger.error(
+            "Track-node relay rejected by integration (node=%s): %s", node_id, exc
+        )
         return _error_response(str(exc), status=502)
     except Exception as exc:  # noqa: BLE001
         logger.error(
             "Failed to relay track-node request to integration (node=%s): %s",
-            node_id, exc,
+            node_id,
+            exc,
         )
         return _error_response("Failed to reach NodePulse integration")
 
@@ -1503,6 +1620,7 @@ async def handle_track_node(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 # Route: GET /api/packets
 # ---------------------------------------------------------------------------
+
 
 async def handle_packets(request: web.Request) -> web.Response:
     """
@@ -1532,6 +1650,7 @@ async def handle_packets(request: web.Request) -> web.Response:
 # Route: GET /api/sniffer/stats
 # ---------------------------------------------------------------------------
 
+
 async def handle_sniffer_stats(request: web.Request) -> web.Response:
     """
     Return live LoRa sniffer statistics computed over the last 60 seconds.
@@ -1560,6 +1679,7 @@ async def handle_sniffer_stats(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 # Route: GET /api/mesh/discovery
 # ---------------------------------------------------------------------------
+
 
 async def handle_mesh_discovery(request: web.Request) -> web.Response:
     """
@@ -1610,6 +1730,7 @@ async def handle_mesh_discovery(request: web.Request) -> web.Response:
 # Routes: /api/device-config
 # ---------------------------------------------------------------------------
 
+
 async def handle_get_device_config(request: web.Request) -> web.Response:
     """
     Return the full device configuration as a JSON snapshot.
@@ -1656,7 +1777,9 @@ async def handle_put_device_config_section(request: web.Request) -> web.Response
         return _error_response("Request body must be valid JSON", status=400)
 
     if not isinstance(body, dict) or not body:
-        return _error_response("Request body must be a non-empty JSON object", status=400)
+        return _error_response(
+            "Request body must be a non-empty JSON object", status=400
+        )
 
     try:
         result = await conn.set_device_config(section, body)
@@ -1697,6 +1820,7 @@ async def handle_reload_device_config(request: web.Request) -> web.Response:
 # Route: GET /api/security/scan
 # ---------------------------------------------------------------------------
 
+
 async def handle_get_security_scan(request: web.Request) -> web.Response:
     """
     Inspect every configured channel's PSK and return a list of security
@@ -1736,6 +1860,7 @@ async def handle_get_security_scan(request: web.Request) -> web.Response:
 # Route: GET /api/terrain/elevation
 # ---------------------------------------------------------------------------
 
+
 async def handle_terrain_elevation(request: web.Request) -> web.Response:
     """Return ground elevation (m) for a single lat/lng point.
 
@@ -1749,7 +1874,9 @@ async def handle_terrain_elevation(request: web.Request) -> web.Response:
         lat = float(request.query.get("lat", ""))
         lng = float(request.query.get("lng", ""))
     except ValueError:
-        return _error_response("'lat' and 'lng' query params must be numbers", status=400)
+        return _error_response(
+            "'lat' and 'lng' query params must be numbers", status=400
+        )
 
     if not (-90.0 <= lat <= 90.0) or not (-180.0 <= lng <= 180.0):
         return _error_response("'lat' and 'lng' must be valid coordinates", status=400)
@@ -1766,9 +1893,11 @@ async def handle_terrain_elevation(request: web.Request) -> web.Response:
 # Route: POST /api/terrain/coverage
 # ---------------------------------------------------------------------------
 
+
 async def handle_terrain_coverage(request: web.Request) -> web.Response:
     """Analyse radio coverage radially from a point."""
     from .terrain import TerrainService, analyze_coverage
+
     terrain: TerrainService = request.app.get("terrain")
     if terrain is None:
         return _error_response("Terrain analysis is not enabled", status=503)
@@ -1804,22 +1933,37 @@ async def handle_terrain_coverage(request: web.Request) -> web.Response:
         env_loss_db = float(body.get("env_loss_db", 0.0))
         radial_count = int(body.get("radial_count", 72))
         samples_per_radial = int(body.get("samples_per_radial", 30))
-        
+
         res = await analyze_coverage(
-            terrain, lat, lng, radius_m, freq_mhz, tx_power_dbm, tx_gain_dbi, rx_gain_dbi,
-            rx_sensitivity_dbm, tx_antenna_height_m, rx_antenna_height_m, env_loss_db,
-            radial_count=radial_count, samples_per_radial=samples_per_radial
+            terrain,
+            lat,
+            lng,
+            radius_m,
+            freq_mhz,
+            tx_power_dbm,
+            tx_gain_dbi,
+            rx_gain_dbi,
+            rx_sensitivity_dbm,
+            tx_antenna_height_m,
+            rx_antenna_height_m,
+            env_loss_db,
+            radial_count=radial_count,
+            samples_per_radial=samples_per_radial,
         )
         return _json_response(res)
     except Exception as exc:
         import logging
-        logging.getLogger(__name__).error("Terrain coverage error: %s", exc, exc_info=True)
+
+        logging.getLogger(__name__).error(
+            "Terrain coverage error: %s", exc, exc_info=True
+        )
         return _error_response(f"Coverage analysis failed: {exc}")
 
 
 # ---------------------------------------------------------------------------
 # Route: POST /api/terrain/link
 # ---------------------------------------------------------------------------
+
 
 async def handle_terrain_link(request: web.Request) -> web.Response:
     """Analyse a point-to-point radio link over terrain.
@@ -1858,7 +2002,9 @@ async def handle_terrain_link(request: web.Request) -> web.Response:
     from_pt = body.get("from")
     to_pt = body.get("to")
     if not isinstance(from_pt, dict) or not isinstance(to_pt, dict):
-        return _error_response("'from' and 'to' must be objects with 'lat'/'lng'", status=400)
+        return _error_response(
+            "'from' and 'to' must be objects with 'lat'/'lng'", status=400
+        )
     try:
         lat1 = float(from_pt.get("lat"))
         lng1 = float(from_pt.get("lng"))
@@ -1945,6 +2091,7 @@ async def handle_terrain_link(request: web.Request) -> web.Response:
 # Routes: /api/admin — remote node administration
 # ---------------------------------------------------------------------------
 
+
 async def handle_admin_available(request: web.Request) -> web.Response:
     """
     Report whether the gateway can administer remote nodes (has an ADMIN
@@ -1968,20 +2115,26 @@ async def handle_get_remote_config(request: web.Request) -> web.Response:
     conn: MeshtasticConnection = request.app["connection"]
     node_id = request.match_info.get("node_id", "").strip()
     if not _NODE_ID_RE.match(node_id):
-        return _error_response("node_id must be a valid !hex Meshtastic node ID", status=400)
+        return _error_response(
+            "node_id must be a valid !hex Meshtastic node ID", status=400
+        )
     try:
         force = request.query.get("force", "false").lower() == "true"
         return _json_response(await conn.get_remote_config(node_id, force=force))
     except ConnectionError as exc:
         return _error_response(str(exc), status=504)
     except asyncio.TimeoutError:
-        return _error_response("Remote config read timed out — the node may be offline, out of range, or not authorized (its Security → Admin Keys must include this gateway's public key)", status=504)
+        return _error_response(
+            "Remote config read timed out — the node may be offline, out of range, or not authorized (its Security → Admin Keys must include this gateway's public key)",
+            status=504,
+        )
     except ValueError as exc:
         return _error_response(str(exc), status=400)
     except Exception as exc:  # noqa: BLE001
         logger.error("Error reading remote config for %s: %s", node_id, exc)
         return _error_response("Failed to read remote configuration")
-        
+
+
 async def handle_get_remote_config_section(request: web.Request) -> web.Response:
     """
     Read a single configuration section from a remote node.
@@ -1990,10 +2143,12 @@ async def handle_get_remote_config_section(request: web.Request) -> web.Response
     node_id = request.match_info.get("node_id", "").strip()
     section = request.match_info.get("section", "").strip()
     if not _NODE_ID_RE.match(node_id):
-        return _error_response("node_id must be a valid !hex Meshtastic node ID", status=400)
+        return _error_response(
+            "node_id must be a valid !hex Meshtastic node ID", status=400
+        )
     if not section:
         return _error_response("section is required in the URL path", status=400)
-    
+
     try:
         return _json_response(await conn.get_remote_config_section(node_id, section))
     except ConnectionError as exc:
@@ -2003,8 +2158,11 @@ async def handle_get_remote_config_section(request: web.Request) -> web.Response
     except ValueError as exc:
         return _error_response(str(exc), status=400)
     except Exception as exc:  # noqa: BLE001
-        logger.error("Error reading remote config section %s for %s: %s", section, node_id, exc)
+        logger.error(
+            "Error reading remote config section %s for %s: %s", section, node_id, exc
+        )
         return _error_response("Failed to read remote configuration section")
+
 
 async def handle_put_remote_config_section(request: web.Request) -> web.Response:
     """
@@ -2021,7 +2179,9 @@ async def handle_put_remote_config_section(request: web.Request) -> web.Response
     node_id = request.match_info.get("node_id", "").strip()
     section = request.match_info.get("section", "").strip()
     if not _NODE_ID_RE.match(node_id):
-        return _error_response("node_id must be a valid !hex Meshtastic node ID", status=400)
+        return _error_response(
+            "node_id must be a valid !hex Meshtastic node ID", status=400
+        )
     if not section:
         return _error_response("section is required in the URL path", status=400)
 
@@ -2031,7 +2191,9 @@ async def handle_put_remote_config_section(request: web.Request) -> web.Response
         return _error_response("Request body must be valid JSON", status=400)
 
     if not isinstance(body, dict) or not body:
-        return _error_response("Request body must be a non-empty JSON object", status=400)
+        return _error_response(
+            "Request body must be a non-empty JSON object", status=400
+        )
 
     try:
         result = await conn.set_remote_config(node_id, section, body)
@@ -2041,7 +2203,10 @@ async def handle_put_remote_config_section(request: web.Request) -> web.Response
     except ConnectionError as exc:
         return _error_response(str(exc), status=504)
     except asyncio.TimeoutError:
-        return _error_response("Remote config write timed out — the node may be offline, out of range, or not authorized (its Security → Admin Keys must include this gateway's public key)", status=504)
+        return _error_response(
+            "Remote config write timed out — the node may be offline, out of range, or not authorized (its Security → Admin Keys must include this gateway's public key)",
+            status=504,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.error("Error writing remote config %s/%s: %s", node_id, section, exc)
         return _error_response("Failed to apply remote configuration")
@@ -2065,7 +2230,9 @@ async def handle_admin_action(request: web.Request) -> web.Response:
     node_id = request.match_info.get("node_id", "").strip()
     action = request.match_info.get("action", "").strip()
     if not _NODE_ID_RE.match(node_id):
-        return _error_response("node_id must be a valid !hex Meshtastic node ID", status=400)
+        return _error_response(
+            "node_id must be a valid !hex Meshtastic node ID", status=400
+        )
     if not action:
         return _error_response("action is required in the URL path", status=400)
 
@@ -2086,7 +2253,10 @@ async def handle_admin_action(request: web.Request) -> web.Response:
     except ConnectionError as exc:
         return _error_response(str(exc), status=504)
     except asyncio.TimeoutError:
-        return _error_response(f"Admin action '{action}' timed out — the node may be offline, out of range, or not authorized (its Security → Admin Keys must include this gateway's public key)", status=504)
+        return _error_response(
+            f"Admin action '{action}' timed out — the node may be offline, out of range, or not authorized (its Security → Admin Keys must include this gateway's public key)",
+            status=504,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.error("Error running admin action %s on %s: %s", action, node_id, exc)
         return _error_response(f"Failed to run admin action '{action}'")
@@ -2114,4 +2284,3 @@ def _interpolate_nones(values: list[float | None]) -> list[float | None]:
         for i in range(i0 + 1, i1):
             result[i] = v0 + (v1 - v0) * (i - i0) / span
     return result
-

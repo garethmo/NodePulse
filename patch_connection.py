@@ -10,7 +10,9 @@ schedule_method = """
             self._scheduled_messages.append((execute_time, destination, text, channel, 0))
         self._schedule_save(self._scheduled_messages, "/data/scheduled_messages.json")
 """
-content = re.sub(r'(\s*def _process_scheduled_messages)', schedule_method + r'\1', content)
+content = re.sub(
+    r"(\s*def _process_scheduled_messages)", schedule_method + r"\1", content
+)
 
 # Add load/save for scheduled_messages in _load_messages
 load_scheduled = """
@@ -25,7 +27,12 @@ load_scheduled = """
         except Exception as exc:
             logger.debug("Could not load persisted scheduled messages (ignored): %s", exc)
 """
-content = re.sub(r'(def _load_messages\(self\) -> None:.*?try:.*?except Exception as exc:.*?logger\.debug\("Could not load persisted messages.*?)(def _save_messages)', r'\1' + load_scheduled + r'\n    \2', content, flags=re.DOTALL)
+content = re.sub(
+    r'(def _load_messages\(self\) -> None:.*?try:.*?except Exception as exc:.*?logger\.debug\("Could not load persisted messages.*?)(def _save_messages)',
+    r"\1" + load_scheduled + r"\n    \2",
+    content,
+    flags=re.DOTALL,
+)
 
 with open("nodepulse-addon/app/connection.py", "w") as f:
     f.write(content)

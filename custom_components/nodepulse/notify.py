@@ -15,6 +15,7 @@ This is a regular config-entry platform (part of ``PLATFORMS``) so its
 entities are tracked and unloaded with the entry — the legacy
 ``async_load_platform`` discovery path has been removed (Q2).
 """
+
 import logging
 from typing import Any, Dict, List, Optional
 

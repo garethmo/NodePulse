@@ -5,6 +5,7 @@ Provides a bidirectional bridge between Telegram and the Meshtastic network.
 Uses long-polling via aiohttp to receive commands securely from an authorized
 Telegram chat, and provides a callback to forward inbound mesh text messages.
 """
+
 import asyncio
 import contextlib
 import datetime
@@ -46,21 +47,25 @@ class TelegramBot:
         self.token = config.telegram_bot_token.strip()
         self.chat_id = str(config.telegram_chat_id).strip()
         self.allow_commands = config.telegram_allow_commands
-        
+
         # Support both old single chat_id and new list of authorized chat IDs.
         # Normalize to strings: Telegram chat ids arrive as strings (group ids
         # are negative), so ints from config would never match the comparison.
-        self._authorized_list = [str(c) for c in config.telegram_authorized_chat_ids if c]
+        self._authorized_list = [
+            str(c) for c in config.telegram_authorized_chat_ids if c
+        ]
         if self.chat_id and self.chat_id not in self._authorized_list:
             self._authorized_list.append(self.chat_id)
         self.authorized_chat_ids = set(self._authorized_list)
         # Primary target for mesh->Telegram forwarding when no inbound message
         # has been seen yet (e.g. at startup).
-        self._default_forward_chat = self._authorized_list[0] if self._authorized_list else ""
-        
+        self._default_forward_chat = (
+            self._authorized_list[0] if self._authorized_list else ""
+        )
+
         self.forward_channels = config.telegram_forward_channels
         self.forward_dms = config.telegram_forward_dms
-        
+
         # Callbacks into the meshtastic connection
         self.send_message_callback = send_message_callback
         self.get_status_callback = get_status_callback
@@ -73,7 +78,7 @@ class TelegramBot:
         # only the lightweight callbacks wired up.
         self._conn = conn
         self._terrain = terrain
-        
+
         self._task: asyncio.Task | None = None
         self._session: aiohttp.ClientSession | None = None
         self._offset = 0
@@ -92,17 +97,17 @@ class TelegramBot:
         if not self.enabled:
             logger.info("Telegram integration is disabled in config")
             return
-            
+
         if not self.token:
             logger.warning("Telegram is enabled but token is missing")
             return
-            
+
         if not self.authorized_chat_ids:
             logger.warning(
                 "Telegram is enabled but no chat_id / telegram_authorized_chat_ids configured"
             )
             return
-            
+
         logger.info(
             "Starting Telegram Bot integration (authorized_chats=%s)",
             sorted(self.authorized_chat_ids),
@@ -137,9 +142,13 @@ class TelegramBot:
         while True:
             try:
                 # getUpdates with long polling timeout of 30s
-                data = {"offset": self._offset, "timeout": 30, "allowed_updates": ["message", "channel_post"]}
+                data = {
+                    "offset": self._offset,
+                    "timeout": 30,
+                    "allowed_updates": ["message", "channel_post"],
+                }
                 result = await self._api_call("getUpdates", data)
-                
+
                 if result.get("ok"):
                     reconnect_interval = 5
                     for update in result.get("result", []):
@@ -150,10 +159,10 @@ class TelegramBot:
                 else:
                     logger.warning("Telegram getUpdates returned not ok: %s", result)
                     await asyncio.sleep(reconnect_interval)
-                    
+
             except asyncio.TimeoutError:
                 # Expected with long polling if no messages arrive
-                pass 
+                pass
             except asyncio.CancelledError:
                 logger.info("Telegram polling cancelled")
                 break
@@ -161,11 +170,11 @@ class TelegramBot:
                 logger.error("Telegram API error: %s", exc)
                 await asyncio.sleep(reconnect_interval)
                 reconnect_interval = min(reconnect_interval * 2, 60)
-                
+
     async def _handle_message(self, message: dict) -> None:
         chat_id = str(message.get("chat", {}).get("id", ""))
         chat_type = message.get("chat", {}).get("type", "private")
-        
+
         # Security: only process messages from authorized chats (flexible matching for -100 prefix)
         def _match_chat(cid: str, authorized: set[str]) -> bool:
             if cid in authorized:
@@ -176,18 +185,20 @@ class TelegramBot:
         if not _match_chat(chat_id, self.authorized_chat_ids):
             logger.warning(
                 "Rejected Telegram message from unauthorized chat %s (type: %s). Authorized: %s",
-                chat_id, chat_type, sorted(self.authorized_chat_ids)
+                chat_id,
+                chat_type,
+                sorted(self.authorized_chat_ids),
             )
             return
 
         # Record live chat_id format (e.g. -100123456789) so outgoing mesh forwards reach Telegram
         clean_id = chat_id.removeprefix("-100").lstrip("-")
         self._live_chat_map[clean_id] = chat_id
-            
+
         text = message.get("text", "").strip()
         if not text:
             return
-            
+
         sender_info = message.get("from", {})
         first_name = (
             sender_info.get("first_name")
@@ -203,9 +214,13 @@ class TelegramBot:
 
         if text.startswith("/"):
             if not self.allow_commands:
-                await self._send_text("Commands are disabled in config.", chat_id=chat_id)
+                await self._send_text(
+                    "Commands are disabled in config.", chat_id=chat_id
+                )
                 return
-            await self._handle_command(text, chat_id=chat_id, sender_name=sender_label, first_name=first_name)
+            await self._handle_command(
+                text, chat_id=chat_id, sender_name=sender_label, first_name=first_name
+            )
             return
 
         # Check if this is a native Telegram reply to a forwarded mesh message
@@ -224,14 +239,22 @@ class TelegramBot:
                     if dest_id:
                         logger.info("Routing Telegram reply as DM to %s", dest_id)
                         success = await self.send_message_callback(
-                            formatted_text, destination=dest_id, sender_name=sender_label
+                            formatted_text,
+                            destination=dest_id,
+                            sender_name=sender_label,
                         )
                         if success:
-                            await self._send_text(f"✅ Reply sent as DM to {dest_id}.", chat_id=chat_id)
+                            await self._send_text(
+                                f"✅ Reply sent as DM to {dest_id}.", chat_id=chat_id
+                            )
                         else:
-                            await self._send_text("❌ Failed to send DM.", chat_id=chat_id)
+                            await self._send_text(
+                                "❌ Failed to send DM.", chat_id=chat_id
+                            )
                     else:
-                        await self._send_text("❌ Cannot determine node ID for DM reply.", chat_id=chat_id)
+                        await self._send_text(
+                            "❌ Cannot determine node ID for DM reply.", chat_id=chat_id
+                        )
                 else:
                     ch_idx = forwarded.get("channel", 0)
                     logger.info("Routing Telegram reply to Channel %d", ch_idx)
@@ -239,9 +262,13 @@ class TelegramBot:
                         formatted_text, channel=ch_idx, sender_name=sender_label
                     )
                     if success:
-                        await self._send_text(f"✅ Reply sent to Channel {ch_idx}.", chat_id=chat_id)
+                        await self._send_text(
+                            f"✅ Reply sent to Channel {ch_idx}.", chat_id=chat_id
+                        )
                     else:
-                        await self._send_text(f"❌ Failed to send to Channel {ch_idx}.", chat_id=chat_id)
+                        await self._send_text(
+                            f"❌ Failed to send to Channel {ch_idx}.", chat_id=chat_id
+                        )
                 return
 
             # Fallback: parse the replied-to text (covers messages forwarded
@@ -249,28 +276,36 @@ class TelegramBot:
             orig_text = reply_to.get("text", "")
             if orig_text.startswith("📩") or orig_text.startswith("📤"):
                 import re
+
                 ch_match = re.search(r"\[Ch (\d+)\]", orig_text)
                 # Matches both:
                 #   📩 [DM] *Node* (!abcdef12): ...  (parenthesised hex ID)
                 #   📤 [DM to !abcdef12] *You*: ...  (ID in DM-to bracket)
-                id_match = (
-                    re.search(r"\[DM to (![a-fA-F0-9]+)\]", orig_text)
-                    or re.search(r"\((![a-fA-F0-9]+)\)", orig_text)
-                )
+                id_match = re.search(
+                    r"\[DM to (![a-fA-F0-9]+)\]", orig_text
+                ) or re.search(r"\((![a-fA-F0-9]+)\)", orig_text)
 
                 if "[DM" in orig_text:
                     if id_match:
                         dest_id = id_match.group(1)
                         logger.info("Routing Telegram reply as DM to %s", dest_id)
                         success = await self.send_message_callback(
-                            formatted_text, destination=dest_id, sender_name=sender_label
+                            formatted_text,
+                            destination=dest_id,
+                            sender_name=sender_label,
                         )
                         if success:
-                            await self._send_text(f"✅ Reply sent as DM to {dest_id}.", chat_id=chat_id)
+                            await self._send_text(
+                                f"✅ Reply sent as DM to {dest_id}.", chat_id=chat_id
+                            )
                         else:
-                            await self._send_text("❌ Failed to send DM.", chat_id=chat_id)
+                            await self._send_text(
+                                "❌ Failed to send DM.", chat_id=chat_id
+                            )
                     else:
-                        await self._send_text("❌ Cannot determine node ID for DM reply.", chat_id=chat_id)
+                        await self._send_text(
+                            "❌ Cannot determine node ID for DM reply.", chat_id=chat_id
+                        )
                     return
                 elif ch_match:
                     ch_idx = int(ch_match.group(1))
@@ -279,29 +314,47 @@ class TelegramBot:
                         formatted_text, channel=ch_idx, sender_name=sender_label
                     )
                     if success:
-                        await self._send_text(f"✅ Reply sent to Channel {ch_idx}.", chat_id=chat_id)
+                        await self._send_text(
+                            f"✅ Reply sent to Channel {ch_idx}.", chat_id=chat_id
+                        )
                     else:
-                        await self._send_text(f"❌ Failed to send to Channel {ch_idx}.", chat_id=chat_id)
+                        await self._send_text(
+                            f"❌ Failed to send to Channel {ch_idx}.", chat_id=chat_id
+                        )
                     return
 
         # Plain messages in any authorized chat (group or private) are broadcast to the mesh.
         sender_info = message.get("from", {})
-        first_name = sender_info.get("first_name") or sender_info.get("username") or "Telegram"
+        first_name = (
+            sender_info.get("first_name") or sender_info.get("username") or "Telegram"
+        )
         # The on-air text keeps the [Name] prefix so mesh nodes (not just NodePulse)
         # can see who sent it. The sender_name arg is used by NodePulse to display
         # the message as an incoming relay rather than as the local user's own message.
         formatted_text = f"[{first_name}] {text}"
         sender_label = f"📱 {first_name}"
-        
-        logger.info("Broadcasting Telegram message from %s (chat %s) to the mesh", first_name, chat_id)
-        success = await self.send_message_callback(formatted_text, channel=0, sender_name=sender_label)
+
+        logger.info(
+            "Broadcasting Telegram message from %s (chat %s) to the mesh",
+            first_name,
+            chat_id,
+        )
+        success = await self.send_message_callback(
+            formatted_text, channel=0, sender_name=sender_label
+        )
         if not success:
-            await self._send_text("❌ Failed to broadcast message to mesh.", chat_id=chat_id)
+            await self._send_text(
+                "❌ Failed to broadcast message to mesh.", chat_id=chat_id
+            )
         else:
             await self._send_text("✅ Message sent to mesh.", chat_id=chat_id)
 
     async def _handle_command(
-        self, text: str, chat_id: str | None = None, sender_name: str | None = None, first_name: str = "Telegram"
+        self,
+        text: str,
+        chat_id: str | None = None,
+        sender_name: str | None = None,
+        first_name: str = "Telegram",
     ) -> None:
         """Dispatch a /-command from a specific chat.
 
@@ -328,7 +381,11 @@ class TelegramBot:
 
                 if connected:
                     online = "✅ Online"
-                    self_name = info.get("long_name") or info.get("short_name") or info.get("node_id", "Self")
+                    self_name = (
+                        info.get("long_name")
+                        or info.get("short_name")
+                        or info.get("node_id", "Self")
+                    )
                 else:
                     online = "❌ Offline"
                     self_name = "Radio not connected"
@@ -351,14 +408,16 @@ class TelegramBot:
                     f"Battery: {batt}%\n"
                     f"Nodes: {nodes_cnt}"
                 )
-                
+
             elif command == "/nodes":
                 nodes = await self.get_nodes_callback()
                 lines = ["*Visible Mesh Nodes:*"]
                 # Sort by last heard, most recent first, take top 20.
                 # The callback returns NodePulse-serialised dicts (flat keys),
                 # not the raw meshtastic protobuf structure (user.shortName).
-                sorted_nodes = sorted(nodes, key=lambda n: n.get("last_heard") or 0, reverse=True)[:20]
+                sorted_nodes = sorted(
+                    nodes, key=lambda n: n.get("last_heard") or 0, reverse=True
+                )[:20]
                 for n in sorted_nodes:
                     short = n.get("short_name") or n.get("shortName") or ""
                     long = n.get("long_name") or n.get("longName") or ""
@@ -379,15 +438,21 @@ class TelegramBot:
                     lines.append(line)
                 if len(nodes) > 20:
                     lines.append(f"...and {len(nodes) - 20} more.")
-                await self._send_text("\n".join(lines)[:4000], chat_id=effective_chat_id)
-                
+                await self._send_text(
+                    "\n".join(lines)[:4000], chat_id=effective_chat_id
+                )
+
             elif command == "/channels":
                 if self.get_channels_callback is None:
-                    await self._send_text("❌ Channel listing unavailable.", chat_id=effective_chat_id)
+                    await self._send_text(
+                        "❌ Channel listing unavailable.", chat_id=effective_chat_id
+                    )
                     return
                 channels = await self.get_channels_callback()
                 if not channels:
-                    await self._send_text("No channels found on the node.", chat_id=effective_chat_id)
+                    await self._send_text(
+                        "No channels found on the node.", chat_id=effective_chat_id
+                    )
                     return
                 lines = ["*Configured Channels:*"]
                 for ch in channels:
@@ -395,12 +460,18 @@ class TelegramBot:
                     name = ch.get("name", "") or "Unnamed"
                     role = ch.get("role", "").lower().capitalize()
                     active = "✓" if idx in self.forward_channels else "—"
-                    lines.append(f"{active} Ch {idx} - {self._escape_md(name)} ({self._escape_md(role)})")
-                await self._send_text("\n".join(lines)[:4000], chat_id=effective_chat_id)
+                    lines.append(
+                        f"{active} Ch {idx} - {self._escape_md(name)} ({self._escape_md(role)})"
+                    )
+                await self._send_text(
+                    "\n".join(lines)[:4000], chat_id=effective_chat_id
+                )
 
             elif command == "/send":
                 if not args:
-                    await self._send_text("Usage: `/send [channel] <message>`", chat_id=effective_chat_id)
+                    await self._send_text(
+                        "Usage: `/send [channel] <message>`", chat_id=effective_chat_id
+                    )
                     return
                 # Optional channel selector: "/send 1 hello" or "/send #1 hello"
                 # send to channel 1; otherwise fall back to channel 0. A bare
@@ -416,56 +487,85 @@ class TelegramBot:
                     channel = int(first)
                     msg = rest.strip()
                 if not msg:
-                    await self._send_text(f"Usage: `/send [{channel}] <message>`", chat_id=effective_chat_id)
+                    await self._send_text(
+                        f"Usage: `/send [{channel}] <message>`",
+                        chat_id=effective_chat_id,
+                    )
                     return
                 if channel < 0 or channel > 15:
-                    await self._send_text(f"❌ Invalid channel {channel}. Use 0-15.", chat_id=effective_chat_id)
+                    await self._send_text(
+                        f"❌ Invalid channel {channel}. Use 0-15.",
+                        chat_id=effective_chat_id,
+                    )
                     return
-                logger.info("Telegram /send command: sending '%s' to channel %d", msg[:50], channel)
+                logger.info(
+                    "Telegram /send command: sending '%s' to channel %d",
+                    msg[:50],
+                    channel,
+                )
                 formatted_msg = f"[{first_name}] {msg}"
-                success = await self.send_message_callback(formatted_msg, channel=channel, sender_name=sender_name)
+                success = await self.send_message_callback(
+                    formatted_msg, channel=channel, sender_name=sender_name
+                )
                 if success:
                     logger.info("Telegram /send command: message sent successfully")
-                    await self._send_text(f"✅ Message sent to Channel {channel}.", chat_id=effective_chat_id)
+                    await self._send_text(
+                        f"✅ Message sent to Channel {channel}.",
+                        chat_id=effective_chat_id,
+                    )
                 else:
                     logger.warning("Telegram /send command: message send failed")
-                    await self._send_text("❌ Failed to send message.", chat_id=effective_chat_id)
-                    
+                    await self._send_text(
+                        "❌ Failed to send message.", chat_id=effective_chat_id
+                    )
+
             elif command == "/dm":
                 dm_parts = args.split(" ", 1)
                 if len(dm_parts) < 2:
-                    await self._send_text("Usage: `/dm !node_id <message>`", chat_id=effective_chat_id)
+                    await self._send_text(
+                        "Usage: `/dm !node_id <message>`", chat_id=effective_chat_id
+                    )
                     return
                 dest = dm_parts[0]
                 msg = dm_parts[1]
                 formatted_msg = f"[{first_name}] {msg}"
-                success = await self.send_message_callback(formatted_msg, destination=dest, sender_name=sender_name)
+                success = await self.send_message_callback(
+                    formatted_msg, destination=dest, sender_name=sender_name
+                )
                 if success:
-                    await self._send_text(f"✅ DM sent to {dest}.", chat_id=effective_chat_id)
+                    await self._send_text(
+                        f"✅ DM sent to {dest}.", chat_id=effective_chat_id
+                    )
                 else:
-                    await self._send_text("❌ Failed to send DM.", chat_id=effective_chat_id)
+                    await self._send_text(
+                        "❌ Failed to send DM.", chat_id=effective_chat_id
+                    )
 
             elif command == "/device":
                 status = await self.get_status_callback()
                 info = (status or {}).get("my_info", {}) or {}
-                name = self._escape_md(info.get("long_name") or info.get("short_name") or "Self")
+                name = self._escape_md(
+                    info.get("long_name") or info.get("short_name") or "Self"
+                )
                 hw = self._escape_md(info.get("hw_model") or "Unknown")
                 fw = self._escape_md(info.get("firmware_version") or "Unknown")
                 await self._send_text(
-                    f"🔧 *Device*\n"
-                    f"Node: {name}\n"
-                    f"HW model: {hw}\n"
-                    f"Firmware: {fw}"
+                    f"🔧 *Device*\nNode: {name}\nHW model: {hw}\nFirmware: {fw}"
                 )
 
             elif command == "/where":
                 if not args:
-                    await self._send_text("Usage: `/where !node`", chat_id=effective_chat_id)
+                    await self._send_text(
+                        "Usage: `/where !node`", chat_id=effective_chat_id
+                    )
                     return
                 nodes = await self.get_nodes_callback()
                 node = self._resolve_node(nodes, args)
                 if not node:
-                    await self._send_text(f"❌ Node not found: {self._escape_md(args)}", chat_id=effective_chat_id)
+                    await self._send_text(
+                        f"❌ Node not found: {self._escape_md(args)}",
+                        chat_id=effective_chat_id,
+                    )
                     return
                 lat = node.get("latitude")
                 lng = node.get("longitude")
@@ -474,7 +574,10 @@ class TelegramBot:
                 status = node.get("status")
                 status_line = f"\nStatus: {self._escape_md(status)}" if status else ""
                 if lat is None or lng is None:
-                    await self._send_text(f"📍 *{name}*{signed}\nNo position known.{status_line}", chat_id=effective_chat_id)
+                    await self._send_text(
+                        f"📍 *{name}*{signed}\nNo position known.{status_line}",
+                        chat_id=effective_chat_id,
+                    )
                     return
                 lh = (
                     self._format_relative_time(node.get("last_heard"))
@@ -492,17 +595,25 @@ class TelegramBot:
 
             elif command == "/neighbors":
                 if not args:
-                    await self._send_text("Usage: `/neighbors !node`", chat_id=effective_chat_id)
+                    await self._send_text(
+                        "Usage: `/neighbors !node`", chat_id=effective_chat_id
+                    )
                     return
                 nodes = await self.get_nodes_callback()
                 node = self._resolve_node(nodes, args)
                 if not node:
-                    await self._send_text(f"❌ Node not found: {self._escape_md(args)}", chat_id=effective_chat_id)
+                    await self._send_text(
+                        f"❌ Node not found: {self._escape_md(args)}",
+                        chat_id=effective_chat_id,
+                    )
                     return
                 neighbors = node.get("neighbors") or []
                 name = self._node_label(node)
                 if not neighbors:
-                    await self._send_text(f"🔗 *{name}* has no known neighbors.", chat_id=effective_chat_id)
+                    await self._send_text(
+                        f"🔗 *{name}* has no known neighbors.",
+                        chat_id=effective_chat_id,
+                    )
                     return
                 lines = [f"🔗 *{name} — {len(neighbors)} neighbors:*"]
                 for nb in neighbors[:20]:
@@ -512,7 +623,9 @@ class TelegramBot:
                     snr = nb.get("snr")
                     snr_str = f" (SNR {snr:.1f}dB)" if snr is not None else ""
                     lines.append(f"• {nb_name}{snr_str}")
-                await self._send_text("\n".join(lines)[:4000], chat_id=effective_chat_id)
+                await self._send_text(
+                    "\n".join(lines)[:4000], chat_id=effective_chat_id
+                )
 
             elif command == "/last":
                 nodes = await self.get_nodes_callback()
@@ -520,7 +633,9 @@ class TelegramBot:
                     nodes, key=lambda n: n.get("last_heard") or 0, reverse=True
                 )[:15]
                 if not recent:
-                    await self._send_text("No nodes heard yet.", chat_id=effective_chat_id)
+                    await self._send_text(
+                        "No nodes heard yet.", chat_id=effective_chat_id
+                    )
                     return
                 lines = ["*Recently heard:*"]
                 for n in recent:
@@ -531,28 +646,39 @@ class TelegramBot:
                         else "Unknown"
                     )
                     lines.append(f"• {name} ({lh})")
-                await self._send_text("\n".join(lines)[:4000], chat_id=effective_chat_id)
+                await self._send_text(
+                    "\n".join(lines)[:4000], chat_id=effective_chat_id
+                )
 
             elif command == "/link":
                 if not self._terrain:
-                    await self._send_text("❌ Terrain service unavailable.", chat_id=effective_chat_id)
+                    await self._send_text(
+                        "❌ Terrain service unavailable.", chat_id=effective_chat_id
+                    )
                     return
                 parts = args.split()
                 if len(parts) < 2:
-                    await self._send_text("Usage: `/link !nodeA !nodeB [freq_mhz]`", chat_id=effective_chat_id)
+                    await self._send_text(
+                        "Usage: `/link !nodeA !nodeB [freq_mhz]`",
+                        chat_id=effective_chat_id,
+                    )
                     return
                 freq = 915.0
                 if len(parts) >= 3:
                     try:
                         freq = float(parts[2])
                     except ValueError:
-                        await self._send_text("❌ Frequency must be a number.", chat_id=effective_chat_id)
+                        await self._send_text(
+                            "❌ Frequency must be a number.", chat_id=effective_chat_id
+                        )
                         return
                 nodes = await self.get_nodes_callback()
                 na = self._resolve_node(nodes, parts[0])
                 nb = self._resolve_node(nodes, parts[1])
                 if not na or not nb:
-                    await self._send_text("❌ One or both nodes not found.", chat_id=effective_chat_id)
+                    await self._send_text(
+                        "❌ One or both nodes not found.", chat_id=effective_chat_id
+                    )
                     return
                 lat1, lng1 = na.get("latitude"), na.get("longitude")
                 lat2, lng2 = nb.get("latitude"), nb.get("longitude")
@@ -567,7 +693,9 @@ class TelegramBot:
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("Telegram /link elevation failed: %s", exc)
-                    await self._send_text("❌ Terrain elevation lookup failed.", chat_id=effective_chat_id)
+                    await self._send_text(
+                        "❌ Terrain elevation lookup failed.", chat_id=effective_chat_id
+                    )
                     return
                 if any(e is None for e in elevations):
                     await self._send_text(
@@ -598,7 +726,9 @@ class TelegramBot:
 
             elif command == "/coverage":
                 if not self._terrain:
-                    await self._send_text("❌ Terrain service unavailable.", chat_id=effective_chat_id)
+                    await self._send_text(
+                        "❌ Terrain service unavailable.", chat_id=effective_chat_id
+                    )
                     return
                 parts = args.split()
                 if not parts:
@@ -612,18 +742,25 @@ class TelegramBot:
                     try:
                         radius = float(parts[1])
                     except ValueError:
-                        await self._send_text("❌ Radius must be a number.", chat_id=effective_chat_id)
+                        await self._send_text(
+                            "❌ Radius must be a number.", chat_id=effective_chat_id
+                        )
                         return
                 if len(parts) >= 3:
                     try:
                         freq = float(parts[2])
                     except ValueError:
-                        await self._send_text("❌ Frequency must be a number.", chat_id=effective_chat_id)
+                        await self._send_text(
+                            "❌ Frequency must be a number.", chat_id=effective_chat_id
+                        )
                         return
                 nodes = await self.get_nodes_callback()
                 node = self._resolve_node(nodes, parts[0])
                 if not node:
-                    await self._send_text(f"❌ Node not found: {self._escape_md(parts[0])}", chat_id=effective_chat_id)
+                    await self._send_text(
+                        f"❌ Node not found: {self._escape_md(parts[0])}",
+                        chat_id=effective_chat_id,
+                    )
                     return
                 lat, lng = node.get("latitude"), node.get("longitude")
                 if lat is None or lng is None:
@@ -647,7 +784,9 @@ class TelegramBot:
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("Telegram /coverage failed: %s", exc)
-                    await self._send_text("❌ Coverage analysis failed.", chat_id=effective_chat_id)
+                    await self._send_text(
+                        "❌ Coverage analysis failed.", chat_id=effective_chat_id
+                    )
                     return
                 name = self._node_label(node)
                 polys = result.get("polygons", {})
@@ -661,15 +800,22 @@ class TelegramBot:
 
             elif command == "/traceroute":
                 if not self._conn:
-                    await self._send_text("❌ Mesh connection unavailable.", chat_id=effective_chat_id)
+                    await self._send_text(
+                        "❌ Mesh connection unavailable.", chat_id=effective_chat_id
+                    )
                     return
                 if not args:
-                    await self._send_text("Usage: `/traceroute !node`", chat_id=effective_chat_id)
+                    await self._send_text(
+                        "Usage: `/traceroute !node`", chat_id=effective_chat_id
+                    )
                     return
                 nodes = await self.get_nodes_callback()
                 node = self._resolve_node(nodes, args)
                 if not node:
-                    await self._send_text(f"❌ Node not found: {self._escape_md(args)}", chat_id=effective_chat_id)
+                    await self._send_text(
+                        f"❌ Node not found: {self._escape_md(args)}",
+                        chat_id=effective_chat_id,
+                    )
                     return
                 dest = node.get("id")
                 name = self._node_label(node)
@@ -678,7 +824,9 @@ class TelegramBot:
                         "❌ Could not queue traceroute (too many pending)."
                     )
                     return
-                await self._send_text(f"🔍 Requesting traceroute to {name}…", chat_id=effective_chat_id)
+                await self._send_text(
+                    f"🔍 Requesting traceroute to {name}…", chat_id=effective_chat_id
+                )
                 num_to_name = {
                     int(n["id"].lstrip("!"), 16) & 0xFFFFFFFF: self._node_label(n)
                     for n in nodes
@@ -694,7 +842,10 @@ class TelegramBot:
                         record = rec
                         break
                 if record:
-                    await self._send_text(self._format_traceroute(record, num_to_name), chat_id=effective_chat_id)
+                    await self._send_text(
+                        self._format_traceroute(record, num_to_name),
+                        chat_id=effective_chat_id,
+                    )
                 else:
                     await self._send_text(
                         f"⏱️ No traceroute result for {name} yet (timed out)."
@@ -702,12 +853,17 @@ class TelegramBot:
 
             elif command == "/ping":
                 if not args:
-                    await self._send_text("Usage: `/ping !node`", chat_id=effective_chat_id)
+                    await self._send_text(
+                        "Usage: `/ping !node`", chat_id=effective_chat_id
+                    )
                     return
                 nodes = await self.get_nodes_callback()
                 node = self._resolve_node(nodes, args)
                 if not node:
-                    await self._send_text(f"❌ Node not found: {self._escape_md(args)}", chat_id=effective_chat_id)
+                    await self._send_text(
+                        f"❌ Node not found: {self._escape_md(args)}",
+                        chat_id=effective_chat_id,
+                    )
                     return
                 dest = node.get("id")
                 name = self._node_label(node)
@@ -727,7 +883,9 @@ class TelegramBot:
 
             elif command == "/reboot":
                 if not self._conn:
-                    await self._send_text("❌ Mesh connection unavailable.", chat_id=effective_chat_id)
+                    await self._send_text(
+                        "❌ Mesh connection unavailable.", chat_id=effective_chat_id
+                    )
                     return
                 if not args:
                     # No target specified → reboot the local gateway radio.
@@ -736,54 +894,81 @@ class TelegramBot:
                     # admin keys are configured.
                     try:
                         import asyncio as _asyncio
+
                         def _do_local_reboot():
                             with self._conn._lock:
                                 iface = self._conn._interface
                             if iface is None or iface.localNode is None:
                                 raise ConnectionError("Interface not connected")
                             iface.localNode.reboot(10)
+
                         await _asyncio.to_thread(_do_local_reboot)
-                        await self._send_text("🔄 Reboot command sent to this gateway.", chat_id=effective_chat_id)
+                        await self._send_text(
+                            "🔄 Reboot command sent to this gateway.",
+                            chat_id=effective_chat_id,
+                        )
                     except Exception as exc:  # noqa: BLE001
-                        await self._send_text(f"❌ Local reboot failed: {exc}", chat_id=effective_chat_id)
+                        await self._send_text(
+                            f"❌ Local reboot failed: {exc}", chat_id=effective_chat_id
+                        )
                     return
                 nodes = await self.get_nodes_callback()
                 node = self._resolve_node(nodes, args)
                 if not node:
-                    await self._send_text(f"❌ Node not found: {self._escape_md(args)}", chat_id=effective_chat_id)
+                    await self._send_text(
+                        f"❌ Node not found: {self._escape_md(args)}",
+                        chat_id=effective_chat_id,
+                    )
                     return
                 dest = node.get("id")
                 target = self._node_label(node)
                 if not dest:
-                    await self._send_text("❌ Could not determine target node.", chat_id=effective_chat_id)
+                    await self._send_text(
+                        "❌ Could not determine target node.", chat_id=effective_chat_id
+                    )
                     return
                 try:
                     await self._conn.remote_admin_action(
                         dest, "reboot", {"seconds": 10}
                     )
-                    await self._send_text(f"🔄 Reboot sent to {target}.", chat_id=effective_chat_id)
+                    await self._send_text(
+                        f"🔄 Reboot sent to {target}.", chat_id=effective_chat_id
+                    )
                 except Exception as exc:  # noqa: BLE001
-                    await self._send_text(f"❌ Reboot failed: {exc}", chat_id=effective_chat_id)
+                    await self._send_text(
+                        f"❌ Reboot failed: {exc}", chat_id=effective_chat_id
+                    )
 
             elif command == "/setpos":
                 if not self._conn:
-                    await self._send_text("❌ Mesh connection unavailable.", chat_id=effective_chat_id)
+                    await self._send_text(
+                        "❌ Mesh connection unavailable.", chat_id=effective_chat_id
+                    )
                     return
                 parts = args.split()
                 if len(parts) < 3:
-                    await self._send_text("Usage: `/setpos !node <lat> <lon> [alt_m]`", chat_id=effective_chat_id)
+                    await self._send_text(
+                        "Usage: `/setpos !node <lat> <lon> [alt_m]`",
+                        chat_id=effective_chat_id,
+                    )
                     return
                 try:
                     lat = float(parts[1])
                     lng = float(parts[2])
                 except ValueError:
-                    await self._send_text("❌ Latitude/longitude must be numbers.", chat_id=effective_chat_id)
+                    await self._send_text(
+                        "❌ Latitude/longitude must be numbers.",
+                        chat_id=effective_chat_id,
+                    )
                     return
                 alt = int(float(parts[3])) if len(parts) >= 4 else 0
                 nodes = await self.get_nodes_callback()
                 node = self._resolve_node(nodes, parts[0])
                 if not node:
-                    await self._send_text(f"❌ Node not found: {self._escape_md(parts[0])}", chat_id=effective_chat_id)
+                    await self._send_text(
+                        f"❌ Node not found: {self._escape_md(parts[0])}",
+                        chat_id=effective_chat_id,
+                    )
                     return
                 dest = node.get("id")
                 name = self._node_label(node)
@@ -816,19 +1001,28 @@ class TelegramBot:
                         f"📌 Fixed position set for {name}: {lat:.5f}, {lng:.5f} (alt {alt}m).{warn}"
                     )
                 except Exception as exc:  # noqa: BLE001
-                    await self._send_text(f"❌ Set position failed: {exc}", chat_id=effective_chat_id)
+                    await self._send_text(
+                        f"❌ Set position failed: {exc}", chat_id=effective_chat_id
+                    )
 
             elif command == "/find":
                 if not self._conn:
-                    await self._send_text("❌ Mesh connection unavailable.", chat_id=effective_chat_id)
+                    await self._send_text(
+                        "❌ Mesh connection unavailable.", chat_id=effective_chat_id
+                    )
                     return
                 if not args:
-                    await self._send_text("Usage: `/find !node`", chat_id=effective_chat_id)
+                    await self._send_text(
+                        "Usage: `/find !node`", chat_id=effective_chat_id
+                    )
                     return
                 nodes = await self.get_nodes_callback()
                 node = self._resolve_node(nodes, args)
                 if not node:
-                    await self._send_text(f"❌ Node not found: {self._escape_md(args)}", chat_id=effective_chat_id)
+                    await self._send_text(
+                        f"❌ Node not found: {self._escape_md(args)}",
+                        chat_id=effective_chat_id,
+                    )
                     return
                 dest = node.get("id")
                 name = self._node_label(node)
@@ -840,21 +1034,26 @@ class TelegramBot:
                     else "No position known"
                 )
                 await self._conn.request_position(dest)
-                await self._send_text(
-                    f"📡 Requested position from {name}.\n{pos}"
-                )
+                await self._send_text(f"📡 Requested position from {name}.\n{pos}")
 
             elif command == "/diag":
                 if not self._conn:
-                    await self._send_text("❌ Mesh connection unavailable.", chat_id=effective_chat_id)
+                    await self._send_text(
+                        "❌ Mesh connection unavailable.", chat_id=effective_chat_id
+                    )
                     return
                 if not args:
-                    await self._send_text("Usage: `/diag !node`", chat_id=effective_chat_id)
+                    await self._send_text(
+                        "Usage: `/diag !node`", chat_id=effective_chat_id
+                    )
                     return
                 nodes = await self.get_nodes_callback()
                 node = self._resolve_node(nodes, args)
                 if not node:
-                    await self._send_text(f"❌ Node not found: {self._escape_md(args)}", chat_id=effective_chat_id)
+                    await self._send_text(
+                        f"❌ Node not found: {self._escape_md(args)}",
+                        chat_id=effective_chat_id,
+                    )
                     return
                 dest = node.get("id")
                 name = self._node_label(node)
@@ -862,10 +1061,14 @@ class TelegramBot:
                     sig = await self._conn.get_node_signal(dest)
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("Telegram /diag failed: %s", exc)
-                    await self._send_text("❌ Could not read node diagnostics.", chat_id=effective_chat_id)
+                    await self._send_text(
+                        "❌ Could not read node diagnostics.", chat_id=effective_chat_id
+                    )
                     return
                 if not sig:
-                    await self._send_text(f"❌ No diagnostics for {name}.", chat_id=effective_chat_id)
+                    await self._send_text(
+                        f"❌ No diagnostics for {name}.", chat_id=effective_chat_id
+                    )
                     return
 
                 def fval(v, unit="", na="n/a"):
@@ -897,15 +1100,22 @@ class TelegramBot:
 
             elif command == "/gpx":
                 if not self._conn:
-                    await self._send_text("❌ Mesh connection unavailable.", chat_id=effective_chat_id)
+                    await self._send_text(
+                        "❌ Mesh connection unavailable.", chat_id=effective_chat_id
+                    )
                     return
                 if not args:
-                    await self._send_text("Usage: `/gpx !node`", chat_id=effective_chat_id)
+                    await self._send_text(
+                        "Usage: `/gpx !node`", chat_id=effective_chat_id
+                    )
                     return
                 nodes = await self.get_nodes_callback()
                 node = self._resolve_node(nodes, args)
                 if not node:
-                    await self._send_text(f"❌ Node not found: {self._escape_md(args)}", chat_id=effective_chat_id)
+                    await self._send_text(
+                        f"❌ Node not found: {self._escape_md(args)}",
+                        chat_id=effective_chat_id,
+                    )
                     return
                 dest = node.get("id")
                 name = self._node_label(node)
@@ -913,44 +1123,67 @@ class TelegramBot:
                     history = await self._conn.get_position_history(dest)
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("Telegram /gpx failed: %s", exc)
-                    await self._send_text("❌ Could not read position history.", chat_id=effective_chat_id)
+                    await self._send_text(
+                        "❌ Could not read position history.", chat_id=effective_chat_id
+                    )
                     return
                 trail = history.get(dest, [])
                 if not trail:
-                    await self._send_text(f"📍 *{name}* has no position history to export.", chat_id=effective_chat_id)
+                    await self._send_text(
+                        f"📍 *{name}* has no position history to export.",
+                        chat_id=effective_chat_id,
+                    )
                     return
                 gpx = self._build_gpx(name, dest, trail)
-                sent = await self._send_document(gpx, f"{dest.lstrip('!')}_track.gpx", chat_id=effective_chat_id)
+                sent = await self._send_document(
+                    gpx, f"{dest.lstrip('!')}_track.gpx", chat_id=effective_chat_id
+                )
                 if not sent:
-                    await self._send_text("❌ Failed to send GPX file.", chat_id=effective_chat_id)
+                    await self._send_text(
+                        "❌ Failed to send GPX file.", chat_id=effective_chat_id
+                    )
 
             elif command == "/hops":
                 nodes = await self.get_nodes_callback()
                 buckets: dict[str, int] = {}
                 for n in nodes:
                     h = n.get("hops_away")
-                    key = str(h) if (h is not None and h <= 5) else ("6+" if h is not None else "unknown")
+                    key = (
+                        str(h)
+                        if (h is not None and h <= 5)
+                        else ("6+" if h is not None else "unknown")
+                    )
                     buckets[key] = buckets.get(key, 0) + 1
                 lines = ["*Nodes per hop:*"]
                 for k in ("0", "1", "2", "3", "4", "5", "6+", "unknown"):
                     if k in buckets:
                         lines.append(f"Hop {k}: {buckets[k]}")
                 lines.append(f"\nTotal nodes: {len(nodes)}")
-                await self._send_text("\n".join(lines)[:4000], chat_id=effective_chat_id)
+                await self._send_text(
+                    "\n".join(lines)[:4000], chat_id=effective_chat_id
+                )
 
             elif command == "/waypoint":
                 if not self._conn:
-                    await self._send_text("❌ Mesh connection unavailable.", chat_id=effective_chat_id)
+                    await self._send_text(
+                        "❌ Mesh connection unavailable.", chat_id=effective_chat_id
+                    )
                     return
                 parts = args.split()
                 if len(parts) < 2:
-                    await self._send_text("Usage: `/waypoint <lat> <lon> [name] [expire_hours]`", chat_id=effective_chat_id)
+                    await self._send_text(
+                        "Usage: `/waypoint <lat> <lon> [name] [expire_hours]`",
+                        chat_id=effective_chat_id,
+                    )
                     return
                 try:
                     lat = float(parts[0])
                     lng = float(parts[1])
                 except ValueError:
-                    await self._send_text("❌ Latitude/longitude must be numbers.", chat_id=effective_chat_id)
+                    await self._send_text(
+                        "❌ Latitude/longitude must be numbers.",
+                        chat_id=effective_chat_id,
+                    )
                     return
                 name = parts[2] if len(parts) >= 3 else "Waypoint"
                 expire = None
@@ -958,7 +1191,10 @@ class TelegramBot:
                     try:
                         expire = int(time.time() + float(parts[3]) * 3600)
                     except ValueError:
-                        await self._send_text("❌ expire_hours must be a number.", chat_id=effective_chat_id)
+                        await self._send_text(
+                            "❌ expire_hours must be a number.",
+                            chat_id=effective_chat_id,
+                        )
                         return
                 wp = {
                     "lat": lat,
@@ -971,7 +1207,9 @@ class TelegramBot:
                 try:
                     res = await self._conn.send_waypoint(wp)
                 except Exception as exc:  # noqa: BLE001
-                    await self._send_text(f"❌ Waypoint failed: {exc}", chat_id=effective_chat_id)
+                    await self._send_text(
+                        f"❌ Waypoint failed: {exc}", chat_id=effective_chat_id
+                    )
                     return
                 await self._send_text(
                     f"📌 Waypoint '{self._escape_md(name)}' created ({res.get('detail', '')})."
@@ -979,12 +1217,17 @@ class TelegramBot:
 
             elif command == "/beacon":
                 if not self._conn:
-                    await self._send_text("❌ Mesh connection unavailable.", chat_id=effective_chat_id)
+                    await self._send_text(
+                        "❌ Mesh connection unavailable.", chat_id=effective_chat_id
+                    )
                     return
                 try:
                     bc = await self._conn.get_beacon_config()
                 except Exception as exc:  # noqa: BLE001
-                    await self._send_text(f"❌ Could not read beacon config: {exc}", chat_id=effective_chat_id)
+                    await self._send_text(
+                        f"❌ Could not read beacon config: {exc}",
+                        chat_id=effective_chat_id,
+                    )
                     return
                 if not bc.get("available"):
                     await self._send_text(
@@ -996,14 +1239,18 @@ class TelegramBot:
                 if bc.get("listen") is not None:
                     lines.append(f"Listen: {'yes' if bc['listen'] else 'no'}")
                 if bc.get("share_beacon_location") is not None:
-                    lines.append(f"Share location: {'yes' if bc['share_beacon_location'] else 'no'}")
+                    lines.append(
+                        f"Share location: {'yes' if bc['share_beacon_location'] else 'no'}"
+                    )
                 if bc.get("interval_seconds") is not None:
                     lines.append(f"Interval: {bc['interval_seconds']}s")
                 if bc.get("channel_name"):
                     lines.append(f"Channel: {self._escape_md(bc['channel_name'])}")
                 if bc.get("region"):
                     lines.append(f"Region: {self._escape_md(bc['region'])}")
-                await self._send_text("\n".join(lines)[:4000], chat_id=effective_chat_id)
+                await self._send_text(
+                    "\n".join(lines)[:4000], chat_id=effective_chat_id
+                )
 
             elif command == "/help":
                 await self._send_text(
@@ -1031,12 +1278,16 @@ class TelegramBot:
                     "`/send <ch> <msg>` or `/send #<ch> <msg>` - Broadcast to a specific channel\n"
                     "`/dm !node <msg>` - Direct message"
                 )
-                
+
             else:
-                await self._send_text("Unknown command. Type /help.", chat_id=effective_chat_id)
+                await self._send_text(
+                    "Unknown command. Type /help.", chat_id=effective_chat_id
+                )
         except Exception as exc:  # noqa: BLE001
             logger.error("Error executing Telegram command %s: %s", command, exc)
-            await self._send_text("❌ Error executing command.", chat_id=effective_chat_id)
+            await self._send_text(
+                "❌ Error executing command.", chat_id=effective_chat_id
+            )
 
     @staticmethod
     def _format_relative_time(timestamp: float) -> str:
@@ -1169,9 +1420,13 @@ class TelegramBot:
 
         lines = ["🔍 *Traceroute*"]
         if record.get("route"):
-            lines.append(f"To:   {_path(record['route'], record.get('snr_towards', []))}")
+            lines.append(
+                f"To:   {_path(record['route'], record.get('snr_towards', []))}"
+            )
         if record.get("route_back"):
-            lines.append(f"Back: {_path(record['route_back'], record.get('snr_back', []))}")
+            lines.append(
+                f"Back: {_path(record['route_back'], record.get('snr_back', []))}"
+            )
         if len(lines) == 1:
             lines.append("No route discovered yet.")
         return "\n".join(lines)
@@ -1203,24 +1458,39 @@ class TelegramBot:
             if data.get("ok"):
                 return data.get("result", {}).get("message_id")
             description = data.get("description", "")
-            if "chat not found" in description.lower() and not str(target).startswith("-100"):
+            if "chat not found" in description.lower() and not str(target).startswith(
+                "-100"
+            ):
                 retry_target = f"-100{clean_target}"
-                logger.info("Retrying sendMessage with supergroup format %s", retry_target)
-                retry_payload = {"chat_id": retry_target, "text": text, "parse_mode": "Markdown"}
+                logger.info(
+                    "Retrying sendMessage with supergroup format %s", retry_target
+                )
+                retry_payload = {
+                    "chat_id": retry_target,
+                    "text": text,
+                    "parse_mode": "Markdown",
+                }
                 retry_data = await self._api_call("sendMessage", retry_payload)
                 if retry_data.get("ok"):
                     self._live_chat_map[clean_target] = retry_target
                     self._live_chat_map[str(target)] = retry_target
                     return retry_data.get("result", {}).get("message_id")
-            if not any(kw in description.lower() for kw in ("parse", "entities", "markdown")):
+            if not any(
+                kw in description.lower() for kw in ("parse", "entities", "markdown")
+            ):
                 # Non-markdown error (e.g. rate limit) — don't retry as plain text
-                logger.warning("Telegram sendMessage to %s rejected: %s", target, description)
+                logger.warning(
+                    "Telegram sendMessage to %s rejected: %s", target, description
+                )
                 return None
             logger.warning(
-                "Telegram Markdown send rejected (%s); retrying as plain text", description
+                "Telegram Markdown send rejected (%s); retrying as plain text",
+                description,
             )
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Telegram Markdown send failed (%s); retrying plain text", exc)
+            logger.warning(
+                "Telegram Markdown send failed (%s); retrying plain text", exc
+            )
 
         # Attempt 2: Plain text fallback (robust if Markdown contained unescaped entities)
         try:
@@ -1229,22 +1499,31 @@ class TelegramBot:
             if data.get("ok"):
                 return data.get("result", {}).get("message_id")
             description = data.get("description", "")
-            if "chat not found" in description.lower() and not str(target).startswith("-100"):
+            if "chat not found" in description.lower() and not str(target).startswith(
+                "-100"
+            ):
                 retry_target = f"-100{clean_target}"
-                logger.info("Retrying plain text sendMessage with supergroup format %s", retry_target)
+                logger.info(
+                    "Retrying plain text sendMessage with supergroup format %s",
+                    retry_target,
+                )
                 retry_payload = {"chat_id": retry_target, "text": text}
                 retry_data = await self._api_call("sendMessage", retry_payload)
                 if retry_data.get("ok"):
                     self._live_chat_map[clean_target] = retry_target
                     self._live_chat_map[str(target)] = retry_target
                     return retry_data.get("result", {}).get("message_id")
-            logger.error("Telegram plain text sendMessage rejected for %s: %s", target, data)
+            logger.error(
+                "Telegram plain text sendMessage rejected for %s: %s", target, data
+            )
         except Exception as exc:  # noqa: BLE001
             logger.error("Failed to send Telegram response to chat %s: %s", target, exc)
 
         return None
 
-    async def _send_document(self, content: str, filename: str, *, chat_id: str | None = None) -> bool:
+    async def _send_document(
+        self, content: str, filename: str, *, chat_id: str | None = None
+    ) -> bool:
         """Send a text file (e.g. a GPX track) as a Telegram document.
 
         Returns True if Telegram accepted the upload, False otherwise. Uses
@@ -1255,6 +1534,7 @@ class TelegramBot:
         """
         try:
             from aiohttp import FormData
+
             target_chat_id = chat_id or self._default_forward_chat
             if not target_chat_id:
                 return False
@@ -1288,7 +1568,12 @@ class TelegramBot:
         ``trail`` is a list of dicts with ``lat``/``lng`` (required), and
         optional ``alt``/``timestamp``. Names are XML-escaped defensively.
         """
-        esc = (name or node_id).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        esc = (
+            (name or node_id)
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
         pts = []
         for p in trail:
             lat = p.get("lat")
@@ -1303,7 +1588,9 @@ class TelegramBot:
                 try:
                     time_str = (
                         "      <time>"
-                        + datetime.datetime.utcfromtimestamp(ts).strftime("%Y-%m-%dT%H:%M:%SZ")
+                        + datetime.datetime.utcfromtimestamp(ts).strftime(
+                            "%Y-%m-%dT%H:%M:%SZ"
+                        )
                         + "</time>\n"
                     )
                 except (TypeError, ValueError):
@@ -1325,20 +1612,27 @@ class TelegramBot:
         if not node_id or not self._conn:
             return None
         from .connection import normalize_node_id
+
         norm = normalize_node_id(node_id)
         raw_id_str = str(node_id).strip()
         # Check cached persistent/live nodes list in connection
         nodes = getattr(self._conn, "_nodes", None)
         if nodes and isinstance(nodes, list):
             lock = getattr(self._conn, "_nodes_lock", None)
-            if lock is not None and hasattr(lock, "__enter__") and hasattr(lock, "acquire"):
+            if (
+                lock is not None
+                and hasattr(lock, "__enter__")
+                and hasattr(lock, "acquire")
+            ):
                 try:
                     with lock:
                         for n in nodes:
                             if not isinstance(n, dict):
                                 continue
                             n_id = n.get("id")
-                            if (norm and normalize_node_id(n_id) == norm) or str(n_id) == raw_id_str:
+                            if (norm and normalize_node_id(n_id) == norm) or str(
+                                n_id
+                            ) == raw_id_str:
                                 return n
                 except (AttributeError, TypeError, KeyError):
                     pass
@@ -1347,7 +1641,9 @@ class TelegramBot:
                     if not isinstance(n, dict):
                         continue
                     n_id = n.get("id")
-                    if (norm and normalize_node_id(n_id) == norm) or str(n_id) == raw_id_str:
+                    if (norm and normalize_node_id(n_id) == norm) or str(
+                        n_id
+                    ) == raw_id_str:
                         return n
         # Check live interface
         iface = getattr(self._conn, "_interface", None)
@@ -1358,8 +1654,14 @@ class TelegramBot:
                     user = hit.get("user") or {}
                     return {
                         "id": norm or raw_id_str,
-                        "short_name": user.get("shortName") or user.get("short_name") or hit.get("short_name") or "",
-                        "long_name": user.get("longName") or user.get("long_name") or hit.get("long_name") or "",
+                        "short_name": user.get("shortName")
+                        or user.get("short_name")
+                        or hit.get("short_name")
+                        or "",
+                        "long_name": user.get("longName")
+                        or user.get("long_name")
+                        or hit.get("long_name")
+                        or "",
                     }
             except (AttributeError, TypeError, KeyError):
                 pass
@@ -1376,7 +1678,12 @@ class TelegramBot:
         callback already running on the loop.  Instead we use
         call_soon_threadsafe() which is the correct cross-thread bridge.
         """
-        if not self.enabled or not self._session or not self._loop or (getattr(self._session, "closed", False) is True):
+        if (
+            not self.enabled
+            or not self._session
+            or not self._loop
+            or (getattr(self._session, "closed", False) is True)
+        ):
             return
 
         # Ignore messages originating from Telegram to prevent loopback echoes
@@ -1409,17 +1716,27 @@ class TelegramBot:
         # (including [0]) we honour it exactly — channel 0 alone is a valid choice.
         forward_ch_set = {
             int(c)
-            for c in (self.forward_channels if self.forward_channels is not None else list(range(8)))
+            for c in (
+                self.forward_channels
+                if self.forward_channels is not None
+                else list(range(8))
+            )
             if str(c).strip().isdigit()
         }
         if not is_dm and channel not in forward_ch_set:
-            logger.warning("Telegram forward skipped: channel %s not in %s", channel, forward_ch_set)
+            logger.warning(
+                "Telegram forward skipped: channel %s not in %s",
+                channel,
+                forward_ch_set,
+            )
             return
 
         from_id = entry.get("from_id", "")
         text = entry.get("text", "")
         if not _is_valid_text_message(text):
-            logger.debug("Telegram forward skipped for invalid/binary text payload: %r", text)
+            logger.debug(
+                "Telegram forward skipped for invalid/binary text payload: %r", text
+            )
             return
 
         if is_outgoing:
@@ -1429,8 +1746,12 @@ class TelegramBot:
                 dest_label = ""
                 dest_node = self._find_node_by_id(to_id)
                 if dest_node:
-                    d_short = dest_node.get("short_name") or dest_node.get("shortName") or ""
-                    d_long = dest_node.get("long_name") or dest_node.get("longName") or ""
+                    d_short = (
+                        dest_node.get("short_name") or dest_node.get("shortName") or ""
+                    )
+                    d_long = (
+                        dest_node.get("long_name") or dest_node.get("longName") or ""
+                    )
                     if d_short and d_long and d_short != d_long:
                         dest_label = f"{d_short} ({d_long})"
                     elif d_short:
@@ -1446,8 +1767,14 @@ class TelegramBot:
             if not self_short and self._conn and from_id:
                 self_node = self._find_node_by_id(from_id)
                 if self_node:
-                    self_short = self_node.get("short_name") or self_node.get("shortName") or ""
-            sender_str = f"You ({self_short})" if self_short and self_short not in ("You", "Unknown") else "You"
+                    self_short = (
+                        self_node.get("short_name") or self_node.get("shortName") or ""
+                    )
+            sender_str = (
+                f"You ({self_short})"
+                if self_short and self_short not in ("You", "Unknown")
+                else "You"
+            )
             msg = f"📤 {ch_str} *{sender_str}*:\n{text}"
         else:
             snr = entry.get("rx_snr")
@@ -1465,9 +1792,15 @@ class TelegramBot:
             if not short and from_id and self._conn:
                 node_info = self._find_node_by_id(from_id)
                 if node_info:
-                    short = node_info.get("short_name") or node_info.get("shortName") or ""
+                    short = (
+                        node_info.get("short_name") or node_info.get("shortName") or ""
+                    )
                     if not long:
-                        long = node_info.get("long_name") or node_info.get("longName") or ""
+                        long = (
+                            node_info.get("long_name")
+                            or node_info.get("longName")
+                            or ""
+                        )
 
             if short and long and short != long:
                 label = f"{short} ({long})"
@@ -1508,7 +1841,9 @@ class TelegramBot:
 
     async def _send_forward(self, msg: str, metadata: dict[str, Any]) -> None:
         """Send a forwarded mesh message to all authorized chats and record message_id."""
-        targets = self._authorized_list or ([self._default_forward_chat] if self._default_forward_chat else [])
+        targets = self._authorized_list or (
+            [self._default_forward_chat] if self._default_forward_chat else []
+        )
         for cid in targets:
             if not cid:
                 continue
@@ -1519,10 +1854,13 @@ class TelegramBot:
                     if len(self._forwarded) > 500:
                         cutoff = time.time() - 24 * 3600
                         filtered = {
-                            mid: meta for mid, meta in self._forwarded.items()
+                            mid: meta
+                            for mid, meta in self._forwarded.items()
                             if meta.get("ts", 0) >= cutoff
                         }
                         if len(filtered) > 500:
-                            newest = sorted(filtered.items(), key=lambda kv: kv[1].get("ts", 0))[-500:]
+                            newest = sorted(
+                                filtered.items(), key=lambda kv: kv[1].get("ts", 0)
+                            )[-500:]
                             filtered = dict(newest)
                         self._forwarded = filtered

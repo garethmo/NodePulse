@@ -16,9 +16,13 @@ def test_mqtt_bridge_initializes_without_error():
     config.mqtt_forwarding_enabled = False
     # Other config attributes used later are set to harmless defaults.
     for attr in [
-        "mqtt_portnum_allowlist", "mqtt_node_blocklist",
-        "mqtt_geo_filter_enabled", "mqtt_lat_min", "mqtt_lat_max",
-        "mqtt_lng_min", "mqtt_lng_max"
+        "mqtt_portnum_allowlist",
+        "mqtt_node_blocklist",
+        "mqtt_geo_filter_enabled",
+        "mqtt_lat_min",
+        "mqtt_lat_max",
+        "mqtt_lng_min",
+        "mqtt_lng_max",
     ]:
         setattr(config, attr, set())
     # packet_callback is a no-op function.

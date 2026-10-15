@@ -9,6 +9,7 @@ Entry points called by HA Core:
   - async_unload_entry: Called when the user removes the integration. Unloads
     all platforms and cancels the coordinator's polling task.
 """
+
 import logging
 
 import voluptuous as vol
@@ -57,9 +58,7 @@ _SEND_MESSAGE_SCHEMA = vol.Schema(
     {
         vol.Required(ATTR_TEXT): cv.string,
         vol.Optional(ATTR_TARGET): _NODE_ID,
-        vol.Optional(ATTR_CHANNEL, default=0): vol.All(
-            int, vol.Range(min=0, max=7)
-        ),
+        vol.Optional(ATTR_CHANNEL, default=0): vol.All(int, vol.Range(min=0, max=7)),
     }
 )
 
@@ -81,6 +80,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     entry is reloaded or a second entry is added. The views resolve the
     coordinator at request time instead of being bound to a specific entry.
     """
+
     async def _send_message(call):
         coordinator = coordinator_for(hass)
         if coordinator is None:
@@ -108,7 +108,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         DOMAIN, SERVICE_SEND_MESSAGE, _send_message, schema=_SEND_MESSAGE_SCHEMA
     )
     hass.services.async_register(
-        DOMAIN, SERVICE_REQUEST_POSITION, _request_position,
+        DOMAIN,
+        SERVICE_REQUEST_POSITION,
+        _request_position,
         schema=_REQUEST_POSITION_SCHEMA,
     )
     hass.services.async_register(
@@ -133,12 +135,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     allowed_keys = {CONF_SCAN_INTERVAL, CONF_IGNORED_NODES, CONF_TRACKED_NODES}
     if entry.options:
         current_options = dict(entry.options)
-        cleaned_options = {k: v for k, v in current_options.items() if k in allowed_keys}
+        cleaned_options = {
+            k: v for k, v in current_options.items() if k in allowed_keys
+        }
         if len(cleaned_options) != len(current_options):
             logger.info(
                 "Cleaning invalid options from NodePulse config entry %s: removed %s",
                 entry.entry_id,
-                set(current_options.keys()) - allowed_keys
+                set(current_options.keys()) - allowed_keys,
             )
             hass.config_entries.async_update_entry(entry, options=cleaned_options)
 
@@ -153,7 +157,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # data becomes available.
         logger.warning(
             "NodePulse initial coordinator refresh failed (entry=%s): %s",
-            entry.entry_id, exc,
+            entry.entry_id,
+            exc,
         )
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
@@ -199,7 +204,9 @@ def _self_node_id(status) -> str | None:
         return None
 
 
-def _on_data_update(hass: HomeAssistant, coordinator: NodePulseCoordinator, entry: ConfigEntry) -> None:
+def _on_data_update(
+    hass: HomeAssistant, coordinator: NodePulseCoordinator, entry: ConfigEntry
+) -> None:
     """React to a coordinator refresh: surface new messages and events."""
     data = coordinator.data or {}
 
@@ -295,7 +302,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # When the last config entry is gone, remove the integration-level service
     # actions registered in async_setup so they don't linger after removal.
     if not hass.data.get(DOMAIN):
-        for svc in (SERVICE_SEND_MESSAGE, SERVICE_REQUEST_POSITION, SERVICE_TRACE_ROUTE):
+        for svc in (
+            SERVICE_SEND_MESSAGE,
+            SERVICE_REQUEST_POSITION,
+            SERVICE_TRACE_ROUTE,
+        ):
             if hass.services.has_service(DOMAIN, svc):
                 hass.services.async_remove(DOMAIN, svc)
 

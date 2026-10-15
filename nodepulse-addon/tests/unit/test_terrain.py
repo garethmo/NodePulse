@@ -2,6 +2,7 @@
 Unit tests for app/terrain.py — elevation fetching, LOS/Fresnel analysis,
 link budget, and the /api/terrain/* route handlers.
 """
+
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -22,6 +23,7 @@ from app.terrain import (
 # ---------------------------------------------------------------------------
 # Geometry / radio math
 # ---------------------------------------------------------------------------
+
 
 class TestGeometry:
     def test_great_circle_distance_same_point_is_zero(self):
@@ -104,12 +106,15 @@ class TestRadioMath:
             tx_gain_dbi=5.0,
             rx_gain_dbi=3.0,
         )
-        assert boosted["link_budget"]["rx_power_dbm"] > base["link_budget"]["rx_power_dbm"]
+        assert (
+            boosted["link_budget"]["rx_power_dbm"] > base["link_budget"]["rx_power_dbm"]
+        )
 
 
 # ---------------------------------------------------------------------------
 # analyze_link — LOS / Fresnel verdicts
 # ---------------------------------------------------------------------------
+
 
 class TestAnalyzeLink:
     def test_flat_terrain_is_los_clear_and_fresnel_clear(self):
@@ -189,6 +194,7 @@ class TestAnalyzeLink:
 # TerrainService — cache + fetch behaviour (network mocked)
 # ---------------------------------------------------------------------------
 
+
 class TestTerrainService:
     @pytest.mark.asyncio
     async def test_cache_hit_avoids_network(self):
@@ -214,7 +220,9 @@ class TestTerrainService:
     @pytest.mark.asyncio
     async def test_batch_fetch_and_cache(self):
         svc = TerrainService()
-        with patch.object(svc, "_fetch_batch", new=AsyncMock(return_value=[1.0, None, 3.0])):
+        with patch.object(
+            svc, "_fetch_batch", new=AsyncMock(return_value=[1.0, None, 3.0])
+        ):
             elevs = await svc.get_elevations([(0.0, 0.0), (0.0, 0.01), (0.0, 0.02)])
         assert elevs == [1.0, None, 3.0]
         # Cached values served without network.
@@ -250,7 +258,9 @@ class TestTerrainService:
         svc = TerrainService()
         session = MagicMock()
         session.closed = False
-        session.get.return_value.__aenter__ = AsyncMock(return_value=MagicMock(status=500))
+        session.get.return_value.__aenter__ = AsyncMock(
+            return_value=MagicMock(status=500)
+        )
         svc._session = session
         elev = await svc.get_elevation(1.0, 2.0)
         assert elev is None
@@ -277,6 +287,7 @@ class TestTerrainService:
 # ---------------------------------------------------------------------------
 # Route handlers — /api/terrain/*
 # ---------------------------------------------------------------------------
+
 
 def make_request(app_dict=None, method="GET", path="/", body=None, query=None):
     request = MagicMock()
@@ -352,7 +363,9 @@ class TestTerrainLinkRoute:
     async def test_valid_link(self):
         app = _terrain_app()
         app["terrain"].sample_path = AsyncMock(return_value=[10.0] * 20)
-        request = make_request(app, method="POST", path="/api/terrain/link", body=self._base_body())
+        request = make_request(
+            app, method="POST", path="/api/terrain/link", body=self._base_body()
+        )
         resp = await routes.handle_terrain_link(request)
         data = json.loads(resp.body)
         assert resp.status == 200

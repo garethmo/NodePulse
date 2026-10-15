@@ -13,6 +13,7 @@ development environment, e.g.::
     pip install homeassistant pytest-homeassistant-custom-component
     python -m pytest tests/test_nodepulse_integration_ha.py -q
 """
+
 import pytest
 
 pytest.importorskip("homeassistant")
@@ -71,9 +72,10 @@ def _patch_coordinator():
 async def test_setup_entry_creates_coordinator(hass, config_entry):
     config_entry.add_to_hass(hass)
     patcher, mock_cls, coordinator = _patch_coordinator()
-    with patcher, patch.object(
-        hass.config_entries, "async_forward_entry_setups"
-    ) as mock_forward:
+    with (
+        patcher,
+        patch.object(hass.config_entries, "async_forward_entry_setups") as mock_forward,
+    ):
         assert await async_setup_entry(hass, config_entry) is True
 
     assert hass.data[DOMAIN][config_entry.entry_id] is coordinator
@@ -94,8 +96,11 @@ async def test_setup_entry_cleans_invalid_options(hass, config_entry):
     }
     config_entry.add_to_hass(hass)
     patcher, _, _ = _patch_coordinator()
-    with patcher, patch.object(
-        hass.config_entries, "async_forward_entry_setups", new=AsyncMock()
+    with (
+        patcher,
+        patch.object(
+            hass.config_entries, "async_forward_entry_setups", new=AsyncMock()
+        ),
     ):
         assert await async_setup_entry(hass, config_entry) is True
 
@@ -114,8 +119,11 @@ async def test_setup_entry_survives_first_refresh_failure(hass, config_entry):
     coordinator.async_config_entry_first_refresh = AsyncMock(
         side_effect=RuntimeError("addon unreachable")
     )
-    with patcher, patch.object(
-        hass.config_entries, "async_forward_entry_setups", new=AsyncMock()
+    with (
+        patcher,
+        patch.object(
+            hass.config_entries, "async_forward_entry_setups", new=AsyncMock()
+        ),
     ):
         assert await async_setup_entry(hass, config_entry) is True
 
@@ -126,8 +134,11 @@ async def test_setup_entry_survives_first_refresh_failure(hass, config_entry):
 async def test_unload_entry_cleans_data(hass, config_entry):
     config_entry.add_to_hass(hass)
     patcher, _, _ = _patch_coordinator()
-    with patcher, patch.object(
-        hass.config_entries, "async_forward_entry_setups", new=AsyncMock()
+    with (
+        patcher,
+        patch.object(
+            hass.config_entries, "async_forward_entry_setups", new=AsyncMock()
+        ),
     ):
         assert await async_setup_entry(hass, config_entry) is True
 
@@ -172,9 +183,15 @@ async def test_options_flow_change_reloads_entry(hass, config_entry):
     """Changing options via the flow triggers the update listener -> reload."""
     config_entry.add_to_hass(hass)
     patcher, _, _ = _patch_coordinator()
-    with patcher, patch.object(
-        hass.config_entries, "async_forward_entry_setups", new=AsyncMock()
-    ), patch.object(hass.config_entries, "async_reload", new=AsyncMock()) as mock_reload:
+    with (
+        patcher,
+        patch.object(
+            hass.config_entries, "async_forward_entry_setups", new=AsyncMock()
+        ),
+        patch.object(
+            hass.config_entries, "async_reload", new=AsyncMock()
+        ) as mock_reload,
+    ):
         assert await async_setup_entry(hass, config_entry) is True
 
         await hass.config_entries.async_set_options(
@@ -209,9 +226,12 @@ async def test_untrack_retrack_cycle(hass, config_entry):
     assert coordinator.set_tracked_node("!ab12cd34", False) is True
     assert coordinator.tracked_nodes == set()
     await coordinator.persist_tracked_nodes(hass)
-    assert hass.config_entries.async_get_entry(
-        config_entry.entry_id
-    ).options[CONF_TRACKED_NODES] == []
+    assert (
+        hass.config_entries.async_get_entry(config_entry.entry_id).options[
+            CONF_TRACKED_NODES
+        ]
+        == []
+    )
 
     # Re-track after untracking.
     assert coordinator.set_tracked_node("!ab12cd34", True) is True
@@ -288,9 +308,7 @@ async def test_validate_token_accepts_ha_header_auth(monkeypatch):
     hass = _no_auth_hass()
     hass.http.auth.async_validate_auth_header = AsyncMock(return_value=object())
     assert (
-        await _validate_token(
-            hass, _request(Authorization="Bearer whatever-token")
-        )
+        await _validate_token(hass, _request(Authorization="Bearer whatever-token"))
         is None
     )
 
@@ -302,8 +320,6 @@ async def test_validate_token_accepts_access_token_fallback(monkeypatch):
     hass = _no_auth_hass()
     hass.auth.async_validate_access_token = AsyncMock(return_value=object())
     assert (
-        await _validate_token(
-            hass, _request(Authorization="Bearer llat-abc123")
-        )
+        await _validate_token(hass, _request(Authorization="Bearer llat-abc123"))
         is None
     )

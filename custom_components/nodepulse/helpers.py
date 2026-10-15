@@ -6,6 +6,7 @@ Keeping them here (rather than duplicated per module) avoids drift: Q11
 centralised the coordinator lookup that used to be copy-pasted into
 ``__init__.py``, ``api.py``, ``device_trigger.py`` and ``device_action.py``.
 """
+
 import logging
 from typing import Optional
 
@@ -89,13 +90,16 @@ class NodeDiscovery:
         # Normalize tracked_nodes for comparison since nodes from API may have
         # inconsistent formatting (with/without "!" prefix, mixed case)
         from .const import normalize_node_id
-        tracked_normalized = {normalize_node_id(nid) for nid in tracked if normalize_node_id(nid)}
+
+        tracked_normalized = {
+            normalize_node_id(nid) for nid in tracked if normalize_node_id(nid)
+        }
 
         logger.debug(
             "NodeDiscovery.run: total_nodes=%d, tracked_nodes=%d, registered=%d",
             len(nodes),
             len(tracked),
-            len(self._registered_node_ids)
+            len(self._registered_node_ids),
         )
 
         # Determine which node IDs were tracked previously but no longer are.
@@ -170,7 +174,11 @@ class NodeDiscovery:
             logger.info("Creating entities for tracked node %s", node_id)
 
         if new_entities:
-            logger.info("Adding %d new entities for %d tracked nodes", len(new_entities), len(new_entities))
+            logger.info(
+                "Adding %d new entities for %d tracked nodes",
+                len(new_entities),
+                len(new_entities),
+            )
             async_add_entities(new_entities)
 
     def attach(self, hass, async_add_entities, should_create, make_entities) -> None:

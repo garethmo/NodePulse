@@ -8,6 +8,7 @@ so that the state never regresses to ``unknown`` just because the latest
 coordinator snapshot is missing lat/lon — the last known position is always
 preferred over losing the location entirely.
 """
+
 import logging
 from typing import Any, Dict, Optional
 
@@ -140,7 +141,10 @@ class NodeTracker(CoordinatorEntity, TrackerEntity):
                 self._attr_altitude = new_alt
                 logger.debug(
                     "NodeTracker %s: Updated coordinates to lat=%s lng=%s alt=%s",
-                    self._node_id, new_lat, new_lon, new_alt
+                    self._node_id,
+                    new_lat,
+                    new_lon,
+                    new_alt,
                 )
             # else: no new fix in this snapshot — retain the last known position
             # so the state stays at the previous coordinates rather than going unknown.
@@ -176,14 +180,14 @@ class NodeTracker(CoordinatorEntity, TrackerEntity):
         if not node:
             return {}
         return {
-            "altitude":          node.get("altitude"),
-            "snr":               node.get("snr"),
-            "rssi":              node.get("rssi"),
-            "hops_away":         node.get("hops_away"),
-            "hw_model":          node.get("hw_model"),
-            "short_name":        node.get("short_name"),
+            "altitude": node.get("altitude"),
+            "snr": node.get("snr"),
+            "rssi": node.get("rssi"),
+            "hops_away": node.get("hops_away"),
+            "hw_model": node.get("hw_model"),
+            "short_name": node.get("short_name"),
             "last_position_fix": node.get("last_position_fix"),
-            "stale":             node.get("stale"),
+            "stale": node.get("stale"),
         }
 
     @property

@@ -11,6 +11,7 @@ Registers binary sensors:
 This entity is the primary health signal for automations (e.g., notify if
 the mesh goes offline for more than N minutes).
 """
+
 import logging
 from time import time
 from typing import Any, Dict, Optional

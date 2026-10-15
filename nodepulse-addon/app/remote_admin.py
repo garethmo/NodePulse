@@ -22,6 +22,7 @@ ADMIN channel, Security admin keys, or admin channel enabled.
 to share that channel's PSK. The library resolves the admin channel index
 via ``localNode._getAdminChannelIndex()``.
 """
+
 import base64
 import contextlib
 import logging
@@ -104,15 +105,23 @@ def remote_admin_capability(interface) -> dict:
     has_admin_channel = admin_channel_index(interface) is not None
 
     local_config = getattr(local_node, "localConfig", None)
-    security = getattr(local_config, "security", None) if local_config is not None else None
-    admin_keys = list(getattr(security, "admin_key", []) or []) if security is not None else []
+    security = (
+        getattr(local_config, "security", None) if local_config is not None else None
+    )
+    admin_keys = (
+        list(getattr(security, "admin_key", []) or []) if security is not None else []
+    )
     admin_channel_enabled = getattr(security, "admin_channel_enabled", False) is True
     public_key = getattr(security, "public_key", None) if security is not None else None
-    private_key = getattr(security, "private_key", None) if security is not None else None
+    private_key = (
+        getattr(security, "private_key", None) if security is not None else None
+    )
     has_keypair = bool(public_key) and bool(private_key)
 
     def b64(b):
-        return base64.b64encode(b).decode("ascii") if isinstance(b, bytes) and b else None
+        return (
+            base64.b64encode(b).decode("ascii") if isinstance(b, bytes) and b else None
+        )
 
     return {
         "available": bool(admin_channel_enabled or admin_keys or has_keypair),
@@ -148,7 +157,11 @@ def _admin_send_channel_index(interface) -> int:
     """
     capability = remote_admin_capability(interface)
     if capability["admin_channel_enabled"]:
-        return capability["admin_channel_index"] if capability["admin_channel_index"] is not None else 0
+        return (
+            capability["admin_channel_index"]
+            if capability["admin_channel_index"] is not None
+            else 0
+        )
     return 0
 
 
@@ -164,14 +177,22 @@ def _bind_admin_channel(remote_node, interface, channel_index: int) -> None:
     """
     original_send = getattr(remote_node, "_sendAdmin", None)
     local_node = getattr(interface, "localNode", None)
-    original_lookup = getattr(local_node, "_getAdminChannelIndex", None) if local_node is not None else None
+    original_lookup = (
+        getattr(local_node, "_getAdminChannelIndex", None)
+        if local_node is not None
+        else None
+    )
     if original_send is None or original_lookup is None:
         return
 
     def _send(*args, **kwargs):
         local_node._getAdminChannelIndex = lambda: channel_index
         try:
-            logger.debug("Admin send to %s on channel index %s", remote_node.nodeNum, channel_index)
+            logger.debug(
+                "Admin send to %s on channel index %s",
+                remote_node.nodeNum,
+                channel_index,
+            )
             return original_send(*args, **kwargs)
         finally:
             local_node._getAdminChannelIndex = original_lookup
@@ -204,7 +225,9 @@ def _capture_admin_errors(remote_node) -> None:
             if reason and reason != "NONE":
                 remote_node._adminNakCount += 1
                 remote_node._lastAdminError = reason
-                logger.warning("Admin request to %s NAK'd: %s", remote_node.nodeNum, reason)
+                logger.warning(
+                    "Admin request to %s NAK'd: %s", remote_node.nodeNum, reason
+                )
         elif "admin" in decoded:
             remote_node._adminResponses += 1
         return original(p)
@@ -274,7 +297,8 @@ def _session_key_handshake(remote_node, interface) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "ensureSessionKey(%s) failed (continuing without session key): %s",
-            remote_node.nodeNum, exc,
+            remote_node.nodeNum,
+            exc,
         )
     finally:
         if timeout is not None and saved is not None:
@@ -292,13 +316,16 @@ def _run_admin(remote_node, method_name: str, *args, **kwargs):
     """
     method = getattr(remote_node, method_name, None)
     if method is None:
-        raise ValueError(f"Admin operation '{method_name}' is not available on this library version")
+        raise ValueError(
+            f"Admin operation '{method_name}' is not available on this library version"
+        )
     return method(*args, **kwargs)
 
 
 # ---------------------------------------------------------------------------
 # Read / write configuration
 # ---------------------------------------------------------------------------
+
 
 def request_remote_config(remote_node) -> int:
     """
@@ -308,12 +335,12 @@ def request_remote_config(remote_node) -> int:
     ----------------------
     We cannot burst packets (clogs the mesh, causes drops) and we cannot rely
     on the library's `waitForAckNak` (too rigid, false timeouts on multi-hop).
-    
+
     Instead, we fire a request and poll our response counter. The instant the
     response arrives, we proceed to the next request. If no response arrives
     within 8 seconds (a generously bounded LoRa round-trip), we assume the
     packet dropped and move to the next.
-    
+
     This adapts dynamically to mesh speed (fast nodes finish in ~10s, slow
     or lossy nodes gracefully degrade but still finish within the 150s cap)
     while keeping exactly 1 request in flight to avoid congestion.
@@ -336,7 +363,8 @@ def request_remote_config(remote_node) -> int:
             remote_node._admin_response_count += 1
             logger.debug(
                 "Remote config response #%d received for %s",
-                remote_node._admin_response_count, remote_node.nodeNum,
+                remote_node._admin_response_count,
+                remote_node.nodeNum,
             )
         if callable(original_handler):
             try:
@@ -349,7 +377,10 @@ def request_remote_config(remote_node) -> int:
     sections_sent = 0
     _PER_SECTION_TIMEOUT = 8.0
 
-    for descriptor in (config_pb2.Config.DESCRIPTOR, module_config_pb2.ModuleConfig.DESCRIPTOR):
+    for descriptor in (
+        config_pb2.Config.DESCRIPTOR,
+        module_config_pb2.ModuleConfig.DESCRIPTOR,
+    ):
         for field in descriptor.fields:
             p = admin_pb2.AdminMessage()
             try:
@@ -358,13 +389,13 @@ def request_remote_config(remote_node) -> int:
                     p.get_config_request = msg_index
                 else:
                     p.get_module_config_request = msg_index
-                
+
                 count_before = remote_node._admin_response_count
-                
+
                 # Send without blocking for ACK
                 send_admin(p, wantResponse=True, onResponse=_counting_handler)
                 sections_sent += 1
-                
+
                 # Smart wait: proceed instantly when response arrives, or timeout
                 deadline = time.time() + _PER_SECTION_TIMEOUT
                 while time.time() < deadline:
@@ -376,27 +407,37 @@ def request_remote_config(remote_node) -> int:
                 else:
                     logger.debug(
                         "Smart-serial wait timed out (8s) for %s on %s",
-                        field.name, remote_node.nodeNum,
+                        field.name,
+                        remote_node.nodeNum,
                     )
-                    
+
             except Exception as exc:  # noqa: BLE001
                 logger.debug(
                     "Smart-serial requestConfig(%s) send failed (skipped): %s",
-                    field.name, exc,
+                    field.name,
+                    exc,
                 )
 
-    logger.debug("Completed %d smart-serial remote config requests for %s", sections_sent, remote_node.nodeNum)
+    logger.debug(
+        "Completed %d smart-serial remote config requests for %s",
+        sections_sent,
+        remote_node.nodeNum,
+    )
     return sections_sent
 
 
 def _request_remote_config_serial(remote_node) -> None:
     """Fallback: request each config section serially (old library without _sendAdmin)."""
     from meshtastic.protobuf import config_pb2, module_config_pb2
+
     request = getattr(remote_node, "requestConfig", None)
     if not callable(request):
         raise ValueError("requestConfig is not available on this library version")
 
-    for descriptor in (config_pb2.Config.DESCRIPTOR, module_config_pb2.ModuleConfig.DESCRIPTOR):
+    for descriptor in (
+        config_pb2.Config.DESCRIPTOR,
+        module_config_pb2.ModuleConfig.DESCRIPTOR,
+    ):
         for field in descriptor.fields:
             try:
                 request(field)
@@ -417,16 +458,16 @@ def request_remote_config_section(remote_node, section_name: str) -> bool:
     from meshtastic.protobuf import admin_pb2, config_pb2
 
     send_admin = getattr(remote_node, "_sendAdmin", None)
-    
+
     # Map section string to descriptor
     field = config_pb2.Config.DESCRIPTOR.fields_by_name.get(section_name)
     if not field:
         pass
-    
+
     if not field:
         logger.error("Unknown section name %r", section_name)
         return False
-        
+
     if not callable(send_admin):
         # Fallback to slow serial
         request = getattr(remote_node, "requestConfig", None)
@@ -448,7 +489,8 @@ def request_remote_config_section(remote_node, section_name: str) -> bool:
             remote_node._admin_response_count += 1
             logger.debug(
                 "Remote config single-section response received for %s on %s",
-                section_name, remote_node.nodeNum,
+                section_name,
+                remote_node.nodeNum,
             )
         if callable(original_handler):
             with contextlib.suppress(Exception):
@@ -463,21 +505,28 @@ def request_remote_config_section(remote_node, section_name: str) -> bool:
         p.get_module_config_request = field.index
     else:
         p.get_config_request = field.index
-    
+
     try:
         count_before = remote_node._admin_response_count
         send_admin(p, wantResponse=True, onResponse=_counting_handler)
-        
+
         deadline = time.time() + 10.0
         while time.time() < deadline:
             if remote_node._admin_response_count > count_before:
                 return True
             time.sleep(0.1)
     except Exception as exc:  # noqa: BLE001
-        logger.debug("Single-section requestConfig(%s) send failed: %s", section_name, exc)
+        logger.debug(
+            "Single-section requestConfig(%s) send failed: %s", section_name, exc
+        )
 
-    logger.warning("Remote config single-section wait timed out for %s on %s", section_name, remote_node.nodeNum)
+    logger.warning(
+        "Remote config single-section wait timed out for %s on %s",
+        section_name,
+        remote_node.nodeNum,
+    )
     return False
+
 
 def wait_for_remote_config(
     remote_node,
@@ -491,7 +540,7 @@ def wait_for_remote_config(
     we wait up to a few extra seconds.
     """
     _MIN_RESPONSES = 1
-    
+
     count = getattr(remote_node, "_admin_response_count", 0)
     if count >= _MIN_RESPONSES:
         return True
@@ -504,7 +553,10 @@ def wait_for_remote_config(
             return True
         time.sleep(0.5)
 
-    logger.warning("Remote config wait timed out with 0 valid responses for %s", remote_node.nodeNum)
+    logger.warning(
+        "Remote config wait timed out with 0 valid responses for %s",
+        remote_node.nodeNum,
+    )
     return False
 
 
@@ -537,11 +589,14 @@ def read_remote_config(remote_node, interface) -> dict:
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to read remote owner info: %s", exc)
         config_dict["owner"] = {
-            "long_name": "", "short_name": "", "hw_model": "",
-            "firmware_version": "", "region": "", "role": "",
+            "long_name": "",
+            "short_name": "",
+            "hw_model": "",
+            "firmware_version": "",
+            "region": "",
+            "role": "",
         }
     return config_dict
-
 
 
 def _remote_node_num(remote_node) -> int | None:
@@ -607,6 +662,7 @@ def apply_remote_config(remote_node, interface, section: str, patch: dict) -> di
 # Actions (reboot / shutdown / factory reset / nodedb / position / time / evict)
 # ---------------------------------------------------------------------------
 
+
 def remote_set_owner(remote_node, long_name: str, short_name: str) -> None:
     """Set the remote node's long/short name."""
     _run_admin(remote_node, "setOwner", long_name=long_name, short_name=short_name)
@@ -632,7 +688,9 @@ def remote_nodedb_reset(remote_node) -> None:
     _run_admin(remote_node, "resetNodeDb")
 
 
-def remote_set_fixed_position(remote_node, lat: float, lng: float, alt: int = 0) -> None:
+def remote_set_fixed_position(
+    remote_node, lat: float, lng: float, alt: int = 0
+) -> None:
     """Set (and enable) the remote node's fixed position."""
     _run_admin(remote_node, "setFixedPosition", lat, lng, alt)
 
@@ -659,19 +717,37 @@ def remote_actions() -> dict[str, dict]:
     return {
         "reboot": {"label": "Reboot", "danger": False, "confirm": False},
         "shutdown": {"label": "Shut down", "danger": False, "confirm": True},
-        "factory_reset": {"label": "Factory reset (config)", "danger": True, "confirm": True},
-        "factory_reset_device": {"label": "Factory reset (full device)", "danger": True, "confirm": True},
+        "factory_reset": {
+            "label": "Factory reset (config)",
+            "danger": True,
+            "confirm": True,
+        },
+        "factory_reset_device": {
+            "label": "Factory reset (full device)",
+            "danger": True,
+            "confirm": True,
+        },
         "nodedb_reset": {"label": "Reset NodeDB", "danger": True, "confirm": True},
-        "set_fixed_position": {"label": "Set fixed position", "danger": False, "confirm": False},
-        "clear_fixed_position": {"label": "Clear fixed position", "danger": False, "confirm": False},
+        "set_fixed_position": {
+            "label": "Set fixed position",
+            "danger": False,
+            "confirm": False,
+        },
+        "clear_fixed_position": {
+            "label": "Clear fixed position",
+            "danger": False,
+            "confirm": False,
+        },
         "set_time": {"label": "Sync clock", "danger": False, "confirm": False},
-        "remove_node": {"label": "Remove node from NodeDB", "danger": True, "confirm": True},
+        "remove_node": {
+            "label": "Remove node from NodeDB",
+            "danger": True,
+            "confirm": True,
+        },
     }
 
 
-def execute_admin_action(
-    remote_node, action: str, params: dict | None = None
-) -> dict:
+def execute_admin_action(remote_node, action: str, params: dict | None = None) -> dict:
     """
     Run a named admin action against a remote node.
 
@@ -684,7 +760,9 @@ def execute_admin_action(
     params = params or {}
     action_map = {
         "reboot": lambda: remote_reboot(remote_node, int(params.get("seconds", 10))),
-        "shutdown": lambda: remote_shutdown(remote_node, int(params.get("seconds", 10))),
+        "shutdown": lambda: remote_shutdown(
+            remote_node, int(params.get("seconds", 10))
+        ),
         "factory_reset": lambda: remote_factory_reset(remote_node, full=False),
         "factory_reset_device": lambda: remote_factory_reset(remote_node, full=True),
         "nodedb_reset": lambda: remote_nodedb_reset(remote_node),
@@ -695,8 +773,12 @@ def execute_admin_action(
             int(params.get("alt", 0)),
         ),
         "clear_fixed_position": lambda: remote_remove_fixed_position(remote_node),
-        "set_time": lambda: remote_set_time(remote_node, int(params.get("epoch_secs", 0))),
-        "remove_node": lambda: remote_remove_node(remote_node, str(params["target_node_id"])),
+        "set_time": lambda: remote_set_time(
+            remote_node, int(params.get("epoch_secs", 0))
+        ),
+        "remove_node": lambda: remote_remove_node(
+            remote_node, str(params["target_node_id"])
+        ),
     }
     fn = action_map.get(action)
     if fn is None:

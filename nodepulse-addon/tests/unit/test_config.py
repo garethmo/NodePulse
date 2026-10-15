@@ -1,6 +1,7 @@
 """
 Unit tests for app/config.py
 """
+
 import json
 import os
 import tempfile
@@ -75,7 +76,7 @@ def test_resolve_target_direct_mode():
         proxy_host=None,
         proxy_port=4403,
         access_key=None,
-        scan_interval=30
+        scan_interval=30,
     )
     host, port, mode = resolve_target(config)
     assert host == "192.168.1.100"
@@ -93,7 +94,7 @@ def test_resolve_target_proxy_mode():
         proxy_host="192.168.1.50",
         proxy_port=4403,
         access_key=None,
-        scan_interval=30
+        scan_interval=30,
     )
     host, port, mode = resolve_target(config)
     assert host == "192.168.1.50"
@@ -111,7 +112,7 @@ def test_resolve_target_proxy_mode_missing_host():
         proxy_host=None,
         proxy_port=4403,
         access_key=None,
-        scan_interval=30
+        scan_interval=30,
     )
     with pytest.raises(RuntimeError):
         resolve_target(config)
@@ -119,23 +120,27 @@ def test_resolve_target_proxy_mode_missing_host():
 
 def test_load_config_minimal():
     """Test loading minimal valid configuration."""
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-        json.dump({
-            "log_level": "info",
-            "connection_type": "direct",
-            "meshtastic_host": "localhost",
-            "meshtastic_port": 4403
-        }, f)
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(
+            {
+                "log_level": "info",
+                "connection_type": "direct",
+                "meshtastic_host": "localhost",
+                "meshtastic_port": 4403,
+            },
+            f,
+        )
         temp_path = f.name
 
     try:
         # Temporarily set options path
         import app.config as config_module
+
         original_options = config_module._OPTIONS_FILE
         config_module._OPTIONS_FILE = temp_path
 
         config = load_config()
-        
+
         assert config.log_level == "INFO"
         assert config.connection_type == CONNECTION_TYPE_DIRECT
         assert config.meshtastic_host == "localhost"
@@ -151,20 +156,24 @@ def test_load_config_minimal():
 
 def test_load_config_with_ha_access_token():
     """Test loading configuration with an HA long-lived access token."""
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-        json.dump({
-            "log_level": "info",
-            "connection_type": "direct",
-            "meshtastic_host": "localhost",
-            "meshtastic_port": 4403,
-            "ha_base_url": "http://172.17.0.1:8123",
-            "ha_access_token": "ll-abcdef1234567890",
-            "disable_token_validation": True,
-        }, f)
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(
+            {
+                "log_level": "info",
+                "connection_type": "direct",
+                "meshtastic_host": "localhost",
+                "meshtastic_port": 4403,
+                "ha_base_url": "http://172.17.0.1:8123",
+                "ha_access_token": "ll-abcdef1234567890",
+                "disable_token_validation": True,
+            },
+            f,
+        )
         temp_path = f.name
 
     try:
         import app.config as config_module
+
         original_options = config_module._OPTIONS_FILE
         config_module._OPTIONS_FILE = temp_path
 
@@ -180,33 +189,37 @@ def test_load_config_with_ha_access_token():
 
 def test_load_config_with_mqtt_settings():
     """Test loading configuration with MQTT settings."""
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-        json.dump({
-            "log_level": "debug",
-            "connection_type": "direct",
-            "meshtastic_host": "localhost",
-            "meshtastic_port": 4403,
-            "mqtt_enabled": True,
-            "mqtt_address": "mqtt.example.com",
-            "mqtt_port": 1883,
-            "mqtt_username": "user",
-            "mqtt_password": "pass",
-            "mqtt_topic": "msh/custom",
-            "mqtt_geo_filter_enabled": True,
-            "mqtt_lat_min": 40.0,
-            "mqtt_lat_max": 41.0,
-            "mqtt_lng_min": -74.0,
-            "mqtt_lng_max": -73.0
-        }, f)
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(
+            {
+                "log_level": "debug",
+                "connection_type": "direct",
+                "meshtastic_host": "localhost",
+                "meshtastic_port": 4403,
+                "mqtt_enabled": True,
+                "mqtt_address": "mqtt.example.com",
+                "mqtt_port": 1883,
+                "mqtt_username": "user",
+                "mqtt_password": "pass",
+                "mqtt_topic": "msh/custom",
+                "mqtt_geo_filter_enabled": True,
+                "mqtt_lat_min": 40.0,
+                "mqtt_lat_max": 41.0,
+                "mqtt_lng_min": -74.0,
+                "mqtt_lng_max": -73.0,
+            },
+            f,
+        )
         temp_path = f.name
 
     try:
         import app.config as config_module
+
         original_options = config_module._OPTIONS_FILE
         config_module._OPTIONS_FILE = temp_path
 
         config = load_config()
-        
+
         assert config.mqtt_enabled is True
         assert config.mqtt_address == "mqtt.example.com"
         assert config.mqtt_port == 1883
@@ -225,27 +238,31 @@ def test_load_config_with_mqtt_settings():
 
 def test_load_config_invalid_geo_filter():
     """Test that invalid geo-filter bounds are corrected."""
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-        json.dump({
-            "log_level": "info",
-            "connection_type": "direct",
-            "meshtastic_host": "localhost",
-            "meshtastic_port": 4403,
-            "mqtt_geo_filter_enabled": True,
-            "mqtt_lat_min": 41.0,  # Invalid: min >= max
-            "mqtt_lat_max": 40.0,
-            "mqtt_lng_min": -73.0,
-            "mqtt_lng_max": -74.0
-        }, f)
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(
+            {
+                "log_level": "info",
+                "connection_type": "direct",
+                "meshtastic_host": "localhost",
+                "meshtastic_port": 4403,
+                "mqtt_geo_filter_enabled": True,
+                "mqtt_lat_min": 41.0,  # Invalid: min >= max
+                "mqtt_lat_max": 40.0,
+                "mqtt_lng_min": -73.0,
+                "mqtt_lng_max": -74.0,
+            },
+            f,
+        )
         temp_path = f.name
 
     try:
         import app.config as config_module
+
         original_options = config_module._OPTIONS_FILE
         config_module._OPTIONS_FILE = temp_path
 
         config = load_config()
-        
+
         # Should be disabled due to invalid bounds
         assert config.mqtt_geo_filter_enabled is False
     finally:
@@ -255,29 +272,33 @@ def test_load_config_invalid_geo_filter():
 
 def test_load_config_with_telegram_settings():
     """Test loading configuration with Telegram settings."""
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-        json.dump({
-            "log_level": "info",
-            "connection_type": "direct",
-            "meshtastic_host": "localhost",
-            "meshtastic_port": 4403,
-            "telegram_enabled": True,
-            "telegram_bot_token": "test_token",
-            "telegram_chat_id": "123456",
-            "telegram_authorized_chat_ids": ["123456", "789012"],
-            "telegram_forward_channels": "0, 1",
-            "telegram_forward_dms": True,
-            "telegram_allow_commands": True
-        }, f)
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(
+            {
+                "log_level": "info",
+                "connection_type": "direct",
+                "meshtastic_host": "localhost",
+                "meshtastic_port": 4403,
+                "telegram_enabled": True,
+                "telegram_bot_token": "test_token",
+                "telegram_chat_id": "123456",
+                "telegram_authorized_chat_ids": ["123456", "789012"],
+                "telegram_forward_channels": "0, 1",
+                "telegram_forward_dms": True,
+                "telegram_allow_commands": True,
+            },
+            f,
+        )
         temp_path = f.name
 
     try:
         import app.config as config_module
+
         original_options = config_module._OPTIONS_FILE
         config_module._OPTIONS_FILE = temp_path
 
         config = load_config()
-        
+
         assert config.telegram_enabled is True
         assert config.telegram_bot_token == "test_token"
         assert config.telegram_chat_id == "123456"
@@ -293,17 +314,21 @@ def test_load_config_with_telegram_settings():
 
 def test_load_config_invalid_connection_type():
     """Test that invalid connection type raises RuntimeError."""
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-        json.dump({
-            "log_level": "info",
-            "connection_type": "invalid",
-            "meshtastic_host": "localhost",
-            "meshtastic_port": 4403
-        }, f)
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(
+            {
+                "log_level": "info",
+                "connection_type": "invalid",
+                "meshtastic_host": "localhost",
+                "meshtastic_port": 4403,
+            },
+            f,
+        )
         temp_path = f.name
 
     try:
         import app.config as config_module
+
         original_options = config_module._OPTIONS_FILE
         config_module._OPTIONS_FILE = temp_path
 

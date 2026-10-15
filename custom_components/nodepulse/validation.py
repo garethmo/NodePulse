@@ -5,6 +5,7 @@ These helpers only touch strings / ints and are deliberately kept free of any
 ``homeassistant`` imports so they can be unit-tested without a full HA runtime
 (Q1/T1). Anything that needs HA internals stays in ``config_flow.py``.
 """
+
 from typing import List
 
 from .const import is_valid_node_id

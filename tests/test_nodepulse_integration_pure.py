@@ -7,6 +7,7 @@ with plain pytest and no HA runtime installed. The integration's ``__init__.py``
 (which imports homeassistant) is deliberately NOT executed — we install a fake
 package so relative imports resolve.
 """
+
 import pathlib
 import sys
 import types

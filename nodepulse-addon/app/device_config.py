@@ -30,24 +30,25 @@ _FIELD_CONSTRAINTS = {
     # Device
     ("device", "node_info_broadcast_secs"): {"min": 1, "max": 2**32 - 1},
     # LoRa
-    ("lora", "bandwidth"):        {"min": 31,   "max": 500},
-    ("lora", "spread_factor"):    {"min": 7,    "max": 12},
-    ("lora", "coding_rate"):      {"min": 5,    "max": 8},
+    ("lora", "bandwidth"): {"min": 31, "max": 500},
+    ("lora", "spread_factor"): {"min": 7, "max": 12},
+    ("lora", "coding_rate"): {"min": 5, "max": 8},
     ("lora", "frequency_offset"): {"min": -0.5, "max": 0.5},  # MHz
-    ("lora", "hop_limit"):        {"min": 0,    "max": 7},
-    ("lora", "channel_num"):      {"min": 0,    "max": 255},
-    ("lora", "tx_power"):         {"min": -1,   "max": 30},
+    ("lora", "hop_limit"): {"min": 0, "max": 7},
+    ("lora", "channel_num"): {"min": 0, "max": 255},
+    ("lora", "tx_power"): {"min": -1, "max": 30},
     # Network
     ("network", "wifi_ssid"): {"max_length": 32},
-    ("network", "wifi_psk"):  {"max_length": 64},
+    ("network", "wifi_psk"): {"max_length": 64},
     ("network", "ntp_server"): {"max_length": 128},
     ("position", "position_broadcast_secs"): {"min": 0, "max": 2**32 - 1},
-    ("position", "gps_update_interval"):     {"min": 0, "max": 2**32 - 1},
-    ("power", "wait_bluetooth_secs"):        {"min": 0, "max": 24 * 3600},
+    ("position", "gps_update_interval"): {"min": 0, "max": 2**32 - 1},
+    ("power", "wait_bluetooth_secs"): {"min": 0, "max": 24 * 3600},
     # MeshBeacon (firmware 2.8+)
     ("mesh_beacon", "broadcast_interval_secs"): {"min": 3600, "max": 2**32 - 1},
     ("mesh_beacon", "broadcast_message"): {"max_length": 100},
 }
+
 
 def build_config_registry() -> dict[str, Any]:
     """
@@ -55,18 +56,18 @@ def build_config_registry() -> dict[str, Any]:
     protobuf definitions from the installed meshtastic library.
     """
     registry = {}
-    
+
     # We will loop over both Config and ModuleConfig
     sources = [
         ("config", config_pb2.Config.DESCRIPTOR),
-        ("module", module_config_pb2.ModuleConfig.DESCRIPTOR)
+        ("module", module_config_pb2.ModuleConfig.DESCRIPTOR),
     ]
-    
+
     for category, descriptor in sources:
         for section_field in descriptor.fields:
             section_name = section_field.name
             registry[section_name] = {"category": category, "fields": {}}
-            
+
             # If a field is a message, introspect it
             if section_field.type == FieldDescriptor.TYPE_MESSAGE:
                 for field in section_field.message_type.fields:
@@ -104,10 +105,10 @@ def build_config_registry() -> dict[str, Any]:
         "category": "special",
         "fields": {
             "long_name": {"type": "string", "label": "long_name", "max_length": 39},
-            "short_name": {"type": "string", "label": "short_name", "max_length": 4}
-        }
+            "short_name": {"type": "string", "label": "short_name", "max_length": 4},
+        },
     }
-    
+
     # MeshBeaconConfig — not yet in released meshtastic protobuf (2.7.x), added manually
     # for firmware 2.8+ support. Gated by firmware version in the UI.
     registry["mesh_beacon"] = {
@@ -117,40 +118,59 @@ def build_config_registry() -> dict[str, Any]:
                 "type": "enum",
                 "label": "flags",
                 "enum_type": "MeshBeaconConfigFlags",
-                "options": ["FLAG_NONE", "FLAG_LISTEN_ENABLED", "FLAG_BROADCAST_ENABLED", "FLAG_LEGACY_SPLIT"]
+                "options": [
+                    "FLAG_NONE",
+                    "FLAG_LISTEN_ENABLED",
+                    "FLAG_BROADCAST_ENABLED",
+                    "FLAG_LEGACY_SPLIT",
+                ],
             },
-            "broadcast_send_as_node": {"type": "int", "label": "broadcast_send_as_node"},
-            "broadcast_message": {"type": "string", "label": "broadcast_message", "max_length": 100},
-            "broadcast_offer_channel": {"type": "string", "label": "broadcast_offer_channel"},
+            "broadcast_send_as_node": {
+                "type": "int",
+                "label": "broadcast_send_as_node",
+            },
+            "broadcast_message": {
+                "type": "string",
+                "label": "broadcast_message",
+                "max_length": 100,
+            },
+            "broadcast_offer_channel": {
+                "type": "string",
+                "label": "broadcast_offer_channel",
+            },
             "broadcast_offer_region": {
                 "type": "enum",
                 "label": "broadcast_offer_region",
                 "enum_type": "RegionCode",
-                "options": []  # Populated dynamically from config_pb2
+                "options": [],  # Populated dynamically from config_pb2
             },
             "broadcast_offer_preset": {
                 "type": "enum",
                 "label": "broadcast_offer_preset",
                 "enum_type": "ModemPreset",
-                "options": []  # Populated dynamically from config_pb2
+                "options": [],  # Populated dynamically from config_pb2
             },
             "broadcast_on_channel": {"type": "string", "label": "broadcast_on_channel"},
             "broadcast_on_region": {
                 "type": "enum",
                 "label": "broadcast_on_region",
                 "enum_type": "RegionCode",
-                "options": []  # Populated dynamically from config_pb2
+                "options": [],  # Populated dynamically from config_pb2
             },
             "broadcast_on_preset": {
                 "type": "enum",
                 "label": "broadcast_on_preset",
                 "enum_type": "ModemPreset",
-                "options": []  # Populated dynamically from config_pb2
+                "options": [],  # Populated dynamically from config_pb2
             },
-            "broadcast_interval_secs": {"type": "int", "label": "broadcast_interval_secs", "min": 3600},
-        }
+            "broadcast_interval_secs": {
+                "type": "int",
+                "label": "broadcast_interval_secs",
+                "min": 3600,
+            },
+        },
     }
-    
+
     # Populate RegionCode and ModemPreset enum options for mesh_beacon fields
     # Also includes 2.8 enum values not present in 2.7.x library
     try:
@@ -160,16 +180,23 @@ def build_config_registry() -> dict[str, Any]:
         for i in range(38):  # 2.8 adds regions up to 37 (ITU2_125CM)
             try:
                 name = region_enum.Name(i)
-                if name != 'UNSET':
+                if name != "UNSET":
                     region_options.append(name)
             except ValueError:
                 pass
         # Manually add 2.8 regions not in 2.7.x library
         region_28 = {
-            27: 'ITU1_2M', 28: 'ITU2_2M', 29: 'EU_866',
-            30: 'EU_874', 31: 'EU_917', 32: 'EU_N_868',
-            33: 'ITU3_2M', 34: 'ITU1_70CM', 35: 'ITU2_70CM',
-            36: 'ITU3_70CM', 37: 'ITU2_125CM'
+            27: "ITU1_2M",
+            28: "ITU2_2M",
+            29: "EU_866",
+            30: "EU_874",
+            31: "EU_917",
+            32: "EU_N_868",
+            33: "ITU3_2M",
+            34: "ITU1_70CM",
+            35: "ITU2_70CM",
+            36: "ITU3_70CM",
+            37: "ITU2_125CM",
         }
         for _num, name in region_28.items():
             if name not in region_options:
@@ -179,15 +206,19 @@ def build_config_registry() -> dict[str, Any]:
         for i in range(17):  # 2.8 adds presets up to 16 (MEDIUM_TURBO)
             try:
                 name = preset_enum.Name(i)
-                if name != 'UNSET':
+                if name != "UNSET":
                     preset_options.append(name)
             except ValueError:
                 pass
         # Manually add 2.8 presets not in 2.7.x library
         preset_28 = {
-            10: 'LITE_FAST', 11: 'LITE_SLOW', 12: 'NARROW_FAST',
-            13: 'NARROW_SLOW', 14: 'TINY_FAST', 15: 'TINY_SLOW',
-            16: 'MEDIUM_TURBO'
+            10: "LITE_FAST",
+            11: "LITE_SLOW",
+            12: "NARROW_FAST",
+            13: "NARROW_SLOW",
+            14: "TINY_FAST",
+            15: "TINY_SLOW",
+            16: "MEDIUM_TURBO",
         }
         for _num, name in preset_28.items():
             if name not in preset_options:
@@ -204,8 +235,12 @@ def build_config_registry() -> dict[str, Any]:
     registry["status_message"] = {
         "category": "module",
         "fields": {
-            "node_status": {"type": "string", "label": "node_status", "max_length": 100},
-        }
+            "node_status": {
+                "type": "string",
+                "label": "node_status",
+                "max_length": 100,
+            },
+        },
     }
 
     # TAKConfig — firmware 2.8+ (ATAK integration)
@@ -216,15 +251,152 @@ def build_config_registry() -> dict[str, Any]:
                 "type": "enum",
                 "label": "team",
                 "enum_type": "Team",
-                "options": ["UNSPECIFIED", "RED", "BLUE", "GREEN", "YELLOW", "CYAN", "MAGENTA", "ORANGE", "VIOLET", "WHITE", "BLACK", "BROWN", "PINK", "GREY", "LIGHT_BLUE", "DARK_RED", "DARK_GREEN", "DARK_BLUE"]
+                "options": [
+                    "UNSPECIFIED",
+                    "RED",
+                    "BLUE",
+                    "GREEN",
+                    "YELLOW",
+                    "CYAN",
+                    "MAGENTA",
+                    "ORANGE",
+                    "VIOLET",
+                    "WHITE",
+                    "BLACK",
+                    "BROWN",
+                    "PINK",
+                    "GREY",
+                    "LIGHT_BLUE",
+                    "DARK_RED",
+                    "DARK_GREEN",
+                    "DARK_BLUE",
+                ],
             },
             "role": {
                 "type": "enum",
                 "label": "role",
                 "enum_type": "MemberRole",
-                "options": ["UNSPECIFIED", "TEAM_LEADER", "TEAM_MEMBER", "MEDIC", "OBSERVER", "JTAC", "FIRE_SUPPORT", "UAS_OPERATOR", "K9_HANDLER", "EOD", "INTELLIGENCE", "ENGINEER", "COMMUNICATIONS", "LOGISTICS", "SNIPE", "RECON", "CROWD_CONTROL", "DRIVER", "PILOT", "CREW_CHIEF", "LOADMASTER", "GUNNER", "RIFLEMAN", "AUTOMATIC_RIFLEMAN", "GRENADIER", "MACHINE_GUNNER", "ANTI_TANK", "ANTI_AIR", "MORTAR", "ARTILLERY", "TANKER", "MECHANIZED", "AIR_ASSAULT", "AIRBORNE", "SPECIAL_FORCES", "CIVIL_AFFAIRS", "PSYOP", "CHAPLAIN", "LEGAL", "PUBLIC_AFFAIRS", "MEDICAL", "VETERINARY", "DENTAL", "PHARMACY", "LAB", "RADIOLOGY", "PREVENTIVE_MED", "MENTAL_HEALTH", "NUTRITION", "ENVIRONMENTAL", "INDUSTRIAL_HYGIENE", "OCCUPATIONAL_HEALTH", "BIOENVIRONMENTAL", "RADIATION", "CBRN", "EXPLOSIVE_ORDNANCE", "WEAPONS", "MISSILE", "SPACE", "CYBER", "INTEL_ANALYST", "CRYPTOLOGIC", "SIGNALS_INTEL", "HUMAN_INTEL", "GEOSPATIAL", "TARGETING", "FIRE_CONTROL", "AIR_DEFENSE", "MISSILE_DEFENSE", "COUNTER_INTEL", "SECURITY_FORCES", "LAW_ENFORCEMENT", "CORRECTIONS", "INVESTIGATIONS", "FORENSICS", "EMERGENCY_MGMT", "FIREFIGHTING", "SEARCH_RESCUE", "HAZMAT", "DISASTER_RELIEF", "HUMANITARIAN", "CIVIL_ENGINEER", "UTILITIES", "CONSTRUCTION", "HEAVY_EQUIP", "SURVEY", "MAPPING", "NAVIGATION", "COMMUNICATIONS_SPECIALIST", "SATELLITE_COMMS", "NETWORK_ADMIN", "SYS_ADMIN", "PROGRAMMER", "DATA_ANALYST", "DB_ADMIN", "SECURITY_SPECIALIST", "INFO_ASSURANCE", "COMPLIANCE", "ACQUISITION", "CONTRACTING", "LOGISTICS_READINESS", "TRANSPORTATION", "SUPPLY", "FUEL", "MAINTENANCE", "AVIONICS", "AIRCRAFT_MAINT", "MUNITIONS", "ARMAMENT", "ELECTRONIC_WARFARE", "RADAR", "SONAR", "UAV_OPERATOR", "ROBOTICS", "AI_ML", "QUANTUM", "OTHER"]
+                "options": [
+                    "UNSPECIFIED",
+                    "TEAM_LEADER",
+                    "TEAM_MEMBER",
+                    "MEDIC",
+                    "OBSERVER",
+                    "JTAC",
+                    "FIRE_SUPPORT",
+                    "UAS_OPERATOR",
+                    "K9_HANDLER",
+                    "EOD",
+                    "INTELLIGENCE",
+                    "ENGINEER",
+                    "COMMUNICATIONS",
+                    "LOGISTICS",
+                    "SNIPE",
+                    "RECON",
+                    "CROWD_CONTROL",
+                    "DRIVER",
+                    "PILOT",
+                    "CREW_CHIEF",
+                    "LOADMASTER",
+                    "GUNNER",
+                    "RIFLEMAN",
+                    "AUTOMATIC_RIFLEMAN",
+                    "GRENADIER",
+                    "MACHINE_GUNNER",
+                    "ANTI_TANK",
+                    "ANTI_AIR",
+                    "MORTAR",
+                    "ARTILLERY",
+                    "TANKER",
+                    "MECHANIZED",
+                    "AIR_ASSAULT",
+                    "AIRBORNE",
+                    "SPECIAL_FORCES",
+                    "CIVIL_AFFAIRS",
+                    "PSYOP",
+                    "CHAPLAIN",
+                    "LEGAL",
+                    "PUBLIC_AFFAIRS",
+                    "MEDICAL",
+                    "VETERINARY",
+                    "DENTAL",
+                    "PHARMACY",
+                    "LAB",
+                    "RADIOLOGY",
+                    "PREVENTIVE_MED",
+                    "MENTAL_HEALTH",
+                    "NUTRITION",
+                    "ENVIRONMENTAL",
+                    "INDUSTRIAL_HYGIENE",
+                    "OCCUPATIONAL_HEALTH",
+                    "BIOENVIRONMENTAL",
+                    "RADIATION",
+                    "CBRN",
+                    "EXPLOSIVE_ORDNANCE",
+                    "WEAPONS",
+                    "MISSILE",
+                    "SPACE",
+                    "CYBER",
+                    "INTEL_ANALYST",
+                    "CRYPTOLOGIC",
+                    "SIGNALS_INTEL",
+                    "HUMAN_INTEL",
+                    "GEOSPATIAL",
+                    "TARGETING",
+                    "FIRE_CONTROL",
+                    "AIR_DEFENSE",
+                    "MISSILE_DEFENSE",
+                    "COUNTER_INTEL",
+                    "SECURITY_FORCES",
+                    "LAW_ENFORCEMENT",
+                    "CORRECTIONS",
+                    "INVESTIGATIONS",
+                    "FORENSICS",
+                    "EMERGENCY_MGMT",
+                    "FIREFIGHTING",
+                    "SEARCH_RESCUE",
+                    "HAZMAT",
+                    "DISASTER_RELIEF",
+                    "HUMANITARIAN",
+                    "CIVIL_ENGINEER",
+                    "UTILITIES",
+                    "CONSTRUCTION",
+                    "HEAVY_EQUIP",
+                    "SURVEY",
+                    "MAPPING",
+                    "NAVIGATION",
+                    "COMMUNICATIONS_SPECIALIST",
+                    "SATELLITE_COMMS",
+                    "NETWORK_ADMIN",
+                    "SYS_ADMIN",
+                    "PROGRAMMER",
+                    "DATA_ANALYST",
+                    "DB_ADMIN",
+                    "SECURITY_SPECIALIST",
+                    "INFO_ASSURANCE",
+                    "COMPLIANCE",
+                    "ACQUISITION",
+                    "CONTRACTING",
+                    "LOGISTICS_READINESS",
+                    "TRANSPORTATION",
+                    "SUPPLY",
+                    "FUEL",
+                    "MAINTENANCE",
+                    "AVIONICS",
+                    "AIRCRAFT_MAINT",
+                    "MUNITIONS",
+                    "ARMAMENT",
+                    "ELECTRONIC_WARFARE",
+                    "RADAR",
+                    "SONAR",
+                    "UAV_OPERATOR",
+                    "ROBOTICS",
+                    "AI_ML",
+                    "QUANTUM",
+                    "OTHER",
+                ],
             },
-        }
+        },
     }
 
     # TrafficManagementConfig — firmware 2.8+
@@ -238,12 +410,24 @@ def build_config_registry() -> dict[str, Any]:
             "downlink_enabled": {"type": "bool", "label": "downlink_enabled"},
             "ignore_mqtt": {"type": "bool", "label": "ignore_mqtt"},
             "ignore_serial": {"type": "bool", "label": "ignore_serial"},
-            "ignore_external_notification": {"type": "bool", "label": "ignore_external_notification"},
+            "ignore_external_notification": {
+                "type": "bool",
+                "label": "ignore_external_notification",
+            },
             "ignore_canned_message": {"type": "bool", "label": "ignore_canned_message"},
             "ignore_audio": {"type": "bool", "label": "ignore_audio"},
-            "ignore_remote_hardware": {"type": "bool", "label": "ignore_remote_hardware"},
-            "ignore_ambient_lighting": {"type": "bool", "label": "ignore_ambient_lighting"},
-            "ignore_detection_sensor": {"type": "bool", "label": "ignore_detection_sensor"},
+            "ignore_remote_hardware": {
+                "type": "bool",
+                "label": "ignore_remote_hardware",
+            },
+            "ignore_ambient_lighting": {
+                "type": "bool",
+                "label": "ignore_ambient_lighting",
+            },
+            "ignore_detection_sensor": {
+                "type": "bool",
+                "label": "ignore_detection_sensor",
+            },
             "ignore_paxcounter": {"type": "bool", "label": "ignore_paxcounter"},
             "ignore_store_forward": {"type": "bool", "label": "ignore_store_forward"},
             "ignore_range_test": {"type": "bool", "label": "ignore_range_test"},
@@ -252,7 +436,7 @@ def build_config_registry() -> dict[str, Any]:
             "ignore_tak": {"type": "bool", "label": "ignore_tak"},
             "ignore_status_message": {"type": "bool", "label": "ignore_status_message"},
             "ignore_mesh_beacon": {"type": "bool", "label": "ignore_mesh_beacon"},
-        }
+        },
     }
 
     # AmbientLightingConfig — firmware 2.8+ (LED control)
@@ -267,7 +451,7 @@ def build_config_registry() -> dict[str, Any]:
             "pattern": {"type": "int", "label": "pattern"},
             "color": {"type": "int", "label": "color"},
             "speed": {"type": "int", "label": "speed"},
-        }
+        },
     }
 
     return registry
@@ -354,10 +538,7 @@ def _lookup_node(interface, node_num) -> dict[str, Any]:
         node_id = "!" + format(int(node_num) & 0xFFFFFFFF, "08x")
         nodes = getattr(interface, "nodes", None) or {}
         return (
-            nodes.get(node_id)
-            or nodes.get(node_num)
-            or nodes.get(str(node_num))
-            or {}
+            nodes.get(node_id) or nodes.get(node_num) or nodes.get(str(node_num)) or {}
         )
     except (TypeError, ValueError):
         return {}
@@ -380,7 +561,10 @@ def request_full_config(iface) -> None:
     if not callable(request):
         raise ValueError("requestConfig is not available on this library version")
 
-    for descriptor in (config_pb2.Config.DESCRIPTOR, module_config_pb2.ModuleConfig.DESCRIPTOR):
+    for descriptor in (
+        config_pb2.Config.DESCRIPTOR,
+        module_config_pb2.ModuleConfig.DESCRIPTOR,
+    ):
         for field in descriptor.fields:
             try:
                 request(field)
@@ -436,10 +620,14 @@ def read_device_config(interface) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to read owner info: %s", exc)
         config_dict["owner"] = {
-            "long_name": "", "short_name": "", "hw_model": "",
-            "firmware_version": "", "region": "", "role": "",
+            "long_name": "",
+            "short_name": "",
+            "hw_model": "",
+            "firmware_version": "",
+            "region": "",
+            "role": "",
         }
-    
+
     return config_dict
 
 
@@ -499,6 +687,7 @@ def _make_json_serializable(val: Any) -> Any:
 
     return val
 
+
 def serialize_config_sections(local_config, module_config) -> dict[str, Any]:
     """
     Serialize Config + ModuleConfig protobufs into a JSON-safe dict keyed by
@@ -514,12 +703,14 @@ def serialize_config_sections(local_config, module_config) -> dict[str, Any]:
     for section_name, section_info in CONFIG_REGISTRY.items():
         if section_info["category"] == "special":
             continue
-            
-        source_proto = local_config if section_info["category"] == "config" else module_config
-        
+
+        source_proto = (
+            local_config if section_info["category"] == "config" else module_config
+        )
+
         if hasattr(source_proto, section_name):
             section_obj = getattr(source_proto, section_name)
-            
+
             filtered_dict = {}
             for field_name, field_info in section_info["fields"].items():
                 if hasattr(section_obj, field_name):
@@ -527,7 +718,9 @@ def serialize_config_sections(local_config, module_config) -> dict[str, Any]:
                     if field_info["type"] == "enum":
                         # Convert enum integer to string name
                         try:
-                            enum_descriptor = section_obj.DESCRIPTOR.fields_by_name[field_name].enum_type
+                            enum_descriptor = section_obj.DESCRIPTOR.fields_by_name[
+                                field_name
+                            ].enum_type
                             enum_name = enum_descriptor.values_by_number[val].name
                             filtered_dict[field_name] = enum_name
                         except KeyError:
@@ -539,7 +732,7 @@ def serialize_config_sections(local_config, module_config) -> dict[str, Any]:
                             is_repeated=bool(field_info.get("repeated")),
                         )
                         filtered_dict[field_name] = _make_json_serializable(raw_val)
-            
+
             config_dict[section_name] = filtered_dict
         else:
             # Section not available in firmware (e.g., mesh_beacon on < 2.8)
@@ -590,7 +783,9 @@ def read_device_config_schema() -> dict[str, Any]:
     return _serialize_schema()
 
 
-def validate_and_apply_patch(section_name: str, patch: dict[str, Any], local_node, interface) -> tuple[bool, bool]:
+def validate_and_apply_patch(
+    section_name: str, patch: dict[str, Any], local_node, interface
+) -> tuple[bool, bool]:
     """
     Validates a patch against the registry and applies it to the protobuf object in memory,
     then writes to the radio.
@@ -598,21 +793,21 @@ def validate_and_apply_patch(section_name: str, patch: dict[str, Any], local_nod
     """
     if section_name not in CONFIG_REGISTRY:
         raise ValueError(f"Unknown section: {section_name}")
-        
+
     section_info = CONFIG_REGISTRY[section_name]
 
     # Special handling for owner
     if section_info["category"] == "special" and section_name == "owner":
         long_name = patch.get("long_name", "").strip()
         short_name = patch.get("short_name", "").strip()
-        
+
         if not long_name or not short_name:
             raise ValueError("Long name and short name cannot be empty")
         if len(long_name) > 39:
             raise ValueError("Long name cannot exceed 39 characters")
         if len(short_name) > 4:
             raise ValueError("Short name cannot exceed 4 characters")
-            
+
         # Write owner
         try:
             local_node.setOwner(long_name=long_name, short_name=short_name)
@@ -621,17 +816,30 @@ def validate_and_apply_patch(section_name: str, patch: dict[str, Any], local_nod
             raise ValueError("Invalid owner names provided") from None
         return True, False
 
-    source_proto = local_node.localConfig if section_info["category"] == "config" else local_node.moduleConfig
+    source_proto = (
+        local_node.localConfig
+        if section_info["category"] == "config"
+        else local_node.moduleConfig
+    )
     if not hasattr(source_proto, section_name):
         raise ValueError(f"Section {section_name} not available in firmware")
-        
+
     section_obj = getattr(source_proto, section_name)
-    
+
     # Check confirm requirement for danger zones
-    if section_name == "device" and patch.get("role") == "ROUTER" and not patch.pop("confirm", False):
+    if (
+        section_name == "device"
+        and patch.get("role") == "ROUTER"
+        and not patch.pop("confirm", False)
+    ):
         raise ValueError("Setting role to ROUTER requires 'confirm': true")
 
-    if section_name == "lora" and "tx_enabled" in patch and not patch["tx_enabled"] and not patch.pop("confirm", False):
+    if (
+        section_name == "lora"
+        and "tx_enabled" in patch
+        and not patch["tx_enabled"]
+        and not patch.pop("confirm", False)
+    ):
         raise ValueError("Disabling LoRa TX requires 'confirm': true")
 
     # Manual LoRa parameter gating: when use_preset is true (the default and
@@ -639,7 +847,12 @@ def validate_and_apply_patch(section_name: str, patch: dict[str, Any], local_nod
     # derived from the preset and must not be patched directly.
     if section_name == "lora":
         use_preset = patch.get("use_preset", getattr(section_obj, "use_preset", True))
-        manual_params = {"bandwidth", "spread_factor", "coding_rate", "frequency_offset"}
+        manual_params = {
+            "bandwidth",
+            "spread_factor",
+            "coding_rate",
+            "frequency_offset",
+        }
         touched_manual = manual_params & set(patch.keys())
         if use_preset and touched_manual:
             raise ValueError(
@@ -673,7 +886,7 @@ def validate_and_apply_patch(section_name: str, patch: dict[str, Any], local_nod
         if field_name not in section_info["fields"]:
             # Ignore extra fields like 'confirm' if they leak through, or just skip
             continue
-            
+
         field_info = section_info["fields"][field_name]
 
         # Field-level constraints from the registry (PII/danger zones aside),
@@ -681,14 +894,18 @@ def validate_and_apply_patch(section_name: str, patch: dict[str, Any], local_nod
         fmin = field_info.get("min")
         fmax = field_info.get("max")
         flen = field_info.get("max_length")
-        
+
         if field_info["type"] == "enum":
             if value not in field_info["options"]:
-                raise ValueError(f"Invalid enum value '{value}' for '{field_name}'. Options: {field_info['options']}")
-            enum_descriptor = section_obj.DESCRIPTOR.fields_by_name[field_name].enum_type
+                raise ValueError(
+                    f"Invalid enum value '{value}' for '{field_name}'. Options: {field_info['options']}"
+                )
+            enum_descriptor = section_obj.DESCRIPTOR.fields_by_name[
+                field_name
+            ].enum_type
             enum_val = enum_descriptor.values_by_name[value].number
             setattr(section_obj, field_name, enum_val)
-            
+
         elif field_info["type"] in ["int", "float"]:
             try:
                 cast = float if field_info["type"] == "float" else int
@@ -700,8 +917,9 @@ def validate_and_apply_patch(section_name: str, patch: dict[str, Any], local_nod
             if fmax is not None and value > fmax:
                 raise ValueError(f"'{field_name}' must be <= {fmax}")
             setattr(section_obj, field_name, value)
-            
+
         elif field_info["type"] == "bytes":
+
             def decode_b64(s, _field_name=field_name):
                 try:
                     return base64.b64decode(s, validate=False)
@@ -717,18 +935,25 @@ def validate_and_apply_patch(section_name: str, patch: dict[str, Any], local_nod
 
         elif field_info["type"] == "bool":
             setattr(section_obj, field_name, bool(value))
-            
+
         elif field_info["type"] == "string":
             value = str(value)
             if flen is not None and len(value) > flen:
                 raise ValueError(f"'{field_name}' exceeds max length {flen}")
             setattr(section_obj, field_name, value)
-            
+
     # Write to device
     local_node.writeConfig(section_name)
-            
+
     # Conservative reboot defaults
-    reboot_sections = ["device", "lora", "position", "network", "mesh_beacon", "security"]
+    reboot_sections = [
+        "device",
+        "lora",
+        "position",
+        "network",
+        "mesh_beacon",
+        "security",
+    ]
     reboot_required = section_name in reboot_sections
-    
+
     return True, reboot_required

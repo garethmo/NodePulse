@@ -10,6 +10,7 @@ Provides automation actions for each tracked Meshtastic node device:
 These are the UI-friendly equivalents of the integration-level services,
 scoped to the device they are invoked from.
 """
+
 import logging
 from typing import Any, Dict, List
 

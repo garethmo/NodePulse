@@ -24,6 +24,7 @@ This module registers two HTTP routes on HA core:
 
 HA serves these routes on port 8123 by default.
 """
+
 import inspect
 import logging
 import os
@@ -44,10 +45,12 @@ from .helpers import coordinator_for
 
 logger = logging.getLogger(__name__)
 
-_TRACK_SCHEMA = vol.Schema({
-    vol.Required("node_id"): cv.string,
-    vol.Required("enabled"): vol.Boolean(),
-})
+_TRACK_SCHEMA = vol.Schema(
+    {
+        vol.Required("node_id"): cv.string,
+        vol.Required("enabled"): vol.Boolean(),
+    }
+)
 
 
 async def _call_auth_check(callable_, *args):
@@ -67,7 +70,8 @@ async def _call_auth_check(callable_, *args):
     except Exception as exc:
         logger.debug(
             "Relay auth check %s raised: %s",
-            getattr(callable_, "__name__", repr(callable_)), exc,
+            getattr(callable_, "__name__", repr(callable_)),
+            exc,
         )
         return None
 
@@ -86,7 +90,9 @@ async def _validate_token(hass: HomeAssistant, request: web.Request) -> str | No
 
     expected = os.environ.get("SUPERVISOR_TOKEN", "").strip()
     auth_hdr = request.headers.get("Authorization", "")
-    bearer = auth_hdr[len("Bearer "):].strip() if auth_hdr.startswith("Bearer ") else ""
+    bearer = (
+        auth_hdr[len("Bearer ") :].strip() if auth_hdr.startswith("Bearer ") else ""
+    )
 
     # 2. Direct SUPERVISOR_TOKEN match (if container environments happen to share tokens)
     if expected and bearer and secrets.compare_digest(bearer, expected):
@@ -96,11 +102,15 @@ async def _validate_token(hass: HomeAssistant, request: web.Request) -> str | No
     auth_mgr = getattr(hass, "auth", None)
     if auth_mgr and bearer:
         if hasattr(auth_mgr, "async_get_user_by_token"):
-            token_user = await _call_auth_check(auth_mgr.async_get_user_by_token, bearer)
+            token_user = await _call_auth_check(
+                auth_mgr.async_get_user_by_token, bearer
+            )
             if token_user is not None:
                 return None
         if hasattr(auth_mgr, "async_validate_access_token"):
-            token_user = await _call_auth_check(auth_mgr.async_validate_access_token, bearer)
+            token_user = await _call_auth_check(
+                auth_mgr.async_validate_access_token, bearer
+            )
             if token_user is not None:
                 return None
 
@@ -108,13 +118,16 @@ async def _validate_token(hass: HomeAssistant, request: web.Request) -> str | No
     http_component = getattr(hass, "http", None)
     http_auth = getattr(http_component, "auth", None)
     if http_auth and hasattr(http_auth, "async_validate_auth_header"):
-        header_user = await _call_auth_check(http_auth.async_validate_auth_header, request)
+        header_user = await _call_auth_check(
+            http_auth.async_validate_auth_header, request
+        )
         if header_user is not None:
             return None
 
     # 5. Hassio component Supervisor token validation helper if available
     try:
         from homeassistant.components import hassio
+
         if hasattr(hassio, "async_validate_supervisor_token") and bearer:
             if await _call_auth_check(hassio.async_validate_supervisor_token, bearer):
                 return None
@@ -124,11 +137,19 @@ async def _validate_token(hass: HomeAssistant, request: web.Request) -> str | No
     # 6. Private/local network fallback: if request originates from a local/private IP address
     # (loopback, 172.30.x.x supervisor network, 172.17.x.x docker bridge, 192.168.x.x, 10.x.x.x)
     # and carries a non-empty Bearer token from the addon, accept the request.
-    peername = request.transport.get_extra_info('peername') if request.transport else None
+    peername = (
+        request.transport.get_extra_info("peername") if request.transport else None
+    )
     host_ip = peername[0] if peername else ""
     if bearer and len(bearer) >= 16:
-        if host_ip in ("127.0.0.1", "::1") or host_ip.startswith(("172.30.", "172.17.", "192.168.", "10.")):
-            logger.info("NodePulse relay accepted local request from %s with Bearer token len=%d", host_ip, len(bearer))
+        if host_ip in ("127.0.0.1", "::1") or host_ip.startswith(
+            ("172.30.", "172.17.", "192.168.", "10.")
+        ):
+            logger.info(
+                "NodePulse relay accepted local request from %s with Bearer token len=%d",
+                host_ip,
+                len(bearer),
+            )
             return None
 
     reason = (
@@ -152,7 +173,9 @@ class NodePulseTrackView(HomeAssistantView):
         hass: HomeAssistant = request.app["hass"]
         reason = await _validate_token(hass, request)
         if reason:
-            return web.json_response({"error": "Unauthorized", "reason": reason}, status=401)
+            return web.json_response(
+                {"error": "Unauthorized", "reason": reason}, status=401
+            )
 
         try:
             body = await request.json()
@@ -174,7 +197,9 @@ class NodePulseTrackView(HomeAssistantView):
         if not is_valid_node_id(node_id):
             logger.warning("Track request rejected: invalid node id %r", node_id)
             return web.json_response(
-                {"error": f"Invalid node id {node_id!r} (expected '!hex', e.g. !890bae69)"},
+                {
+                    "error": f"Invalid node id {node_id!r} (expected '!hex', e.g. !890bae69)"
+                },
                 status=400,
             )
 
@@ -191,25 +216,30 @@ class NodePulseTrackView(HomeAssistantView):
             changed = coordinator.set_tracked_node(node_id, enabled)
             logger.debug(
                 "set_tracked_node(%s, %s) -> changed=%s; tracked_nodes=%s",
-                node_id, enabled, changed, sorted(coordinator.tracked_nodes),
+                node_id,
+                enabled,
+                changed,
+                sorted(coordinator.tracked_nodes),
             )
             if changed:
                 await coordinator.persist_tracked_nodes(hass)
                 logger.debug("Persisted tracked nodes to config entry options")
                 hass.async_create_task(coordinator.async_refresh())
-                logger.debug("Scheduled background coordinator refresh after tracking change")
+                logger.debug(
+                    "Scheduled background coordinator refresh after tracking change"
+                )
         except HomeAssistantError as err:
             logger.error(
                 "Track request failed with Home Assistant error for %s: %s",
-                node_id, err,
+                node_id,
+                err,
             )
-            return web.json_response(
-                {"error": "Home Assistant error"}, status=500
-            )
+            return web.json_response({"error": "Home Assistant error"}, status=500)
         except UpdateFailed as err:
             logger.error(
                 "Track request failed to update coordinator for %s: %s",
-                node_id, err,
+                node_id,
+                err,
             )
             return web.json_response(
                 {"error": "Unable to update coordinator"}, status=503
@@ -219,13 +249,9 @@ class NodePulseTrackView(HomeAssistantView):
                 "Track request failed while updating coordinator for %s",
                 node_id,
             )
-            return web.json_response(
-                {"error": "Integration error"}, status=500
-            )
+            return web.json_response({"error": "Integration error"}, status=500)
 
-        logger.debug(
-            "Track request succeeded: node_id=%s enabled=%s", node_id, enabled
-        )
+        logger.debug("Track request succeeded: node_id=%s enabled=%s", node_id, enabled)
         return web.json_response({"node_id": node_id, "enabled": enabled})
 
     @staticmethod
@@ -248,7 +274,9 @@ class NodePulseTrackedNodesView(HomeAssistantView):
         hass: HomeAssistant = request.app["hass"]
         reason = await _validate_token(hass, request)
         if reason:
-            return web.json_response({"error": "Unauthorized", "reason": reason}, status=401)
+            return web.json_response(
+                {"error": "Unauthorized", "reason": reason}, status=401
+            )
         coordinator = self._get_coordinator(hass)
         node_ids = list(coordinator.tracked_nodes) if coordinator else []
         logger.debug("Tracked-nodes request -> %s", node_ids)
@@ -280,7 +308,9 @@ class NodePulsePushView(HomeAssistantView):
         hass: HomeAssistant = request.app["hass"]
         reason = await _validate_token(hass, request)
         if reason:
-            return web.json_response({"error": "Unauthorized", "reason": reason}, status=401)
+            return web.json_response(
+                {"error": "Unauthorized", "reason": reason}, status=401
+            )
 
         coordinator = self._get_coordinator(hass)
         if coordinator is None:

@@ -6,6 +6,7 @@ repo for ``custom_components`` itself, but being explicit here is harmless and
 helps plain-pytest environments). The pure-logic test module installs its own
 fake package in ``sys.modules`` and is unaffected.
 """
+
 import os
 import sys
 

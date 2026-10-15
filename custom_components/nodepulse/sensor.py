@@ -13,6 +13,7 @@ from the API are handled by the coordinator marking them unavailable.
 We use a simple "seen node IDs" set to avoid re-registering entities for
 nodes we've already set up in a previous poll cycle.
 """
+
 import logging
 from datetime import datetime, timezone
 from math import asin, cos, radians, sin, sqrt
@@ -105,10 +106,10 @@ async def async_setup_entry(
         node_id = node["id"]
         has_gps = node.get("latitude") is not None and node.get("longitude") is not None
         has_env = (
-            node.get("temperature") is not None or
-            node.get("relative_humidity") is not None or
-            node.get("barometric_pressure") is not None or
-            node.get("gas_resistance") is not None
+            node.get("temperature") is not None
+            or node.get("relative_humidity") is not None
+            or node.get("barometric_pressure") is not None
+            or node.get("gas_resistance") is not None
         )
 
         out = []
@@ -117,11 +118,28 @@ async def async_setup_entry(
             if isinstance(sensor, (NodeMessageReceivedSensor, NodeMessageSentSensor)):
                 out.append(sensor)
             # GPS sensors only if node has coordinates
-            elif isinstance(sensor, (NodeGpsSensor, NodeLatitudeSensor, NodeLongitudeSensor, NodeAltitudeSensor, NodeDistanceSensor)):
+            elif isinstance(
+                sensor,
+                (
+                    NodeGpsSensor,
+                    NodeLatitudeSensor,
+                    NodeLongitudeSensor,
+                    NodeAltitudeSensor,
+                    NodeDistanceSensor,
+                ),
+            ):
                 if has_gps:
                     out.append(sensor)
             # Environmental sensors only if node has environmental data
-            elif isinstance(sensor, (NodeTemperatureSensor, NodeHumiditySensor, NodePressureSensor, NodeGasResistanceSensor)):
+            elif isinstance(
+                sensor,
+                (
+                    NodeTemperatureSensor,
+                    NodeHumiditySensor,
+                    NodePressureSensor,
+                    NodeGasResistanceSensor,
+                ),
+            ):
                 if has_env:
                     out.append(sensor)
             # All other sensors (SNR, RSSI, hops, battery, etc.) always create
@@ -141,6 +159,7 @@ async def async_setup_entry(
 # ---------------------------------------------------------------------------
 # Aggregate sensor
 # ---------------------------------------------------------------------------
+
 
 class NodeCountSensor(CoordinatorEntity, SensorEntity):
     """Total number of nodes visible to the connected Meshtastic node."""
@@ -163,6 +182,7 @@ class NodeCountSensor(CoordinatorEntity, SensorEntity):
 # ---------------------------------------------------------------------------
 # Per-node sensor base class
 # ---------------------------------------------------------------------------
+
 
 class _NodeSensorBase(CoordinatorEntity, SensorEntity):
     """
@@ -234,6 +254,7 @@ class _NodeSensorBase(CoordinatorEntity, SensorEntity):
 # Concrete per-node sensors
 # ---------------------------------------------------------------------------
 
+
 class NodeSnrSensor(_NodeSensorBase):
     _metric_key = "snr"
     _attr_state_class = SensorStateClass.MEASUREMENT
@@ -270,6 +291,7 @@ class NodeHopsSensor(_NodeSensorBase):
 
 class NodeLastHeardSensor(_NodeSensorBase):
     """Reports the last-heard timestamp as a HA datetime sensor."""
+
     _metric_key = "last_heard"
     _attr_device_class = SensorDeviceClass.TIMESTAMP
     _attr_icon = "mdi:clock-outline"
@@ -306,6 +328,7 @@ class NodeBatterySensor(_NodeSensorBase):
 
 class NodeTemperatureSensor(_NodeSensorBase):
     """Environmental temperature (°C) reported by the node's telemetry, if any."""
+
     _metric_key = "temperature"
     _attr_device_class = SensorDeviceClass.TEMPERATURE
     _attr_state_class = SensorStateClass.MEASUREMENT
@@ -319,6 +342,7 @@ class NodeTemperatureSensor(_NodeSensorBase):
 
 class NodeHumiditySensor(_NodeSensorBase):
     """Environmental relative humidity (%) from the node's telemetry, if any."""
+
     _metric_key = "relative_humidity"
     _attr_device_class = SensorDeviceClass.HUMIDITY
     _attr_state_class = SensorStateClass.MEASUREMENT
@@ -332,6 +356,7 @@ class NodeHumiditySensor(_NodeSensorBase):
 
 class NodePressureSensor(_NodeSensorBase):
     """Barometric pressure (hPa) from the node's telemetry, if any."""
+
     _metric_key = "barometric_pressure"
     _attr_device_class = SensorDeviceClass.PRESSURE
     _attr_state_class = SensorStateClass.MEASUREMENT
@@ -350,6 +375,7 @@ class NodeGpsSensor(_NodeSensorBase):
     map cards can use. The sensor state shows "home" when the node has a GPS fix,
     while the coordinates are exposed as attributes (latitude, longitude, altitude).
     """
+
     _metric_key = "last_position_fix"
     _attr_icon = "mdi:map-marker"
 
@@ -370,8 +396,24 @@ class NodeGpsSensor(_NodeSensorBase):
         return None
 
     @property
+    def last_position_fix_dt(self) -> Optional[datetime]:
+        """Return the last position fix timestamp as an aware datetime."""
+        from datetime import datetime, timezone
+
+        node = self._get_node()
+        if node is None:
+            return None
+        epoch = as_float(node.get("last_position_fix"))
+        if epoch is None:
+            return None
+        try:
+            return datetime.fromtimestamp(epoch, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+
+    @property
     def extra_state_attributes(self) -> Dict[str, Any]:
-        """Expose GPS coordinates as attributes for Home Assistant maps."""
+        """Expose GPS coordinates and metrics as attributes for Home Assistant maps."""
         node = self._get_node()
         if not node:
             return {}
@@ -388,16 +430,35 @@ class NodeGpsSensor(_NodeSensorBase):
         if alt is not None:
             attrs["altitude"] = alt
 
-        # Also include the last position fix timestamp
+        # Also include the last position fix timestamp (as datetime)
         fix_time = node.get("last_position_fix")
         if fix_time is not None:
             attrs["last_position_fix"] = fix_time
+            attrs["last_position_fix_dt"] = self.last_position_fix_dt
+
+        # Include SNR and RSSI for signal quality context
+        attrs["snr"] = node.get("snr")
+        attrs["rssi"] = node.get("rssi")
+
+        # Include battery level if available
+        battery = node.get("battery_level")
+        if battery is not None:
+            attrs["battery_level"] = battery
+
+        # Distance from home (Euclidean distance from lat/lon = (0,0))
+        lat_is = lat is not None
+        lon_is = lon is not None
+        if lat_is and lon_is:
+            # Approximate distance in km: sqrt(lat² + lon²) * ~111 km/degree at equator
+            # Simplified: just return raw coords; HA map handles distance calc
+            attrs["distance_from_home"] = round((lat**2 + lon**2) ** 0.5, 2)
 
         return attrs
 
 
 class NodeLatitudeSensor(_NodeSensorBase):
     """GPS latitude (°) reported by the node's last position fix, if any."""
+
     _metric_key = "latitude"
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "°"
@@ -410,6 +471,7 @@ class NodeLatitudeSensor(_NodeSensorBase):
 
 class NodeLongitudeSensor(_NodeSensorBase):
     """GPS longitude (°) reported by the node's last position fix, if any."""
+
     _metric_key = "longitude"
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "°"
@@ -422,6 +484,7 @@ class NodeLongitudeSensor(_NodeSensorBase):
 
 class NodeAltitudeSensor(_NodeSensorBase):
     """GPS altitude (m) reported by the node's last position fix, if any."""
+
     _metric_key = "altitude"
     _attr_device_class = SensorDeviceClass.DISTANCE
     _attr_state_class = SensorStateClass.MEASUREMENT
@@ -435,6 +498,7 @@ class NodeAltitudeSensor(_NodeSensorBase):
 
 class NodeVoltageSensor(_NodeSensorBase):
     """Battery supply voltage (V) reported by the node's device metrics, if any."""
+
     _metric_key = "voltage"
     _attr_device_class = SensorDeviceClass.VOLTAGE
     _attr_state_class = SensorStateClass.MEASUREMENT
@@ -448,6 +512,7 @@ class NodeVoltageSensor(_NodeSensorBase):
 
 class NodeChannelUtilSensor(_NodeSensorBase):
     """Channel utilization (%) from the node's device metrics, if any."""
+
     _metric_key = "channel_utilization"
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = PERCENTAGE
@@ -460,6 +525,7 @@ class NodeChannelUtilSensor(_NodeSensorBase):
 
 class NodeAirUtilTxSensor(_NodeSensorBase):
     """Airtime utilization for TX (%) from the node's device metrics, if any."""
+
     _metric_key = "air_util_tx"
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = PERCENTAGE
@@ -472,6 +538,7 @@ class NodeAirUtilTxSensor(_NodeSensorBase):
 
 class NodeUptimeSensor(_NodeSensorBase):
     """Node uptime (seconds) reported by the device metrics, if any."""
+
     _metric_key = "uptime"
     _attr_device_class = SensorDeviceClass.DURATION
     _attr_state_class = SensorStateClass.MEASUREMENT
@@ -485,6 +552,7 @@ class NodeUptimeSensor(_NodeSensorBase):
 
 class NodeRoleSensor(_NodeSensorBase):
     """Meshtastic device role (e.g. CLIENT, ROUTER) for this node, if known."""
+
     _metric_key = "role"
     _attr_icon = "mdi:account-cog"
 
@@ -496,6 +564,7 @@ class NodeRoleSensor(_NodeSensorBase):
 
 class NodeGasResistanceSensor(_NodeSensorBase):
     """Gas resistance (MΩ) from the node's environment telemetry, if any."""
+
     _metric_key = "gas_resistance"
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "MOhms"
@@ -565,16 +634,25 @@ class NodeMessageSensor(_NodeSensorBase):
         """
         node_id = self._norm_node_id(self._node_id)
         if not node_id:
-            logger.debug("Message sensor: node_id normalization failed for %s", self._node_id)
+            logger.debug(
+                "Message sensor: node_id normalization failed for %s", self._node_id
+            )
             return []
         data = self.coordinator.data or {}
         index = data.get("messages_by_node")
         if index is None:
             messages: List[Dict[str, Any]] = data.get("messages", [])
-            logger.debug("Message sensor: messages_by_node index not available, using full message list (%d messages)", len(messages))
+            logger.debug(
+                "Message sensor: messages_by_node index not available, using full message list (%d messages)",
+                len(messages),
+            )
         else:
             messages = index.get(node_id, [])
-            logger.debug("Message sensor: found %d messages for node %s in index", len(messages), node_id)
+            logger.debug(
+                "Message sensor: found %d messages for node %s in index",
+                len(messages),
+                node_id,
+            )
 
         out = []
         for m in messages:
@@ -590,7 +668,10 @@ class NodeMessageSensor(_NodeSensorBase):
 
         logger.debug(
             "Message sensor: node=%s direction=%s matched %d messages (outgoing=%s)",
-            node_id, "sent" if self._outgoing else "received", len(out), self._outgoing
+            node_id,
+            "sent" if self._outgoing else "received",
+            len(out),
+            self._outgoing,
         )
         return out
 
@@ -605,7 +686,9 @@ class NodeMessageSensor(_NodeSensorBase):
         text = latest.get("text")
         logger.debug(
             "Message sensor native_value: node=%s direction=%s text=%s",
-            self._node_id, "sent" if self._outgoing else "received", text
+            self._node_id,
+            "sent" if self._outgoing else "received",
+            text,
         )
         return text
 
@@ -683,7 +766,11 @@ class NodeDistanceSensor(_NodeSensorBase):
         self_id = "!" + format(my_num & 0xFFFFFFFF, "08x")
         self_id_norm = normalize_node_id(self_id)
         self_node = self.coordinator.get_node(self_id_norm)
-        if not self_node or self_node.get("latitude") is None or self_node.get("longitude") is None:
+        if (
+            not self_node
+            or self_node.get("latitude") is None
+            or self_node.get("longitude") is None
+        ):
             return None
         R = 6371.0
         lat1, lon1 = radians(self_node["latitude"]), radians(self_node["longitude"])
@@ -767,6 +854,7 @@ class NodeSignalQualitySensor(_NodeSensorBase):
 # ---------------------------------------------------------------------------
 # Device info helpers
 # ---------------------------------------------------------------------------
+
 
 def _device_info(entry: ConfigEntry) -> Dict:
     """Device info dict for the NodePulse integration-level device."""

@@ -5,6 +5,7 @@ from playwright.async_api import Page, expect
 
 pytestmark = pytest.mark.asyncio
 
+
 async def test_web_ui_loads(async_page: Page, aio_server):
     """
     Verify that the dashboard loads and renders mocked node data.
@@ -25,16 +26,21 @@ async def test_web_ui_loads(async_page: Page, aio_server):
     await expect(async_page).to_have_title(re.compile("NodePulse"))
 
     # Use precise selector — the sidebar has exactly one nav-item per view.
-    await expect(async_page.locator("#sidebar .nav-item[data-view='nodes']")).to_be_visible()
+    await expect(
+        async_page.locator("#sidebar .nav-item[data-view='nodes']")
+    ).to_be_visible()
 
     try:
         names = await async_page.locator(".node-name").all_text_contents()
         print("FOUND NODE NAMES:", names)
-        assert any("Test Node" in n for n in names), f"Expected 'Test Node' in names, got: {names}"
+        assert any("Test Node" in n for n in names), (
+            f"Expected 'Test Node' in names, got: {names}"
+        )
     except Exception as e:
         print("JS ERRORS:", js_errors)
         print("CONSOLE (last 20):", console_msgs[-20:])
         raise e
+
 
 async def test_web_ui_messages_tab(async_page: Page, aio_server):
     """Click the Messages tab and verify the thread panel is rendered."""
@@ -110,6 +116,7 @@ async def test_web_ui_pending_position_requests_state(async_page: Page, aio_serv
     # Verify we are still on the nodes view
     await expect(async_page.locator("#view-nodes")).to_be_visible()
 
+
 async def test_web_ui_settings_tab(async_page: Page, aio_server):
     """Click the Settings tab and verify the connection status reflects the mock."""
     server_url = f"http://{aio_server.host}:{aio_server.port}"
@@ -120,4 +127,6 @@ async def test_web_ui_settings_tab(async_page: Page, aio_server):
     await expect(async_page.locator("#view-settings")).to_be_visible()
     # mock_connection.get_status returns {"connected": True} so renderStatusBar
     # sets #settings-conn to "✓ Connected".
-    await expect(async_page.locator("#settings-conn:has-text('Connected')")).to_be_visible(timeout=5000)
+    await expect(
+        async_page.locator("#settings-conn:has-text('Connected')")
+    ).to_be_visible(timeout=5000)

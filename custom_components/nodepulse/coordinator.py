@@ -10,6 +10,7 @@ the N-calls-per-N-entities anti-pattern.
 On a failed fetch, HA's coordinator raises UpdateFailed, which marks all
 entities as "unavailable" automatically — no per-entity error handling needed.
 """
+
 import asyncio
 import logging
 from datetime import timedelta
@@ -70,7 +71,9 @@ class NodePulseCoordinator(DataUpdateCoordinator):
 
         # Optional access key, forwarded to the addon as a request header so the
         # addon can authenticate with a node that requires it. Empty when unset.
-        self._access_key = (config_entry.data.get(CONF_ACCESS_KEY) or "").strip() or None
+        self._access_key = (
+            config_entry.data.get(CONF_ACCESS_KEY) or ""
+        ).strip() or None
 
         # Candidate host URLs to try when polling the addon. Starts with the
         # user-supplied host, then falls back to the standard supervisor addon
@@ -208,7 +211,8 @@ class NodePulseCoordinator(DataUpdateCoordinator):
             # Tolerate a raw string (e.g. older stored value) by normalising.
             return {
                 ("!" + p.strip().lower().lstrip("!"))
-                for p in raw.split(",") if p.strip()
+                for p in raw.split(",")
+                if p.strip()
             }
         return set(raw)
 
@@ -226,11 +230,14 @@ class NodePulseCoordinator(DataUpdateCoordinator):
         failure so callers (services, notify, device actions) can surface a
         meaningful error to the user.
         """
-        headers = {"X-NodePulse-Access-Key": self._access_key} if self._access_key else {}
+        headers = (
+            {"X-NodePulse-Access-Key": self._access_key} if self._access_key else {}
+        )
         headers["Content-Type"] = "application/json"
         timeout_cfg = aiohttp.ClientTimeout(connect=3, total=timeout)
         candidates = (
-            [self._working_host] + [c for c in self._host_candidates if c != self._working_host]
+            [self._working_host]
+            + [c for c in self._host_candidates if c != self._working_host]
             if self._working_host
             else self._host_candidates
         )
@@ -276,9 +283,7 @@ class NodePulseCoordinator(DataUpdateCoordinator):
 
     async def async_trace_route(self, destination: str) -> bool:
         """Dispatch a traceroute towards a destination node."""
-        result = await self._post_json(
-            "/api/traceRoute", {"destination": destination}
-        )
+        result = await self._post_json("/api/traceRoute", {"destination": destination})
         return bool(result.get("dispatched"))
 
     async def async_request_push_refresh(self) -> None:
@@ -323,19 +328,25 @@ class NodePulseCoordinator(DataUpdateCoordinator):
                 self._session, candidates, self._access_key
             )
             if working and working != self._working_host:
-                logger.debug("NodePulse addon reached at %s — pinning as preferred host", working)
+                logger.debug(
+                    "NodePulse addon reached at %s — pinning as preferred host", working
+                )
                 self._working_host = working
 
             logger.info(
                 "NodePulse fetch: %d nodes, %d messages, %d channels from addon",
                 len(nodes) if nodes else 0,
                 len(messages) if messages else 0,
-                len(channels) if channels else 0
+                len(channels) if channels else 0,
             )
         except aiohttp.ClientError as exc:
-            raise UpdateFailed(f"Network error reaching addon at {self._host}: {exc}") from exc
+            raise UpdateFailed(
+                f"Network error reaching addon at {self._host}: {exc}"
+            ) from exc
         except Exception as exc:
-            raise UpdateFailed(f"Unexpected error fetching NodePulse data: {exc}") from exc
+            raise UpdateFailed(
+                f"Unexpected error fetching NodePulse data: {exc}"
+            ) from exc
 
         # Apply the integration-level ignored_nodes filter. The addon already
         # filters on its own ignored_nodes config; this mirrors it on the HA
@@ -346,26 +357,29 @@ class NodePulseCoordinator(DataUpdateCoordinator):
         if ignored:
             nodes = [n for n in nodes if n.get("id") not in ignored]
             messages = [
-                m for m in messages
+                m
+                for m in messages
                 if m.get("from_id") not in ignored and m.get("to_id") not in ignored
             ]
 
         logger.debug(
             "NodePulse data refreshed (host=%s, node_count=%s, message_count=%s)",
-            self._host, len(nodes), len(messages) if messages else 0,
+            self._host,
+            len(nodes),
+            len(messages) if messages else 0,
         )
         # Log GPS coordinates for tracked nodes to help debug map updates
         for node in nodes[:5]:  # Log first 5 nodes to avoid spam
             if node.get("latitude") is not None and node.get("longitude") is not None:
                 logger.debug(
                     "Node %s GPS: lat=%s lng=%s alt=%s",
-                    node.get("id"), node.get("latitude"), node.get("longitude"), node.get("altitude")
+                    node.get("id"),
+                    node.get("latitude"),
+                    node.get("longitude"),
+                    node.get("altitude"),
                 )
         if messages:
-            logger.debug(
-                "NodePulse messages sample: %s",
-                messages[:2]
-            )
+            logger.debug("NodePulse messages sample: %s", messages[:2])
             # Log node IDs in messages to help debug
             message_node_ids = set()
             for m in messages[:5]:
@@ -373,13 +387,17 @@ class NodePulseCoordinator(DataUpdateCoordinator):
                     message_node_ids.add(normalize_node_id(m.get("from_id")))
                 if m.get("to_id"):
                     message_node_ids.add(normalize_node_id(m.get("to_id")))
-            logger.debug("NodePulse message node IDs (first 5 messages): %s", sorted(message_node_ids))
+            logger.debug(
+                "NodePulse message node IDs (first 5 messages): %s",
+                sorted(message_node_ids),
+            )
 
         # Track which message IDs we've already surfaced so we can hand only the
         # newly-arrived ones to the logbook and device-trigger subsystems.
         if self._messages_initialized:
             new_messages = [
-                m for m in messages
+                m
+                for m in messages
                 if self._message_key(m) not in self._seen_message_ids
             ]
         else:
@@ -401,7 +419,8 @@ class NodePulseCoordinator(DataUpdateCoordinator):
                 "Suppressing message-replay flood: %s 'new' messages detected in "
                 "one poll (likely an addon restart or dedup reset). Surfacing only "
                 "the most recent %s.",
-                len(new_messages), _NEW_MESSAGE_REPLAY_THRESHOLD,
+                len(new_messages),
+                _NEW_MESSAGE_REPLAY_THRESHOLD,
             )
             new_messages = new_messages[-_NEW_MESSAGE_REPLAY_THRESHOLD:]
 
@@ -449,7 +468,7 @@ class NodePulseCoordinator(DataUpdateCoordinator):
         logger.debug(
             "Coordinator: built messages_by_node index with %d nodes, %d total messages",
             len(messages_by_node),
-            len(messages)
+            len(messages),
         )
 
         return {
@@ -502,7 +521,9 @@ async def _fetch_all(
     )
 
 
-async def _get_json(session: aiohttp.ClientSession, url: str, access_key: str | None = None) -> Any:
+async def _get_json(
+    session: aiohttp.ClientSession, url: str, access_key: str | None = None
+) -> Any:
     """
     Perform a GET request and return parsed JSON, raising on HTTP errors.
 

@@ -33,6 +33,7 @@ default — free, no API key, supports batch lookups and returns JSON. The URL
 is configurable (terrain_dem_url) so installs behind a restrictive network can
 point at a compatible endpoint or a self-hosted proxy.
 """
+
 import asyncio
 import logging
 import math
@@ -62,7 +63,10 @@ _MAX_CACHE = 2048
 # Pure geometry / radio math (unit-testable without network)
 # ---------------------------------------------------------------------------
 
-def great_circle_distance_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+
+def great_circle_distance_m(
+    lat1: float, lng1: float, lat2: float, lng2: float
+) -> float:
     """Great-circle distance in metres (haversine)."""
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
     dphi = math.radians(lat2 - lat1)
@@ -97,7 +101,10 @@ def intermediate_point(lat1: float, lng1: float, lat2: float, lng2: float, frac:
     lng = math.degrees(math.atan2(y, x))
     return lat, lng
 
-def destination_point(lat: float, lng: float, distance_m: float, bearing_deg: float) -> tuple[float, float]:
+
+def destination_point(
+    lat: float, lng: float, distance_m: float, bearing_deg: float
+) -> tuple[float, float]:
     """Calculate the destination point given distance and bearing from start point."""
     R = _EARTH_RADIUS_M
     d = distance_m / R
@@ -105,8 +112,13 @@ def destination_point(lat: float, lng: float, distance_m: float, bearing_deg: fl
     phi1 = math.radians(lat)
     lam1 = math.radians(lng)
 
-    phi2 = math.asin(math.sin(phi1)*math.cos(d) + math.cos(phi1)*math.sin(d)*math.cos(theta))
-    lam2 = lam1 + math.atan2(math.sin(theta)*math.sin(d)*math.cos(phi1), math.cos(d)-math.sin(phi1)*math.sin(phi2))
+    phi2 = math.asin(
+        math.sin(phi1) * math.cos(d) + math.cos(phi1) * math.sin(d) * math.cos(theta)
+    )
+    lam2 = lam1 + math.atan2(
+        math.sin(theta) * math.sin(d) * math.cos(phi1),
+        math.cos(d) - math.sin(phi1) * math.sin(phi2),
+    )
 
     return math.degrees(phi2), math.degrees(lam2)
 
@@ -116,7 +128,9 @@ def wavelength_m(freq_mhz: float) -> float:
     return _SPEED_OF_LIGHT_M_S / (freq_mhz * 1e6)
 
 
-def earth_bulge_m(d1_m: float, d2_m: float, k_factor: float = _DEFAULT_K_FACTOR) -> float:
+def earth_bulge_m(
+    d1_m: float, d2_m: float, k_factor: float = _DEFAULT_K_FACTOR
+) -> float:
     """Earth-curvature bulge at a point d1 from the Tx, d2 from the Rx."""
     return (d1_m * d2_m) / (2 * k_factor * _EARTH_RADIUS_M)
 
@@ -133,8 +147,10 @@ def free_space_path_loss_db(distance_m: float, freq_mhz: float) -> float:
     """Free-space path loss in dB between two isotropic antennas."""
     if distance_m <= 0:
         return 0.0
-    return 20 * math.log10(distance_m) + 20 * math.log10(freq_mhz * 1e6) + 20 * math.log10(
-        4 * math.pi / _SPEED_OF_LIGHT_M_S
+    return (
+        20 * math.log10(distance_m)
+        + 20 * math.log10(freq_mhz * 1e6)
+        + 20 * math.log10(4 * math.pi / _SPEED_OF_LIGHT_M_S)
     )
 
 
@@ -233,17 +249,19 @@ def analyze_link(
             min_clearance_ratio = ratio
             worst_point_index = i
 
-        points.append({
-            "fraction": round(frac, 5),
-            "distance_m": round(d1_m, 1),
-            "elevation_m": round(ground, 1),
-            "clutter_height_m": round(clutter_height_m, 1),
-            "beam_height_m": round(beam, 1),
-            "earth_bulge_m": round(bulge, 1),
-            "fresnel_radius_m": round(r1, 1),
-            "clearance_m": round(clearance, 1),
-            "clearance_ratio": round(ratio, 3),
-        })
+        points.append(
+            {
+                "fraction": round(frac, 5),
+                "distance_m": round(d1_m, 1),
+                "elevation_m": round(ground, 1),
+                "clutter_height_m": round(clutter_height_m, 1),
+                "beam_height_m": round(beam, 1),
+                "earth_bulge_m": round(bulge, 1),
+                "fresnel_radius_m": round(r1, 1),
+                "clearance_m": round(clearance, 1),
+                "clearance_ratio": round(ratio, 3),
+            }
+        )
 
     budget = compute_link_budget(
         distance_m=total_m,
@@ -278,7 +296,8 @@ def analyze_link(
 
 async def analyze_coverage(
     terrain_svc,
-    lat: float, lng: float,
+    lat: float,
+    lng: float,
     radius_m: float,
     freq_mhz: float,
     tx_power_dbm: float,
@@ -301,42 +320,45 @@ async def analyze_coverage(
     """
     radials_points = []
     all_points = []
-    
+
     for i in range(radial_count):
         bearing = i * (360.0 / radial_count)
         end_lat, end_lng = destination_point(lat, lng, radius_m, bearing)
-        pts = [intermediate_point(lat, lng, end_lat, end_lng, j / (samples_per_radial - 1)) for j in range(samples_per_radial)]
+        pts = [
+            intermediate_point(lat, lng, end_lat, end_lng, j / (samples_per_radial - 1))
+            for j in range(samples_per_radial)
+        ]
         radials_points.append(pts)
         all_points.extend(pts)
-        
+
     all_elevations = await terrain_svc.get_elevations(all_points)
-    
+
     poly_strong = []
     poly_medium = []
     poly_weak = []
     idx = 0
-    
+
     for pts in radials_points:
         elevs = all_elevations[idx : idx + samples_per_radial]
         idx += samples_per_radial
-        
+
         ground_tx = (elevs[0] or 0.0) + clutter_height_m
         beam_tx_m = ground_tx + tx_antenna_height_m
-        
+
         last_strong = pts[0]
         last_medium = pts[0]
         last_weak = pts[0]
-        
+
         for j in range(1, samples_per_radial):
             if elevs[j] is None:
                 continue
-                
+
             frac = j / (samples_per_radial - 1)
             dist = radius_m * frac
-            
+
             ground_rx = (elevs[j] or 0.0) + clutter_height_m
             beam_rx_m = ground_rx + rx_antenna_height_m
-            
+
             los_clear = True
             for k in range(1, j):
                 if elevs[k] is None:
@@ -349,45 +371,44 @@ async def analyze_coverage(
                 if beam < block:
                     los_clear = False
                     break
-                    
+
             if not los_clear:
                 break
-                
-            budget = compute_link_budget(dist, freq_mhz, tx_power_dbm, tx_gain_dbi, rx_gain_dbi, 0.0)
+
+            budget = compute_link_budget(
+                dist, freq_mhz, tx_power_dbm, tx_gain_dbi, rx_gain_dbi, 0.0
+            )
             rx_pwr = budget["rx_power_dbm"] - env_loss_db
-            
+
             if rx_pwr < rx_sensitivity_dbm:
                 break
-                
+
             last_weak = pts[j]
             if rx_pwr >= -120:
                 last_medium = pts[j]
             if rx_pwr >= -100:
                 last_strong = pts[j]
-            
+
         poly_strong.append({"lat": last_strong[0], "lng": last_strong[1]})
         poly_medium.append({"lat": last_medium[0], "lng": last_medium[1]})
         poly_weak.append({"lat": last_weak[0], "lng": last_weak[1]})
-        
+
     if poly_weak:
         poly_strong.append(poly_strong[0])
         poly_medium.append(poly_medium[0])
         poly_weak.append(poly_weak[0])
-        
+
     return {
         "center": {"lat": lat, "lng": lng},
         "radius_m": radius_m,
-        "polygons": {
-            "strong": poly_strong,
-            "medium": poly_medium,
-            "weak": poly_weak
-        }
+        "polygons": {"strong": poly_strong, "medium": poly_medium, "weak": poly_weak},
     }
 
 
 # ---------------------------------------------------------------------------
 # TerrainService — DEM elevation fetcher with an in-memory cache
 # ---------------------------------------------------------------------------
+
 
 class TerrainService:
     """Fetches ground elevations from a DEM web API with an LRU-style cache.
@@ -447,7 +468,9 @@ class TerrainService:
         self._cache_put(lat, lng, value)
         return value
 
-    async def get_elevations(self, points: list[tuple[float, float]]) -> list[float | None]:
+    async def get_elevations(
+        self, points: list[tuple[float, float]]
+    ) -> list[float | None]:
         """Return elevations for a list of (lat, lng) points.
 
         Cached points are served instantly; the remainder are fetched in one
@@ -470,31 +493,39 @@ class TerrainService:
                 self._cache_put(lat, lng, val)
         return results
 
-    async def _fetch_batch(self, points: list[tuple[float, float]]) -> list[float | None]:
+    async def _fetch_batch(
+        self, points: list[tuple[float, float]]
+    ) -> list[float | None]:
         """Query the DEM API for one or more points. Best-effort: returns None
         per point on any failure so terrain analysis never hard-crashes.
         Chunks requests to max 100 points to comply with OpenTopoData limits."""
         if not points:
             return []
-            
+
         chunk_size = 100
         results: list[float | None] = []
         try:
             session = await self._get_session()
             for i in range(0, len(points), chunk_size):
-                chunk = points[i:i+chunk_size]
+                chunk = points[i : i + chunk_size]
                 locations = "|".join(f"{lat},{lng}" for lat, lng in chunk)
                 url = f"{self._dem_url}?locations={locations}"
                 async with session.get(url) as resp:
                     if resp.status != 200:
-                        logger.warning("Terrain DEM lookup failed (HTTP %s) for %d points", resp.status, len(chunk))
+                        logger.warning(
+                            "Terrain DEM lookup failed (HTTP %s) for %d points",
+                            resp.status,
+                            len(chunk),
+                        )
                         results.extend([None] * len(chunk))
                         continue
                     data = await resp.json()
                     chunk_results = []
                     for entry in data.get("results", []) or []:
                         elev = entry.get("elevation")
-                        chunk_results.append(round(elev, 1) if isinstance(elev, (int, float)) else None)
+                        chunk_results.append(
+                            round(elev, 1) if isinstance(elev, (int, float)) else None
+                        )
                     while len(chunk_results) < len(chunk):
                         chunk_results.append(None)
                     results.extend(chunk_results)
@@ -504,7 +535,7 @@ class TerrainService:
             logger.warning("Terrain DEM lookup error: %s", exc)
             while len(results) < len(points):
                 results.append(None)
-                
+
         return results
 
     async def sample_path(
@@ -518,7 +549,10 @@ class TerrainService:
         """Sample ground elevation along the great-circle path between two
         points. Number of samples is clamped to [_MAX_SAMPLES]."""
         samples = max(2, min(int(samples), _MAX_SAMPLES))
-        points = [intermediate_point(lat1, lng1, lat2, lng2, i / (samples - 1)) for i in range(samples)]
+        points = [
+            intermediate_point(lat1, lng1, lat2, lng2, i / (samples - 1))
+            for i in range(samples)
+        ]
         return await self.get_elevations(points)
 
 
@@ -528,7 +562,11 @@ _MISS = object()
 
 def geojson_from_polygon(polygon: list[dict[str, Any]]) -> dict[str, Any]:
     """Convert a polygon ring (list of {lat, lng}) to a GeoJSON Feature geometry."""
-    coords = [(p["lng"], p["lat"]) for p in polygon if p.get("lat") is not None and p.get("lng") is not None]
+    coords = [
+        (p["lng"], p["lat"])
+        for p in polygon
+        if p.get("lat") is not None and p.get("lng") is not None
+    ]
     if len(coords) < 3:
         return {"type": "Polygon", "coordinates": []}
     return {"type": "Polygon", "coordinates": [coords]}
@@ -542,11 +580,13 @@ def export_coverage_geojson(result: dict[str, Any]) -> dict[str, Any]:
     for label, ring in polygons.items():
         if ring:
             geom = geojson_from_polygon(ring)
-            features.append({
-                "type": "Feature",
-                "properties": {"label": label, "radius_m": radius},
-                "geometry": geom,
-            })
+            features.append(
+                {
+                    "type": "Feature",
+                    "properties": {"label": label, "radius_m": radius},
+                    "geometry": geom,
+                }
+            )
     return {
         "type": "FeatureCollection",
         "features": features,
@@ -556,14 +596,21 @@ def export_coverage_geojson(result: dict[str, Any]) -> dict[str, Any]:
 async def export_coverage_kml(result: dict[str, Any]) -> str:
     """Export a coverage analysis result as KML (Polygon + Placemark for each ring)."""
     from xml.sax.saxutils import escape
+
     polygons = result.get("polygons", {})
     lines = []
     for label, ring in polygons.items():
         if not ring:
             continue
-        coords = " ".join(escape(f"{p['lng']} {p['lat']}") for p in ring if p.get("lat") is not None and p.get("lng") is not None)
+        coords = " ".join(
+            escape(f"{p['lng']} {p['lat']}")
+            for p in ring
+            if p.get("lat") is not None and p.get("lng") is not None
+        )
         if len(ring) >= 3:
-            lines.append(f"<Placemark><name>{escape(label)}</name><Polygon><outerBoundaryIs><LinearRing><tessellate>1</tessellate><coordinates>{coords}</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>")
+            lines.append(
+                f"<Placemark><name>{escape(label)}</name><Polygon><outerBoundaryIs><LinearRing><tessellate>1</tessellate><coordinates>{coords}</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>"
+            )
     kml_head = """<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2" xmlns:gx="http://www.google.com/kml/ext/2.2" xmlns:gx="http://www.google.com/kml/ext/2.2">
 <Document><name>NodePulse Coverage</name>"""

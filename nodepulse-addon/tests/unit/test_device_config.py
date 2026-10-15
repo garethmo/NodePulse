@@ -52,22 +52,44 @@ class TestRegistryValidation:
 class TestOwnerPatch:
     def test_owner_requires_both_names(self):
         node = FakeNode()
-        with pytest.raises(ValueError, match="Long name and short name cannot be empty"):
-            validate_and_apply_patch("owner", {"long_name": "  ", "short_name": "ab"}, node, _fake_interface())
+        with pytest.raises(
+            ValueError, match="Long name and short name cannot be empty"
+        ):
+            validate_and_apply_patch(
+                "owner",
+                {"long_name": "  ", "short_name": "ab"},
+                node,
+                _fake_interface(),
+            )
 
     def test_owner_long_name_too_long(self):
         node = FakeNode()
         with pytest.raises(ValueError, match="Long name cannot exceed 39 characters"):
-            validate_and_apply_patch("owner", {"long_name": "x" * 40, "short_name": "ab"}, node, _fake_interface())
+            validate_and_apply_patch(
+                "owner",
+                {"long_name": "x" * 40, "short_name": "ab"},
+                node,
+                _fake_interface(),
+            )
 
     def test_owner_short_name_too_long(self):
         node = FakeNode()
         with pytest.raises(ValueError, match="Short name cannot exceed 4 characters"):
-            validate_and_apply_patch("owner", {"long_name": "Valid", "short_name": "abcde"}, node, _fake_interface())
+            validate_and_apply_patch(
+                "owner",
+                {"long_name": "Valid", "short_name": "abcde"},
+                node,
+                _fake_interface(),
+            )
 
     def test_owner_valid(self):
         node = FakeNode()
-        ok, reboot = validate_and_apply_patch("owner", {"long_name": "Gateway", "short_name": "GTW"}, node, _fake_interface())
+        ok, reboot = validate_and_apply_patch(
+            "owner",
+            {"long_name": "Gateway", "short_name": "GTW"},
+            node,
+            _fake_interface(),
+        )
         assert ok is True
         assert reboot is False
         assert node.owner == {"long_name": "Gateway", "short_name": "GTW"}
@@ -79,8 +101,12 @@ class TestOwnerPatch:
 class TestConfirmGates:
     def test_role_router_requires_confirm(self):
         node = FakeNode()
-        with pytest.raises(ValueError, match="Setting role to ROUTER requires 'confirm': true"):
-            validate_and_apply_patch("device", {"role": "ROUTER"}, node, _fake_interface())
+        with pytest.raises(
+            ValueError, match="Setting role to ROUTER requires 'confirm': true"
+        ):
+            validate_and_apply_patch(
+                "device", {"role": "ROUTER"}, node, _fake_interface()
+            )
 
     def test_role_router_with_confirm_applies(self):
         node = FakeNode()
@@ -89,13 +115,19 @@ class TestConfirmGates:
         )
         assert ok is True
         assert reboot is True  # device section always requires a reboot
-        assert node.localConfig.device.role == config_pb2.Config.DeviceConfig.Role.ROUTER
+        assert (
+            node.localConfig.device.role == config_pb2.Config.DeviceConfig.Role.ROUTER
+        )
         assert "device" in node.written_sections
 
     def test_lora_tx_disabled_requires_confirm(self):
         node = FakeNode()
-        with pytest.raises(ValueError, match="Disabling LoRa TX requires 'confirm': true"):
-            validate_and_apply_patch("lora", {"tx_enabled": False}, node, _fake_interface())
+        with pytest.raises(
+            ValueError, match="Disabling LoRa TX requires 'confirm': true"
+        ):
+            validate_and_apply_patch(
+                "lora", {"tx_enabled": False}, node, _fake_interface()
+            )
 
     def test_lora_tx_disabled_with_confirm_applies(self):
         node = FakeNode()
@@ -111,7 +143,9 @@ class TestConfirmGates:
         validate_and_apply_patch(
             "device", {"role": "CLIENT", "confirm": True}, node, _fake_interface()
         )
-        assert node.localConfig.device.role == config_pb2.Config.DeviceConfig.Role.CLIENT
+        assert (
+            node.localConfig.device.role == config_pb2.Config.DeviceConfig.Role.CLIENT
+        )
 
 
 # ----------------------------------------------------------------------
@@ -122,7 +156,9 @@ class TestManualLoRaGating:
         node = FakeNode()
         node.localConfig.lora.use_preset = True
         with pytest.raises(ValueError, match="require 'use_preset': false"):
-            validate_and_apply_patch("lora", {"bandwidth": 125}, node, _fake_interface())
+            validate_and_apply_patch(
+                "lora", {"bandwidth": 125}, node, _fake_interface()
+            )
 
     def test_manual_params_allowed_when_use_preset_false(self):
         node = FakeNode()
@@ -149,7 +185,9 @@ class TestFieldConstraints:
     def test_invalid_enum_rejected(self):
         node = FakeNode()
         with pytest.raises(ValueError, match="Invalid enum value"):
-            validate_and_apply_patch("device", {"role": "NOT_A_ROLE"}, node, _fake_interface())
+            validate_and_apply_patch(
+                "device", {"role": "NOT_A_ROLE"}, node, _fake_interface()
+            )
 
     def test_numeric_out_of_range_rejected(self):
         node = FakeNode()
@@ -164,7 +202,9 @@ class TestFieldConstraints:
     def test_non_numeric_rejected(self):
         node = FakeNode()
         with pytest.raises(ValueError, match="must be a number"):
-            validate_and_apply_patch("lora", {"tx_power": "lots"}, node, _fake_interface())
+            validate_and_apply_patch(
+                "lora", {"tx_power": "lots"}, node, _fake_interface()
+            )
 
     def test_unknown_field_ignored(self):
         node = FakeNode()
@@ -172,11 +212,15 @@ class TestFieldConstraints:
             "device", {"role": "CLIENT", "not_a_real_field": 1}, node, _fake_interface()
         )
         assert ok is True
-        assert node.localConfig.device.role == config_pb2.Config.DeviceConfig.Role.CLIENT
+        assert (
+            node.localConfig.device.role == config_pb2.Config.DeviceConfig.Role.CLIENT
+        )
 
     def test_valid_numeric_applies(self):
         node = FakeNode()
-        ok, reboot = validate_and_apply_patch("lora", {"tx_power": 20}, node, _fake_interface())
+        ok, reboot = validate_and_apply_patch(
+            "lora", {"tx_power": 20}, node, _fake_interface()
+        )
         assert ok is True
         assert node.localConfig.lora.tx_power == 20
         assert reboot is True  # lora is a reboot section
@@ -184,11 +228,15 @@ class TestFieldConstraints:
     def test_string_length_enforced(self):
         node = FakeNode()
         with pytest.raises(ValueError, match="exceeds max length"):
-            validate_and_apply_patch("network", {"wifi_ssid": "x" * 33}, node, _fake_interface())
+            validate_and_apply_patch(
+                "network", {"wifi_ssid": "x" * 33}, node, _fake_interface()
+            )
 
     def test_non_reboot_section_reports_reboot_false(self):
         node = FakeNode()
-        ok, reboot = validate_and_apply_patch("telemetry", {"display_units": "METRIC"}, node, _fake_interface())
+        ok, reboot = validate_and_apply_patch(
+            "telemetry", {"display_units": "METRIC"}, node, _fake_interface()
+        )
         assert ok is True
         assert reboot is False
 
@@ -203,7 +251,9 @@ class TestMeshBeacon:
         # rather than crash on an unknown protobuf attribute.
         node = FakeNode()
         with pytest.raises(ValueError, match="not available in firmware"):
-            validate_and_apply_patch("mesh_beacon", {"flags": 3}, node, _fake_interface())
+            validate_and_apply_patch(
+                "mesh_beacon", {"flags": 3}, node, _fake_interface()
+            )
 
 
 # ----------------------------------------------------------------------
@@ -255,12 +305,17 @@ class TestSecurityBytes:
             _fake_interface(),
         )
         assert ok is True
-        assert list(node.localConfig.security.admin_key) == [b"\x01\x02\x03", b"\x04\x05\x06"]
+        assert list(node.localConfig.security.admin_key) == [
+            b"\x01\x02\x03",
+            b"\x04\x05\x06",
+        ]
 
     def test_apply_invalid_base64_rejected(self):
         node = FakeNode()
         with pytest.raises(ValueError, match="must be valid base64"):
-            validate_and_apply_patch("security", {"public_key": "!!!not-b64!!!"}, node, _fake_interface())
+            validate_and_apply_patch(
+                "security", {"public_key": "!!!not-b64!!!"}, node, _fake_interface()
+            )
 
     def test_empty_strings_stay_strings(self):
         # Empty string fields must never be mistaken for an empty repeated-bytes
@@ -276,5 +331,7 @@ class TestSecurityBytes:
         sec = node.localConfig.security
         sec.public_key = b"\xaa" * 32
         sections = serialize_config_sections(node.localConfig, node.moduleConfig)
-        assert sections["security"]["public_key"] == base64.b64encode(b"\xaa" * 32).decode("ascii")
+        assert sections["security"]["public_key"] == base64.b64encode(
+            b"\xaa" * 32
+        ).decode("ascii")
         assert sections["security"]["private_key"] == ""

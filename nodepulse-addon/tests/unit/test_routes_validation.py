@@ -11,6 +11,7 @@ Covers the critical validation paths that were previously untested:
   * handle_position_history
   * _relay_to_integration candidate ordering + working-URL cache
 """
+
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -22,7 +23,15 @@ from app import routes
 # ----------------------------------------------------------------------
 # Helper to create a mock aiohttp request
 # ----------------------------------------------------------------------
-def make_request(app_dict=None, method="GET", path="/", headers=None, body=None, query=None, match_info=None):
+def make_request(
+    app_dict=None,
+    method="GET",
+    path="/",
+    headers=None,
+    body=None,
+    query=None,
+    match_info=None,
+):
     """Create a mock aiohttp request."""
     request = MagicMock()
     request.method = method
@@ -61,7 +70,11 @@ def _conn(**overrides):
         "get_position_history": {"!12345678": []},
         "get_packet_log": [],
         "get_device_config": {"device": {}},
-        "set_device_config": {"applied": True, "section": "device", "reboot_required": False},
+        "set_device_config": {
+            "applied": True,
+            "section": "device",
+            "reboot_required": False,
+        },
         "reload_device_config": (True, ""),
         "get_security_scan": {"findings": [], "has_issues": False, "scanned_at": 0},
     }
@@ -94,7 +107,10 @@ class TestHandleSendValidation:
         request = make_request(app_dict={"connection": _conn()}, body={"text": "  "})
         resp = await routes.handle_send(request)
         assert resp.status == 400
-        assert json.loads(resp.body)["error"] == "'text' field is required and must not be empty"
+        assert (
+            json.loads(resp.body)["error"]
+            == "'text' field is required and must not be empty"
+        )
 
     @pytest.mark.asyncio
     async def test_missing_text_rejected(self):
@@ -114,14 +130,18 @@ class TestHandleSendValidation:
     @pytest.mark.asyncio
     async def test_channel_string_coerced(self):
         conn = _conn()
-        request = make_request(app_dict={"connection": conn}, body={"text": "hi", "channel": "2"})
+        request = make_request(
+            app_dict={"connection": conn}, body={"text": "hi", "channel": "2"}
+        )
         resp = await routes.handle_send(request)
         assert resp.status == 200
         conn.send_message.assert_called_once_with("hi", destination=None, channel=2)
 
     @pytest.mark.asyncio
     async def test_channel_non_integer_rejected(self):
-        request = make_request(app_dict={"connection": _conn()}, body={"text": "hi", "channel": "abc"})
+        request = make_request(
+            app_dict={"connection": _conn()}, body={"text": "hi", "channel": "abc"}
+        )
         resp = await routes.handle_send(request)
         assert resp.status == 400
         assert json.loads(resp.body)["error"] == "'channel' must be an integer"
@@ -129,38 +149,56 @@ class TestHandleSendValidation:
     @pytest.mark.asyncio
     async def test_channel_out_of_range_rejected(self):
         for bad in (-1, 8):
-            request = make_request(app_dict={"connection": _conn()}, body={"text": "hi", "channel": bad})
+            request = make_request(
+                app_dict={"connection": _conn()}, body={"text": "hi", "channel": bad}
+            )
             resp = await routes.handle_send(request)
             assert resp.status == 400
             assert json.loads(resp.body)["error"] == "'channel' must be between 0 and 7"
 
     @pytest.mark.asyncio
     async def test_schedule_at_invalid_timestamp(self):
-        request = make_request(app_dict={"connection": _conn(), "config": _config()},
-                               body={"text": "hi", "schedule_at": "not-a-number"})
+        request = make_request(
+            app_dict={"connection": _conn(), "config": _config()},
+            body={"text": "hi", "schedule_at": "not-a-number"},
+        )
         resp = await routes.handle_send(request)
         assert resp.status == 400
-        assert json.loads(resp.body)["error"] == "'schedule_at' must be a unix timestamp"
+        assert (
+            json.loads(resp.body)["error"] == "'schedule_at' must be a unix timestamp"
+        )
 
     @pytest.mark.asyncio
     async def test_schedule_at_disabled_in_config(self):
-        request = make_request(app_dict={"connection": _conn(), "config": _config(scheduled_messages_enabled=False)},
-                               body={"text": "hi", "schedule_at": 1720000000})
+        request = make_request(
+            app_dict={
+                "connection": _conn(),
+                "config": _config(scheduled_messages_enabled=False),
+            },
+            body={"text": "hi", "schedule_at": 1720000000},
+        )
         resp = await routes.handle_send(request)
         assert resp.status == 403
-        assert json.loads(resp.body)["error"] == "Scheduled messages are disabled in config"
+        assert (
+            json.loads(resp.body)["error"]
+            == "Scheduled messages are disabled in config"
+        )
 
     @pytest.mark.asyncio
     async def test_schedule_at_valid(self):
         conn = _conn()
         conn.schedule_message = MagicMock()
-        request = make_request(app_dict={"connection": conn, "config": _config()},
-                               body={"text": "hi", "destination": "!12345678", "schedule_at": 1720000000})
+        request = make_request(
+            app_dict={"connection": conn, "config": _config()},
+            body={"text": "hi", "destination": "!12345678", "schedule_at": 1720000000},
+        )
         resp = await routes.handle_send(request)
         assert resp.status == 200
         body = json.loads(resp.body)
         assert body == {"scheduled": True, "schedule_at": 1720000000.0}
-        conn.schedule_message.assert_called_once_with(1720000000.0, "!12345678", "hi", 0)
+        conn.schedule_message.assert_called_once_with(
+            1720000000.0, "!12345678", "hi", 0
+        )
 
     @pytest.mark.asyncio
     async def test_send_rejected_by_interface(self):
@@ -176,8 +214,10 @@ class TestHandleSendValidation:
 class TestHandleAddWaypointValidation:
     @pytest.mark.asyncio
     async def test_invalid_lat_rejected(self):
-        request = make_request(app_dict={"connection": _conn()},
-                               body={"name": "wp", "lat": "abc", "lng": 1.0})
+        request = make_request(
+            app_dict={"connection": _conn()},
+            body={"name": "wp", "lat": "abc", "lng": 1.0},
+        )
         resp = await routes.handle_add_waypoint(request)
         assert resp.status == 400
         assert json.loads(resp.body)["error"] == "lat and lng must be numbers"
@@ -206,16 +246,20 @@ class TestHandleUpdateWaypointValidation:
 
     @pytest.mark.asyncio
     async def test_empty_updates_rejected(self):
-        request = make_request(app_dict={"connection": _conn()}, body={},
-                               match_info={"waypoint_id": "wp1"})
+        request = make_request(
+            app_dict={"connection": _conn()}, body={}, match_info={"waypoint_id": "wp1"}
+        )
         resp = await routes.handle_update_waypoint(request)
         assert resp.status == 400
         assert json.loads(resp.body)["error"] == "No valid fields to update"
 
     @pytest.mark.asyncio
     async def test_invalid_lat_rejected(self):
-        request = make_request(app_dict={"connection": _conn()}, body={"lat": "abc"},
-                               match_info={"waypoint_id": "wp1"})
+        request = make_request(
+            app_dict={"connection": _conn()},
+            body={"lat": "abc"},
+            match_info={"waypoint_id": "wp1"},
+        )
         resp = await routes.handle_update_waypoint(request)
         assert resp.status == 400
         assert json.loads(resp.body)["error"] == "lat must be a number"
@@ -223,8 +267,11 @@ class TestHandleUpdateWaypointValidation:
     @pytest.mark.asyncio
     async def test_not_found(self):
         conn = _conn(update_waypoint=AsyncMock(return_value=None))
-        request = make_request(app_dict={"connection": conn}, body={"lat": 5.0},
-                               match_info={"waypoint_id": "missing"})
+        request = make_request(
+            app_dict={"connection": conn},
+            body={"lat": 5.0},
+            match_info={"waypoint_id": "missing"},
+        )
         resp = await routes.handle_update_waypoint(request)
         assert resp.status == 404
 
@@ -242,7 +289,9 @@ class TestHandleDeleteWaypointValidation:
     @pytest.mark.asyncio
     async def test_not_found(self):
         conn = _conn(delete_waypoint=AsyncMock(return_value=False))
-        request = make_request(app_dict={"connection": conn}, match_info={"waypoint_id": "missing"})
+        request = make_request(
+            app_dict={"connection": conn}, match_info={"waypoint_id": "missing"}
+        )
         resp = await routes.handle_delete_waypoint(request)
         assert resp.status == 404
 
@@ -253,24 +302,32 @@ class TestHandleDeleteWaypointValidation:
 class TestHandleSetTagsValidation:
     @pytest.mark.asyncio
     async def test_invalid_node_id_rejected(self):
-        request = make_request(app_dict={"connection": _conn()},
-                               body={"node_id": "bogus", "tags": ["x"]})
+        request = make_request(
+            app_dict={"connection": _conn()}, body={"node_id": "bogus", "tags": ["x"]}
+        )
         resp = await routes.handle_set_tags(request)
         assert resp.status == 400
-        assert json.loads(resp.body)["error"] == "'node_id' must be a valid node ID like '!abc12345'"
+        assert (
+            json.loads(resp.body)["error"]
+            == "'node_id' must be a valid node ID like '!abc12345'"
+        )
 
     @pytest.mark.asyncio
     async def test_tags_not_list_rejected(self):
-        request = make_request(app_dict={"connection": _conn()},
-                               body={"node_id": "!12345678", "tags": "not-a-list"})
+        request = make_request(
+            app_dict={"connection": _conn()},
+            body={"node_id": "!12345678", "tags": "not-a-list"},
+        )
         resp = await routes.handle_set_tags(request)
         assert resp.status == 400
 
     @pytest.mark.asyncio
     async def test_valid(self):
         conn = _conn()
-        request = make_request(app_dict={"connection": conn},
-                               body={"node_id": "!12345678", "tags": ["gateway"]})
+        request = make_request(
+            app_dict={"connection": conn},
+            body={"node_id": "!12345678", "tags": ["gateway"]},
+        )
         resp = await routes.handle_set_tags(request)
         assert resp.status == 200
         conn.set_tags.assert_called_once_with("!12345678", ["gateway"])
@@ -288,8 +345,13 @@ class TestHandleTrackNode:
 
     @pytest.mark.asyncio
     async def test_relay_success(self):
-        request = make_request(app_dict={"config": _config()}, body={"node_id": "!12345678", "enabled": True})
-        with patch.object(routes, "_relay_to_integration", new_callable=AsyncMock) as mock_relay:
+        request = make_request(
+            app_dict={"config": _config()},
+            body={"node_id": "!12345678", "enabled": True},
+        )
+        with patch.object(
+            routes, "_relay_to_integration", new_callable=AsyncMock
+        ) as mock_relay:
             resp = await routes.handle_track_node(request)
         assert resp.status == 200
         body = json.loads(resp.body)
@@ -300,8 +362,12 @@ class TestHandleTrackNode:
 
     @pytest.mark.asyncio
     async def test_relay_rejected_returns_502(self):
-        request = make_request(app_dict={"config": _config()}, body={"node_id": "!12345678"})
-        with patch.object(routes, "_relay_to_integration", new_callable=AsyncMock) as mock_relay:
+        request = make_request(
+            app_dict={"config": _config()}, body={"node_id": "!12345678"}
+        )
+        with patch.object(
+            routes, "_relay_to_integration", new_callable=AsyncMock
+        ) as mock_relay:
             mock_relay.side_effect = RuntimeError("No relay credential configured")
             resp = await routes.handle_track_node(request)
         assert resp.status == 502
@@ -320,7 +386,9 @@ class TestHandleGetDeviceConfig:
 
     @pytest.mark.asyncio
     async def test_not_connected_returns_503(self):
-        conn = _conn(get_device_config=AsyncMock(side_effect=ConnectionError("not connected")))
+        conn = _conn(
+            get_device_config=AsyncMock(side_effect=ConnectionError("not connected"))
+        )
         request = make_request(app_dict={"connection": conn})
         resp = await routes.handle_get_device_config(request)
         assert resp.status == 503
@@ -329,46 +397,67 @@ class TestHandleGetDeviceConfig:
 class TestHandlePutDeviceConfigSection:
     @pytest.mark.asyncio
     async def test_missing_section(self):
-        request = make_request(app_dict={"connection": _conn()}, body={"role": "ROUTER"})
+        request = make_request(
+            app_dict={"connection": _conn()}, body={"role": "ROUTER"}
+        )
         resp = await routes.handle_put_device_config_section(request)
         assert resp.status == 400
 
     @pytest.mark.asyncio
     async def test_empty_body(self):
-        request = make_request(app_dict={"connection": _conn()}, body={},
-                               match_info={"section": "device"})
+        request = make_request(
+            app_dict={"connection": _conn()}, body={}, match_info={"section": "device"}
+        )
         resp = await routes.handle_put_device_config_section(request)
         assert resp.status == 400
 
     @pytest.mark.asyncio
     async def test_non_dict_body(self):
-        request = make_request(app_dict={"connection": _conn()}, body=[1, 2],
-                               match_info={"section": "device"})
+        request = make_request(
+            app_dict={"connection": _conn()},
+            body=[1, 2],
+            match_info={"section": "device"},
+        )
         resp = await routes.handle_put_device_config_section(request)
         assert resp.status == 400
 
     @pytest.mark.asyncio
     async def test_validation_error_returns_400(self):
-        conn = _conn(set_device_config=AsyncMock(side_effect=ValueError("requires 'confirm': true")))
-        request = make_request(app_dict={"connection": conn}, body={"role": "ROUTER"},
-                               match_info={"section": "device"})
+        conn = _conn(
+            set_device_config=AsyncMock(
+                side_effect=ValueError("requires 'confirm': true")
+            )
+        )
+        request = make_request(
+            app_dict={"connection": conn},
+            body={"role": "ROUTER"},
+            match_info={"section": "device"},
+        )
         resp = await routes.handle_put_device_config_section(request)
         assert resp.status == 400
         assert json.loads(resp.body)["error"] == "requires 'confirm': true"
 
     @pytest.mark.asyncio
     async def test_not_connected_returns_503(self):
-        conn = _conn(set_device_config=AsyncMock(side_effect=ConnectionError("not connected")))
-        request = make_request(app_dict={"connection": conn}, body={"role": "ROUTER", "confirm": True},
-                               match_info={"section": "device"})
+        conn = _conn(
+            set_device_config=AsyncMock(side_effect=ConnectionError("not connected"))
+        )
+        request = make_request(
+            app_dict={"connection": conn},
+            body={"role": "ROUTER", "confirm": True},
+            match_info={"section": "device"},
+        )
         resp = await routes.handle_put_device_config_section(request)
         assert resp.status == 503
 
     @pytest.mark.asyncio
     async def test_success(self):
         conn = _conn()
-        request = make_request(app_dict={"connection": conn}, body={"role": "CLIENT"},
-                               match_info={"section": "device"})
+        request = make_request(
+            app_dict={"connection": conn},
+            body={"role": "CLIENT"},
+            match_info={"section": "device"},
+        )
         resp = await routes.handle_put_device_config_section(request)
         assert resp.status == 200
         body = json.loads(resp.body)
@@ -385,14 +474,20 @@ class TestHandleReloadDeviceConfig:
 
     @pytest.mark.asyncio
     async def test_not_connected(self):
-        conn = _conn(reload_device_config=AsyncMock(return_value=(False, "not_connected")))
+        conn = _conn(
+            reload_device_config=AsyncMock(return_value=(False, "not_connected"))
+        )
         request = make_request(app_dict={"connection": conn})
         resp = await routes.handle_reload_device_config(request)
         assert resp.status == 503
 
     @pytest.mark.asyncio
     async def test_request_failed(self):
-        conn = _conn(reload_device_config=AsyncMock(return_value=(False, "request_failed: timeout")))
+        conn = _conn(
+            reload_device_config=AsyncMock(
+                return_value=(False, "request_failed: timeout")
+            )
+        )
         request = make_request(app_dict={"connection": conn})
         resp = await routes.handle_reload_device_config(request)
         assert resp.status == 503
@@ -431,7 +526,9 @@ class TestHandlePositionHistory:
     @pytest.mark.asyncio
     async def test_with_node_id(self):
         conn = _conn()
-        request = make_request(app_dict={"connection": conn}, match_info={"node_id": "!12345678"})
+        request = make_request(
+            app_dict={"connection": conn}, match_info={"node_id": "!12345678"}
+        )
         resp = await routes.handle_position_history(request)
         assert resp.status == 200
         conn.get_position_history.assert_called_once_with("!12345678")
@@ -502,7 +599,9 @@ class TestRelayWaterfall:
         request = make_request(app_dict={"config": _config(ha_access_token="ll-tok-1")})
         session = _RecordingSession()
         with _patch_session(session), patch.dict("os.environ", {}, clear=True):
-            await routes._relay_to_integration(request, "GET", "/api/nodepulse/tracked-nodes")
+            await routes._relay_to_integration(
+                request, "GET", "/api/nodepulse/tracked-nodes"
+            )
         assert session.urls
         # The supervisor /core proxy is tried first — it is the only endpoint
         # where the SUPERVISOR_TOKEN credential is valid.
@@ -511,14 +610,18 @@ class TestRelayWaterfall:
     @pytest.mark.asyncio
     async def test_advances_until_success(self):
         request = make_request(app_dict={"config": _config(ha_access_token="ll-tok-1")})
+
         # First two supervisor candidates are unreachable; the third answers.
         def status_for_url(url):
             if "homeassistant" in url or "supervisor" in url:
                 raise OSError("connection refused")
             return 200
+
         session = _RecordingSession(status_for_url=status_for_url)
         with _patch_session(session), patch.dict("os.environ", {}, clear=True):
-            await routes._relay_to_integration(request, "GET", "/api/nodepulse/tracked-nodes")
+            await routes._relay_to_integration(
+                request, "GET", "/api/nodepulse/tracked-nodes"
+            )
         assert session.urls[0].startswith("http://supervisor/core")
         assert session.urls[1].startswith("http://homeassistant:8123")
         assert session.urls[2].startswith("http://supervisor:8123")
@@ -530,13 +633,17 @@ class TestRelayWaterfall:
         # First candidate works -> cached.
         session1 = _RecordingSession()
         with _patch_session(session1), patch.dict("os.environ", {}, clear=True):
-            await routes._relay_to_integration(request, "GET", "/api/nodepulse/tracked-nodes")
+            await routes._relay_to_integration(
+                request, "GET", "/api/nodepulse/tracked-nodes"
+            )
         assert routes._working_ha_base == "http://supervisor/core"
 
         # Second call should go straight to the cached URL (single request).
         session2 = _RecordingSession()
         with _patch_session(session2), patch.dict("os.environ", {}, clear=True):
-            await routes._relay_to_integration(request, "GET", "/api/nodepulse/tracked-nodes")
+            await routes._relay_to_integration(
+                request, "GET", "/api/nodepulse/tracked-nodes"
+            )
         assert len(session2.urls) == 1
         assert session2.urls[0].startswith("http://supervisor/core")
 
@@ -549,19 +656,31 @@ class TestRelayWaterfall:
             if "homeassistant" in url:
                 raise OSError("refused")
             return 200
+
         session = _RecordingSession(status_for_url=status_for_url)
         with _patch_session(session), patch.dict("os.environ", {}, clear=True):
-            await routes._relay_to_integration(request, "GET", "/api/nodepulse/tracked-nodes")
+            await routes._relay_to_integration(
+                request, "GET", "/api/nodepulse/tracked-nodes"
+            )
         # Cache cleared after failure, so it fell through to the fallback candidates.
         assert routes._working_ha_base != "http://homeassistant:8123"
 
     @pytest.mark.asyncio
     async def test_all_candidates_fail_raises(self):
         request = make_request(app_dict={"config": _config(ha_access_token="ll-tok-1")})
-        session = _RecordingSession(status_for_url=lambda url: (_ for _ in ()).throw(OSError("refused")))
-        with _patch_session(session), patch.dict("os.environ", {}, clear=True), \
-                pytest.raises(RuntimeError, match="Could not reach the NodePulse integration"):
-            await routes._relay_to_integration(request, "GET", "/api/nodepulse/tracked-nodes")
+        session = _RecordingSession(
+            status_for_url=lambda url: (_ for _ in ()).throw(OSError("refused"))
+        )
+        with (
+            _patch_session(session),
+            patch.dict("os.environ", {}, clear=True),
+            pytest.raises(
+                RuntimeError, match="Could not reach the NodePulse integration"
+            ),
+        ):
+            await routes._relay_to_integration(
+                request, "GET", "/api/nodepulse/tracked-nodes"
+            )
 
     @pytest.mark.asyncio
     async def test_401_retries_with_second_token(self):
@@ -583,6 +702,11 @@ class TestRelayWaterfall:
                 return _FakeResp(401, json.dumps({"error": "unauthorized"}))
 
         session = _HeaderAwareSession()
-        with _patch_session(session), patch.dict("os.environ", {"SUPERVISOR_TOKEN": "sup-tok-1"}, clear=True):
-            await routes._relay_to_integration(request, "GET", "/api/nodepulse/tracked-nodes")
+        with (
+            _patch_session(session),
+            patch.dict("os.environ", {"SUPERVISOR_TOKEN": "sup-tok-1"}, clear=True),
+        ):
+            await routes._relay_to_integration(
+                request, "GET", "/api/nodepulse/tracked-nodes"
+            )
         assert session.winning_auth == "Bearer ll-tok-2"

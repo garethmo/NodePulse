@@ -6,6 +6,7 @@ This module reads the Home Assistant addon options from the standard
 Centralizing config access here keeps all other modules free of file I/O
 and makes testing easier (just mock this module).
 """
+
 import dataclasses
 import json
 import logging
@@ -127,7 +128,7 @@ class Config:
     # is retained only for backward compatibility with existing configs and is
     # ignored by the relay logic. Default is False.
     disable_token_validation: bool = False
-    
+
     # MQTT Bridge Settings
     mqtt_enabled: bool = False
     mqtt_address: str = "mqtt.meshtastic.org"
@@ -148,14 +149,18 @@ class Config:
     telegram_enabled: bool = False
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""  # Deprecated: use telegram_authorized_chat_ids
-    telegram_authorized_chat_ids: list[str] = field(default_factory=list)  # List of authorized chat IDs (private and groups)
+    telegram_authorized_chat_ids: list[str] = field(
+        default_factory=list
+    )  # List of authorized chat IDs (private and groups)
     telegram_forward_channels: list[int] = field(default_factory=lambda: list(range(8)))
     telegram_forward_dms: bool = True
     telegram_allow_commands: bool = True
 
     # Auto Responder Settings
     auto_responder_enabled: bool = False
-    auto_responder_message: str = "Welcome to the mesh! You have been discovered by NodePulse."
+    auto_responder_message: str = (
+        "Welcome to the mesh! You have been discovered by NodePulse."
+    )
     auto_traceroute_enabled: bool = False
 
     # Scheduled Messages
@@ -226,17 +231,26 @@ def load_config() -> Config:
         telegram_bot_token=raw.get("telegram_bot_token", ""),
         telegram_chat_id=str(raw.get("telegram_chat_id", "")),
         # Support both old single chat_id and new list of authorized chat IDs
-        telegram_authorized_chat_ids=[str(x) for x in raw.get("telegram_authorized_chat_ids", []) if x],
+        telegram_authorized_chat_ids=[
+            str(x) for x in raw.get("telegram_authorized_chat_ids", []) if x
+        ],
         telegram_forward_channels=parse_int_list(
             raw.get("telegram_forward_channels", list(range(8))), list(range(8))
         ),
         telegram_forward_dms=bool(raw.get("telegram_forward_dms", True)),
         telegram_allow_commands=bool(raw.get("telegram_allow_commands", True)),
         auto_responder_enabled=bool(raw.get("auto_responder_enabled", False)),
-        auto_responder_message=str(raw.get("auto_responder_message", "Welcome to the mesh! You have been discovered by NodePulse.")),
+        auto_responder_message=str(
+            raw.get(
+                "auto_responder_message",
+                "Welcome to the mesh! You have been discovered by NodePulse.",
+            )
+        ),
         auto_traceroute_enabled=bool(raw.get("auto_traceroute_enabled", False)),
         scheduled_messages_enabled=bool(raw.get("scheduled_messages_enabled", True)),
-        terrain_dem_url=str(raw.get("terrain_dem_url") or "https://api.opentopodata.org/v1/srtm30m"),
+        terrain_dem_url=str(
+            raw.get("terrain_dem_url") or "https://api.opentopodata.org/v1/srtm30m"
+        ),
     )
 
     # Validate geo-filter bounds at load time so misconfigurations surface
@@ -251,8 +265,10 @@ def load_config() -> Config:
                 "mqtt_geo_filter_enabled is True but bounding box is invalid "
                 "(lat %s..%s, lng %s..%s) — geo filter will be DISABLED. "
                 "Set distinct lat_min < lat_max and lng_min < lng_max.",
-                config.mqtt_lat_min, config.mqtt_lat_max,
-                config.mqtt_lng_min, config.mqtt_lng_max,
+                config.mqtt_lat_min,
+                config.mqtt_lat_max,
+                config.mqtt_lng_min,
+                config.mqtt_lng_max,
             )
             config = dataclasses.replace(config, mqtt_geo_filter_enabled=False)
 

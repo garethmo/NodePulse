@@ -5,21 +5,22 @@ Centralises all string keys and default values used across the integration.
 Importing from here instead of repeating literals in every file prevents
 typo-driven bugs and makes refactoring trivial.
 """
+
 import re
 
 DOMAIN = "nodepulse"
 
 # Config entry keys
-CONF_HOST          = "host"
-CONF_ACCESS_KEY    = "access_key"
+CONF_HOST = "host"
+CONF_ACCESS_KEY = "access_key"
 CONF_SCAN_INTERVAL = "scan_interval"
 CONF_IGNORED_NODES = "ignored_nodes"
 CONF_TRACKED_NODES = "tracked_nodes"
 
 # Shared attribute / data keys
-ATTR_TEXT    = "text"
+ATTR_TEXT = "text"
 ATTR_CHANNEL = "channel"
-ATTR_TARGET  = "target"
+ATTR_TARGET = "target"
 
 # Defaults
 DEFAULT_SCAN_INTERVAL = 30  # seconds
@@ -30,14 +31,14 @@ DEFAULT_SCAN_INTERVAL = 30  # seconds
 PLATFORMS = ["binary_sensor", "sensor", "device_tracker", "notify"]
 
 # Data-field keys (addon JSON response)
-ATTR_NEIGHBORS          = "neighbors"
-ATTR_LINKS              = "links"
-ATTR_POSITION_FIXES     = "position_fixes"
-ATTR_TRACEROUTE         = "traceroute"
-ATTR_TAGS               = "tags"
+ATTR_NEIGHBORS = "neighbors"
+ATTR_LINKS = "links"
+ATTR_POSITION_FIXES = "position_fixes"
+ATTR_TRACEROUTE = "traceroute"
+ATTR_TAGS = "tags"
 ATTR_POSITION_FIX_COUNT = "position_fix_count"
-ATTR_DISTANCE_KM        = "distance_km"
-ATTR_NEIGHBOR_COUNT     = "neighbor_count"
+ATTR_DISTANCE_KM = "distance_km"
+ATTR_NEIGHBOR_COUNT = "neighbor_count"
 
 # A Meshtastic node id is "!" followed by 1-8 hex digits (e.g. "!890bae69").
 # Used to validate node ids before they are persisted into config-entry options

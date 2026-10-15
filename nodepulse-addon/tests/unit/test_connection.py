@@ -1,6 +1,7 @@
 """
 Unit tests for app/connection.py
 """
+
 import os
 import tempfile
 import time
@@ -40,6 +41,7 @@ class TestNodeIdFromNum:
 class TestChannelRoleName:
     def test_channel_role_name_with_protobuf(self):
         from meshtastic.protobuf.channel_pb2 import Channel
+
         assert connection._channel_role_name(Channel.Role.PRIMARY) == "PRIMARY"
         assert connection._channel_role_name(Channel.Role.SECONDARY) == "SECONDARY"
 
@@ -130,7 +132,11 @@ class TestAccessKey:
         mock_config = Mock()
         mock_config.mqtt_enabled = False
         conn = MeshtasticConnection(
-            host="localhost", port=4403, mode="tcp", access_key="old_key", config=mock_config
+            host="localhost",
+            port=4403,
+            mode="tcp",
+            access_key="old_key",
+            config=mock_config,
         )
         conn.set_access_key(None)
         assert conn._access_key is None
@@ -139,7 +145,11 @@ class TestAccessKey:
         mock_config = Mock()
         mock_config.mqtt_enabled = False
         conn = MeshtasticConnection(
-            host="localhost", port=4403, mode="tcp", access_key="old_key", config=mock_config
+            host="localhost",
+            port=4403,
+            mode="tcp",
+            access_key="old_key",
+            config=mock_config,
         )
         conn.set_access_key("")
         assert conn._access_key is None
@@ -210,7 +220,7 @@ class TestGetChannelsNoInterface:
 
 class TestNodeLookupLogic:
     """Tests for improved node lookup logic in message processing"""
-    
+
     def test_node_lookup_multiple_key_formats(self):
         """Test that node lookup tries multiple key formats"""
         mock_config = Mock()
@@ -218,26 +228,26 @@ class TestNodeLookupLogic:
         conn = MeshtasticConnection(
             host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
         )
-        
+
         # Mock interface with nodes dict keyed by different formats
         mock_interface = Mock()
         mock_interface.nodes = {
             12345: {"user": {"shortName": "Test", "longName": "TestNode"}},
             "!00003039": {"user": {"shortName": "StringKey", "longName": "StringNode"}},
-            "12345": {"user": {"shortName": "StringNum", "longName": "StringNumNode"}}
+            "12345": {"user": {"shortName": "StringNum", "longName": "StringNumNode"}},
         }
         conn._interface = mock_interface
-        
+
         # Test lookup by integer key
         node = conn._interface.nodes.get(12345)
         assert node is not None
         assert node["user"]["shortName"] == "Test"
-        
+
         # Test lookup by string hex key
         node = conn._interface.nodes.get("!00003039")
         assert node is not None
         assert node["user"]["shortName"] == "StringKey"
-        
+
         # Test lookup by string number key
         node = conn._interface.nodes.get("12345")
         assert node is not None
@@ -246,7 +256,7 @@ class TestNodeLookupLogic:
 
 class TestTracerouteDataPreservation:
     """Tests for traceroute data preservation during node refreshes"""
-    
+
     def test_traceroute_preserved_in_node_update(self):
         """Test that traceroute data is preserved when node data is refreshed"""
         mock_config = Mock()
@@ -254,21 +264,23 @@ class TestTracerouteDataPreservation:
         conn = MeshtasticConnection(
             host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
         )
-        
+
         # Add a node with traceroute data
         with conn._nodes_lock:
-            conn._nodes = [{
-                "id": "!00003039",
-                "short_name": "Test",
-                "long_name": "TestNode",
-                "traceroute": {
-                    "route": ["!00003039", "!00003040"],
-                    "timestamp": 1234567890
-                },
-                "latitude": 37.7749,
-                "longitude": -122.4194
-            }]
-        
+            conn._nodes = [
+                {
+                    "id": "!00003039",
+                    "short_name": "Test",
+                    "long_name": "TestNode",
+                    "traceroute": {
+                        "route": ["!00003039", "!00003040"],
+                        "timestamp": 1234567890,
+                    },
+                    "latitude": 37.7749,
+                    "longitude": -122.4194,
+                }
+            ]
+
         # Simulate node data refresh (this happens in _get_nodes_sync)
         # The new data from interface won't have traceroute, but we should preserve it
         with conn._nodes_lock:
@@ -281,14 +293,14 @@ class TestTracerouteDataPreservation:
                 "longitude": -122.4194,  # From interface
                 # Note: no traceroute in new interface data
             }
-            
+
             # This is the logic that should preserve traceroute
             prev = cached["!00003039"]
             prev_traceroute = prev.get("traceroute")
             entry.update(entry)
             if prev_traceroute is not None:
                 entry["traceroute"] = prev_traceroute
-        
+
         # Verify traceroute was preserved
         assert entry["traceroute"] is not None
         assert entry["traceroute"]["route"] == ["!00003039", "!00003040"]
@@ -505,71 +517,74 @@ class TestFavoriteDeviceCommunication:
             assert "!33333333" in conn._favorites
 
 
-
-
 class TestTraceroutePathConstruction:
     """Tests for traceroute path construction logic"""
-    
+
     def test_node_card_traceroute_no_duplicates(self):
         """Test that node card traceroute display doesn't create duplicate nodes in path"""
         # Simulate the formatHop function logic
         route = [12345, 67890]  # intermediate hops as integers
         from_id = "!abcd1234"
-        
+
         def formatHop(n):
-            return '!' + format(n & 0xFFFFFFFF, '08x')
+            return "!" + format(n & 0xFFFFFFFF, "08x")
+
         forward = [formatHop(n) for n in route]
-        
+
         # Add target node only if not already present
         if from_id and from_id not in forward:
             forward.append(from_id)
-        
+
         # Verify no duplicates
         assert len(forward) == len(set(forward))
-        assert "!abcd1234" in forward or "!00003039" in forward or "!000109b2" in forward
-        
+        assert (
+            "!abcd1234" in forward or "!00003039" in forward or "!000109b2" in forward
+        )
+
     def test_node_card_traceroute_includes_self(self):
         """Test that self node is included at the start of the path"""
         route = [12345]  # single intermediate hop
         from_id = "!abcd1234"
         self_id = "!00000001"
-        
+
         def formatHop(n):
-            return '!' + format(n & 0xFFFFFFFF, '08x')
+            return "!" + format(n & 0xFFFFFFFF, "08x")
+
         forward = [formatHop(n) for n in route]
-        
+
         # Add self at start if not already present
         if self_id not in forward:
             forward.insert(0, self_id)
-        
+
         # Add target node only if not already present
         if from_id and from_id not in forward:
             forward.append(from_id)
-        
+
         # Verify self is at start
         assert forward[0] == self_id
         # Verify target is at end
         assert forward[-1] == from_id
-        
+
     def test_traceroute_with_duplicate_handling(self):
         """Test traceroute handling when firmware includes self/target in route array"""
         # Case where firmware already includes self in route
         route = [1, 12345]  # self + intermediate hop
         from_id = "!abcd1234"
         self_id = "!00000001"
-        
+
         def formatHop(n):
-            return '!' + format(n & 0xFFFFFFFF, '08x')
+            return "!" + format(n & 0xFFFFFFFF, "08x")
+
         forward = [formatHop(n) for n in route]
-        
+
         # Should not add self again since it's already present
         if self_id not in forward:
             forward.insert(0, self_id)
-        
+
         # Add target node only if not already present
         if from_id and from_id not in forward:
             forward.append(from_id)
-        
+
         # Verify no duplicate self
         assert forward.count(self_id) == 1
         # Verify path length is correct
@@ -609,7 +624,14 @@ class TestAckHandling:
         conn = MeshtasticConnection(
             host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
         )
-        conn._capture_routing_ack({"id": "test_packet_id", "from": "!12345678", "to": "!87654321", "ack": True})
+        conn._capture_routing_ack(
+            {
+                "id": "test_packet_id",
+                "from": "!12345678",
+                "to": "!87654321",
+                "ack": True,
+            }
+        )
         assert True
 
     def test_expire_pending_acks(self):
@@ -657,6 +679,7 @@ class TestConstants:
     def test_data_dir_from_env(self):
         with patch.dict(os.environ, {"NODEPULSE_DATA_DIR": "/custom/data"}):
             import importlib
+
             importlib.reload(connection)
             assert connection._DATA_DIR == "/custom/data"
 
@@ -719,7 +742,10 @@ class TestGetStatus:
         conn._scheduled_messages_lock.__exit__ = MagicMock(return_value=None)
 
         with patch.object(conn, "_get_status_sync") as mock_get_status_sync:
-            mock_get_status_sync.return_value = {"connected": True, "my_info": {"id": "!12345678"}}
+            mock_get_status_sync.return_value = {
+                "connected": True,
+                "my_info": {"id": "!12345678"},
+            }
             result = await conn.get_status()
             assert result["connected"] is True
             assert "my_info" in result
@@ -794,7 +820,9 @@ class TestSendMessage:
         conn._connected = True
         with patch.object(conn, "_send_message_sync") as mock_send_sync:
             mock_send_sync.return_value = True
-            result = await conn.send_message("hello", destination="!12345678", channel=0)
+            result = await conn.send_message(
+                "hello", destination="!12345678", channel=0
+            )
             assert result is True
 
     @pytest.mark.asyncio
@@ -803,7 +831,9 @@ class TestSendMessage:
         conn._connected = True
         with patch.object(conn, "_send_message_sync") as mock_send_sync:
             mock_send_sync.return_value = False
-            result = await conn.send_message("hello", destination="!12345678", channel=0)
+            result = await conn.send_message(
+                "hello", destination="!12345678", channel=0
+            )
             assert result is False
 
 
@@ -819,7 +849,9 @@ class TestRoutingAckDelivery:
         conn._interface = mock_iface
 
         # Send DM
-        res = conn._send_message_sync("Hi remote node", destination="!12345678", channel=0, want_ack=True)
+        res = conn._send_message_sync(
+            "Hi remote node", destination="!12345678", channel=0, want_ack=True
+        )
         assert isinstance(res, dict)
         assert res["sent"] is True
         assert res["ack_status"] == "sent"
@@ -847,13 +879,16 @@ class TestRoutingAckDelivery:
             msg_entry = next(m for m in conn._messages if m["id"] == msg_id)
             assert msg_entry["ack_status"] == "delivered"
             # SSE broadcast emitted
-            mock_sse.assert_any_call("ack_update", {
-                "id": msg_id,
-                "conversation": "dm:!12345678",
-                "ack_status": "delivered",
-                "ack_at": msg_entry["ack_at"],
-                "packet_id": 987654321,
-            })
+            mock_sse.assert_any_call(
+                "ack_update",
+                {
+                    "id": msg_id,
+                    "conversation": "dm:!12345678",
+                    "ack_status": "delivered",
+                    "ack_at": msg_entry["ack_at"],
+                    "packet_id": 987654321,
+                },
+            )
 
     def test_routing_ack_uint32_normalization(self):
         conn = create_conn()
@@ -866,7 +901,9 @@ class TestRoutingAckDelivery:
         mock_iface.sendText.return_value = mock_packet
         conn._interface = mock_iface
 
-        res = conn._send_message_sync("Test negative packet id", destination="!12345678", channel=0, want_ack=True)
+        res = conn._send_message_sync(
+            "Test negative packet id", destination="!12345678", channel=0, want_ack=True
+        )
         assert isinstance(res, dict)
         msg_id = res["id"]
         norm_id = (-1000) & 0xFFFFFFFF
@@ -890,12 +927,14 @@ class TestRoutingAckDelivery:
 
     def test_expire_pending_acks(self):
         conn = create_conn()
-        conn._messages = [{
-            "id": "test-msg-1",
-            "conversation": "dm:!12345678",
-            "ack_status": "sent",
-            "packet_id": 111,
-        }]
+        conn._messages = [
+            {
+                "id": "test-msg-1",
+                "conversation": "dm:!12345678",
+                "ack_status": "sent",
+                "packet_id": 111,
+            }
+        ]
         conn._pending_acks[111] = "test-msg-1"
         # Simulate packet sent 60 seconds ago (older than _ACK_TIMEOUT_S = 30)
         conn._pending_ack_times[111] = time.time() - 60
@@ -904,12 +943,15 @@ class TestRoutingAckDelivery:
             conn._expire_pending_acks_sync()
             assert 111 not in conn._pending_acks
             assert conn._messages[0]["ack_status"] == "failed"
-            mock_sse.assert_called_with("ack_update", {
-                "id": "test-msg-1",
-                "conversation": "dm:!12345678",
-                "ack_status": "failed",
-                "ack_at": conn._messages[0]["ack_at"],
-            })
+            mock_sse.assert_called_with(
+                "ack_update",
+                {
+                    "id": "test-msg-1",
+                    "conversation": "dm:!12345678",
+                    "ack_status": "failed",
+                    "ack_at": conn._messages[0]["ack_at"],
+                },
+            )
 
 
 class TestSendMqttProxyMessage:
@@ -917,7 +959,9 @@ class TestSendMqttProxyMessage:
     async def test_send_mqtt_proxy_message_success(self):
         conn = create_conn()
         conn._connected = True
-        with patch.object(conn, "_send_mqtt_proxy_message_sync") as mock_send_proxy_sync:
+        with patch.object(
+            conn, "_send_mqtt_proxy_message_sync"
+        ) as mock_send_proxy_sync:
             mock_send_proxy_sync.return_value = True
             result = await conn.send_mqtt_proxy_message("test/topic", b"test data")
             assert result is True
@@ -935,6 +979,7 @@ class TestRequestTraceroute:
     @staticmethod
     def _route_payload():
         from meshtastic.protobuf.mesh_pb2 import RouteDiscovery
+
         rd = RouteDiscovery()
         rd.route.extend([0x11111111, 0x22222222])
         return rd.SerializeToString()
@@ -959,13 +1004,19 @@ class TestRequestTraceroute:
         with patch.object(conn, "_request_traceroute_sync") as mock_request_sync:
             with conn._lock:
                 conn._pending_traceroute_dests.extend(
-                    [f"!dead00{i:02x}" for i in range(connection._MAX_PENDING_TRACEROUTES)]
+                    [
+                        f"!dead00{i:02x}"
+                        for i in range(connection._MAX_PENDING_TRACEROUTES)
+                    ]
                 )
             result = await conn.request_traceroute("!12345678")
             assert result is False
             mock_request_sync.assert_not_called()
             with conn._lock:
-                assert len(conn._pending_traceroute_dests) == connection._MAX_PENDING_TRACEROUTES
+                assert (
+                    len(conn._pending_traceroute_dests)
+                    == connection._MAX_PENDING_TRACEROUTES
+                )
 
     def test_capture_traceroute_matches_by_origin(self):
         conn = create_conn()
@@ -974,10 +1025,12 @@ class TestRequestTraceroute:
         conn._nodes = [{"id": "!22222222"}]
         conn._traceroutes = {}
         with patch.object(conn, "_save_traceroutes"):
-            conn._capture_traceroute({
-                "from": 0x22222222,
-                "decoded": {"payload": TestRequestTraceroute._route_payload()},
-            })
+            conn._capture_traceroute(
+                {
+                    "from": 0x22222222,
+                    "decoded": {"payload": TestRequestTraceroute._route_payload()},
+                }
+            )
         with conn._lock:
             assert conn._pending_traceroute_dests == ["!11111111"]
         assert conn._traceroutes.get("!22222222") is not None
@@ -989,10 +1042,12 @@ class TestRequestTraceroute:
             conn._pending_traceroute_dests.extend(["!11111111", "!22222222"])
         conn._traceroutes = {}
         with patch.object(conn, "_save_traceroutes"):
-            conn._capture_traceroute({
-                "from": 0x33333333,
-                "decoded": {"payload": TestRequestTraceroute._route_payload()},
-            })
+            conn._capture_traceroute(
+                {
+                    "from": 0x33333333,
+                    "decoded": {"payload": TestRequestTraceroute._route_payload()},
+                }
+            )
         with conn._lock:
             assert conn._pending_traceroute_dests == ["!22222222"]
         assert conn._traceroutes.get("!11111111") is not None
@@ -1001,10 +1056,12 @@ class TestRequestTraceroute:
         conn = create_conn()
         conn._traceroutes = {}
         with patch.object(conn, "_save_traceroutes"):
-            conn._capture_traceroute({
-                "from": 0x33333333,
-                "decoded": {"payload": TestRequestTraceroute._route_payload()},
-            })
+            conn._capture_traceroute(
+                {
+                    "from": 0x33333333,
+                    "decoded": {"payload": TestRequestTraceroute._route_payload()},
+                }
+            )
         assert conn._traceroutes.get("!33333333") is not None
 
 
@@ -1063,32 +1120,44 @@ class TestFavorites:
         # Patch _sync_favorites_from_device to prevent it from spawning
         # background work that holds open files inside the temp dir, which
         # would cause TemporaryDirectory.__exit__ to fail with ENOTEMPTY.
-        with tempfile.TemporaryDirectory() as tmp, \
-                patch.object(connection, "_DATA_DIR", tmp), \
-                patch.object(connection, "_FAVORITES_FILE", os.path.join(tmp, "favorites.json")), \
-                patch.object(MeshtasticConnection, "_sync_favorites_from_device"):
-                conn = MeshtasticConnection(
-                    host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
-                )
-                # Add via the sync setter, which also persists to disk.
-                result = conn._set_favorite_sync("!11111111", True)
-                assert "!11111111" in result
-                result = conn._set_favorite_sync("!22222222", True)
-                assert set(result) == {"!11111111", "!22222222"}
-                # Unfavorite one.
-                result = conn._set_favorite_sync("!11111111", False)
-                assert result == ["!22222222"]
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.object(connection, "_DATA_DIR", tmp),
+            patch.object(
+                connection, "_FAVORITES_FILE", os.path.join(tmp, "favorites.json")
+            ),
+            patch.object(MeshtasticConnection, "_sync_favorites_from_device"),
+        ):
+            conn = MeshtasticConnection(
+                host="localhost",
+                port=4403,
+                mode="tcp",
+                access_key="",
+                config=mock_config,
+            )
+            # Add via the sync setter, which also persists to disk.
+            result = conn._set_favorite_sync("!11111111", True)
+            assert "!11111111" in result
+            result = conn._set_favorite_sync("!22222222", True)
+            assert set(result) == {"!11111111", "!22222222"}
+            # Unfavorite one.
+            result = conn._set_favorite_sync("!11111111", False)
+            assert result == ["!22222222"]
 
-                # _save_favorites enqueues writes on a background daemon thread.
-                # Drain the queue now so the file is guaranteed on disk before
-                # conn2 tries to load it.
-                conn._stop_persist_worker()
+            # _save_favorites enqueues writes on a background daemon thread.
+            # Drain the queue now so the file is guaranteed on disk before
+            # conn2 tries to load it.
+            conn._stop_persist_worker()
 
-                # A fresh connection loads from the same file.
-                conn2 = MeshtasticConnection(
-                    host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
-                )
-                assert conn2._get_favorites_sync() == ["!22222222"]
+            # A fresh connection loads from the same file.
+            conn2 = MeshtasticConnection(
+                host="localhost",
+                port=4403,
+                mode="tcp",
+                access_key="",
+                config=mock_config,
+            )
+            assert conn2._get_favorites_sync() == ["!22222222"]
 
 
 class TestPositionHistory:
@@ -1097,7 +1166,9 @@ class TestPositionHistory:
         conn = create_conn()
         conn._connected = True
         with patch.object(conn, "_get_position_history_sync") as mock_get_history_sync:
-            mock_get_history_sync.return_value = {"!12345678": [{"lat": 1.0, "lng": 2.0}]}
+            mock_get_history_sync.return_value = {
+                "!12345678": [{"lat": 1.0, "lng": 2.0}]
+            }
             result = await conn.get_position_history("!12345678")
             assert result == {"!12345678": [{"lat": 1.0, "lng": 2.0}]}
 
@@ -1133,9 +1204,12 @@ class TestWaypoints:
     def test_capture_waypoint_sanitizes_mesh_fields(self):
         from app.connection import _sanitize_mesh_text
 
-        assert _sanitize_mesh_text('"><script>alert(1)</script>') == 'scriptalert(1)/script'
+        assert (
+            _sanitize_mesh_text('"><script>alert(1)</script>')
+            == "scriptalert(1)/script"
+        )
         assert _sanitize_mesh_text("name 'with' quotes") == "name with quotes"
-        assert _sanitize_mesh_text('a&b<c>"d\'e') == "abcde"
+        assert _sanitize_mesh_text("a&b<c>\"d'e") == "abcde"
         assert _sanitize_mesh_text(None) == ""
         assert _sanitize_mesh_text(None, "fallback") == "fallback"
         assert _sanitize_mesh_text("📍") == "📍"
@@ -1144,19 +1218,21 @@ class TestWaypoints:
     def test_capture_waypoint_strips_hostile_payload(self):
         conn = create_conn()
         with patch.object(conn, "_save_waypoints"):
-            conn._capture_waypoint({
-                "from": 0x1234,
-                "decoded": {
-                    "waypoint": {
-                        "id": 7,
-                        "name": '"><img src=x onerror=alert(1)>',
-                        "description": "</div><script>steal()</script>",
-                        "icon": '" onload="alert(1)',
-                        "latitudeI": 400000000,
-                        "longitudeI": -100000000,
-                    }
-                },
-            })
+            conn._capture_waypoint(
+                {
+                    "from": 0x1234,
+                    "decoded": {
+                        "waypoint": {
+                            "id": 7,
+                            "name": '"><img src=x onerror=alert(1)>',
+                            "description": "</div><script>steal()</script>",
+                            "icon": '" onload="alert(1)',
+                            "latitudeI": 400000000,
+                            "longitudeI": -100000000,
+                        }
+                    },
+                }
+            )
         stored = [w for w in conn._waypoints if w.get("id") == "!00001234-7"]
         assert stored, "waypoint should have been captured"
         entry = stored[0]
@@ -1169,13 +1245,15 @@ class TestWaypoints:
     def test_add_waypoint_sync_sanitizes_fields(self):
         conn = create_conn()
         with patch.object(conn, "_save_waypoints"):
-            entry = conn._add_waypoint_sync({
-                "name": '<script>x</script>',
-                "description": 'a"b',
-                "icon": "'>",
-                "lat": 1.0,
-                "lng": 2.0,
-            })
+            entry = conn._add_waypoint_sync(
+                {
+                    "name": "<script>x</script>",
+                    "description": 'a"b',
+                    "icon": "'>",
+                    "lat": 1.0,
+                    "lng": 2.0,
+                }
+            )
         assert entry["name"] == "scriptx/script"
         assert entry["description"] == "ab"
         assert entry["icon"] == "📍"
@@ -1211,7 +1289,11 @@ class TestSecurityScan:
         conn = create_conn()
         conn._connected = True
         with patch.object(conn, "_get_security_scan_sync") as mock_scan_sync:
-            mock_scan_sync.return_value = {"findings": [], "has_issues": False, "scanned_at": 1234567890}
+            mock_scan_sync.return_value = {
+                "findings": [],
+                "has_issues": False,
+                "scanned_at": 1234567890,
+            }
             result = await conn.get_security_scan()
             assert "findings" in result
             assert "has_issues" in result
@@ -1232,7 +1314,10 @@ class TestDeviceConfig:
         conn = create_conn()
         conn._connected = True
         with patch.object(conn, "_set_device_config_sync") as mock_set_config_sync:
-            mock_set_config_sync.return_value = {"applied": True, "reboot_required": False}
+            mock_set_config_sync.return_value = {
+                "applied": True,
+                "reboot_required": False,
+            }
             result = await conn.set_device_config("owner", {"long_name": "New Name"})
             assert result["applied"] is True
 
@@ -1430,11 +1515,13 @@ class TestDeleteNode:
         conn._traceroutes = {"!12345678": {"route": [1, 2]}}
         conn._pos_history = {"!12345678": [{"lat": 1.0, "lng": 2.0}]}
 
-        with patch.object(conn, "_save_nodes"), \
-             patch.object(conn, "_save_favorites") as mock_fav, \
-             patch.object(conn, "_save_tags") as mock_tags, \
-             patch.object(conn, "_save_traceroutes") as mock_tr, \
-             patch.object(conn, "_save_position_history") as mock_pos:
+        with (
+            patch.object(conn, "_save_nodes"),
+            patch.object(conn, "_save_favorites") as mock_fav,
+            patch.object(conn, "_save_tags") as mock_tags,
+            patch.object(conn, "_save_traceroutes") as mock_tr,
+            patch.object(conn, "_save_position_history") as mock_pos,
+        ):
             result = conn._delete_node_sync("!12345678")
             assert result is True
             mock_fav.assert_called_once()
@@ -1529,7 +1616,9 @@ class TestSyncCoverage:
         conn = MeshtasticConnection(
             host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
         )
-        with patch.object(conn, "_expire_pending_acks_sync", new=AsyncMock()) as mock_sync:
+        with patch.object(
+            conn, "_expire_pending_acks_sync", new=AsyncMock()
+        ) as mock_sync:
             mock_sync.return_value = None
             result = await conn._expire_pending_acks_sync()
             assert result is None
@@ -1541,16 +1630,16 @@ class TestDirectSyncCoverage:
     async def test_connect_sync_success(self):
         """Test _connect_sync when interface connects successfully."""
         from unittest.mock import MagicMock, patch
-        
+
         mock_config = Mock()
         conn = MeshtasticConnection(
             host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
         )
         conn._interface = MagicMock()
         conn._connected = False
-        
+
         # Patch the TCPInterface constructor to avoid actual network I/O.
-        with patch('app.connection.meshtastic.tcp_interface.TCPInterface') as MockTCP:
+        with patch("app.connection.meshtastic.tcp_interface.TCPInterface") as MockTCP:
             mock_iface = MagicMock()
             MockTCP.return_value = mock_iface
             await conn.connect()
@@ -1562,20 +1651,20 @@ class TestDirectSyncCoverage:
     async def test_connect_sync_failure(self):
         """Test _connect_sync propagates connection errors correctly."""
         from unittest.mock import patch
-        
+
         mock_config = Mock()
         conn = MeshtasticConnection(
             host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
         )
         conn._interface = MagicMock()
         conn._connected = False
-        
+
         # Patch the TCPInterface constructor to return a mock whose connect raises.
-        with patch('app.connection.meshtastic.tcp_interface.TCPInterface') as MockTCP:
+        with patch("app.connection.meshtastic.tcp_interface.TCPInterface") as MockTCP:
             mock_iface = MagicMock()
             mock_iface.connect.side_effect = ConnectionError("simulated failure")
             MockTCP.return_value = mock_iface
-            
+
             with pytest.raises(ConnectionError, match="simulated failure"):
                 await conn.connect()
 
@@ -1587,9 +1676,11 @@ class TestDirectSyncCoverage:
             host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
         )
         conn._connected = True
-        
+
         with patch.object(conn, "_close_sync") as mock_close_sync:
-            mock_close_sync.side_effect = lambda: setattr(conn, "_connected", False) or None
+            mock_close_sync.side_effect = (
+                lambda: setattr(conn, "_connected", False) or None
+            )
             await conn.disconnect()
             assert conn._connected is False
             mock_close_sync.assert_called_once()
@@ -1611,13 +1702,15 @@ class TestOnMeshReceive:
     def test_broadcast_text_captured(self):
         conn = self._conn_with_interface()
         with patch.object(conn, "_schedule_save"):
-            conn._on_mesh_receive({
-                "from": 0x1234,
-                "to": 0xFFFFFFFF,
-                "channel": 0,
-                "rxSnr": -5.0,
-                "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "hello mesh"},
-            })
+            conn._on_mesh_receive(
+                {
+                    "from": 0x1234,
+                    "to": 0xFFFFFFFF,
+                    "channel": 0,
+                    "rxSnr": -5.0,
+                    "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "hello mesh"},
+                }
+            )
         assert len(conn._messages) == 1
         entry = conn._messages[0]
         assert entry["text"] == "hello mesh"
@@ -1631,13 +1724,15 @@ class TestOnMeshReceive:
     def test_text_message_broadcast_signed_negative_one(self):
         conn = self._conn_with_interface()
         with patch.object(conn, "_schedule_save"):
-            conn._on_mesh_receive({
-                "from": 0x1234,
-                "to": -1,
-                "channel": 0,
-                "rxSnr": 3.0,
-                "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "broadcast neg"},
-            })
+            conn._on_mesh_receive(
+                {
+                    "from": 0x1234,
+                    "to": -1,
+                    "channel": 0,
+                    "rxSnr": 3.0,
+                    "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "broadcast neg"},
+                }
+            )
         assert len(conn._messages) == 1
         entry = conn._messages[0]
         assert entry["is_dm"] is False
@@ -1651,14 +1746,17 @@ class TestOnMeshReceive:
         # live interface. The first message should add it to the cache with
         # a current last_heard timestamp.
         import time
+
         before = int(time.time())
         with patch.object(conn, "_schedule_save"):
-            conn._on_mesh_receive({
-                "from": 0x5555,
-                "to": 0xFFFFFFFF,
-                "channel": 0,
-                "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "first msg"},
-            })
+            conn._on_mesh_receive(
+                {
+                    "from": 0x5555,
+                    "to": 0xFFFFFFFF,
+                    "channel": 0,
+                    "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "first msg"},
+                }
+            )
         after = int(time.time())
         # Message was captured
         assert len(conn._messages) == 1
@@ -1671,12 +1769,14 @@ class TestOnMeshReceive:
     def test_from_short_and_long_captured(self):
         conn = self._conn_with_interface()
         with patch.object(conn, "_schedule_save"):
-            conn._on_mesh_receive({
-                "from": 0x1234,
-                "to": 0xFFFFFFFF,
-                "channel": 0,
-                "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "hi"},
-            })
+            conn._on_mesh_receive(
+                {
+                    "from": 0x1234,
+                    "to": 0xFFFFFFFF,
+                    "channel": 0,
+                    "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "hi"},
+                }
+            )
         entry = conn._messages[0]
         assert entry["from_short"] == "AB"
         assert entry["from_long"] == "Alpha Bravo"
@@ -1685,14 +1785,18 @@ class TestOnMeshReceive:
         # Sender not in the live interface.nodes snapshot, but known in the
         # persisted node store — we should still resolve the short name.
         conn = self._conn_with_interface()
-        conn._nodes = [{"id": "!00005555", "short_name": "Stored", "long_name": "Stored Node"}]
+        conn._nodes = [
+            {"id": "!00005555", "short_name": "Stored", "long_name": "Stored Node"}
+        ]
         with patch.object(conn, "_schedule_save"):
-            conn._on_mesh_receive({
-                "from": 0x5555,
-                "to": 0xFFFFFFFF,
-                "channel": 0,
-                "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "via store"},
-            })
+            conn._on_mesh_receive(
+                {
+                    "from": 0x5555,
+                    "to": 0xFFFFFFFF,
+                    "channel": 0,
+                    "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "via store"},
+                }
+            )
         entry = conn._messages[0]
         assert entry["from_id"] == "!00005555"
         assert entry["from_short"] == "Stored"
@@ -1701,12 +1805,14 @@ class TestOnMeshReceive:
     def test_direct_message_conversation_key(self):
         conn = self._conn_with_interface()
         with patch.object(conn, "_schedule_save"):
-            conn._on_mesh_receive({
-                "from": 0x1234,
-                "to": 0x5678,
-                "channel": 0,
-                "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "hey you"},
-            })
+            conn._on_mesh_receive(
+                {
+                    "from": 0x1234,
+                    "to": 0x5678,
+                    "channel": 0,
+                    "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "hey you"},
+                }
+            )
         assert len(conn._messages) == 1
         entry = conn._messages[0]
         assert entry["is_dm"] is True
@@ -1715,55 +1821,66 @@ class TestOnMeshReceive:
     def test_outgoing_message_detected(self):
         conn = self._conn_with_interface()
         with patch.object(conn, "_schedule_save"):
-            conn._on_mesh_receive({
-                "from": 0x9999,
-                "to": 0x1234,
-                "channel": 0,
-                "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "self sent"},
-            })
+            conn._on_mesh_receive(
+                {
+                    "from": 0x9999,
+                    "to": 0x1234,
+                    "channel": 0,
+                    "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "self sent"},
+                }
+            )
         assert conn._messages[0]["outgoing"] is True
 
     def test_outgoing_echo_suppressed(self):
         conn = self._conn_with_interface()
         import time
-        conn._messages = [{
-            "id": "1",
-            "from_id": "!00009999",
-            "text": "self sent",
-            "channel": 0,
-            "outgoing": True,
-            "timestamp": int(time.time()),
-        }]
-        with patch.object(conn, "_schedule_save"):
-            conn._on_mesh_receive({
-                "from": 0x9999,
-                "to": 0x1234,
+
+        conn._messages = [
+            {
+                "id": "1",
+                "from_id": "!00009999",
+                "text": "self sent",
                 "channel": 0,
-                "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "self sent"},
-            })
+                "outgoing": True,
+                "timestamp": int(time.time()),
+            }
+        ]
+        with patch.object(conn, "_schedule_save"):
+            conn._on_mesh_receive(
+                {
+                    "from": 0x9999,
+                    "to": 0x1234,
+                    "channel": 0,
+                    "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "self sent"},
+                }
+            )
         # Should still have only the original 1 message, echo was suppressed
         assert len(conn._messages) == 1
 
     def test_snr_history_recorded(self):
         conn = self._conn_with_interface()
         with patch.object(conn, "_schedule_save"):
-            conn._on_mesh_receive({
-                "from": 0x1234,
-                "to": 0xFFFFFFFF,
-                "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "snr"},
-                "rxSnr": -3.5,
-            })
+            conn._on_mesh_receive(
+                {
+                    "from": 0x1234,
+                    "to": 0xFFFFFFFF,
+                    "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "snr"},
+                    "rxSnr": -3.5,
+                }
+            )
         assert conn._snr_history.get("!00001234") is not None
         assert list(conn._snr_history["!00001234"]) == [-3.5]
 
     def test_packet_without_text_ignored(self):
         conn = self._conn_with_interface()
         with patch.object(conn, "_schedule_save"):
-            conn._on_mesh_receive({
-                "from": 0x1234,
-                "to": 0xFFFFFFFF,
-                "decoded": {"portnum": "TELEMETRY_APP"},
-            })
+            conn._on_mesh_receive(
+                {
+                    "from": 0x1234,
+                    "to": 0xFFFFFFFF,
+                    "decoded": {"portnum": "TELEMETRY_APP"},
+                }
+            )
         assert len(conn._messages) == 0
 
     def test_telegram_forward_callback_invoked(self):
@@ -1771,11 +1888,13 @@ class TestOnMeshReceive:
         received = []
         conn._telegram_forward_callback = lambda entry: received.append(entry)
         with patch.object(conn, "_schedule_save"):
-            conn._on_mesh_receive({
-                "from": 0x1234,
-                "to": 0xFFFFFFFF,
-                "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "forward me"},
-            })
+            conn._on_mesh_receive(
+                {
+                    "from": 0x1234,
+                    "to": 0xFFFFFFFF,
+                    "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "forward me"},
+                }
+            )
         assert len(received) == 1
         assert received[0]["text"] == "forward me"
 
@@ -1787,11 +1906,16 @@ class TestOnMeshReceive:
 
         conn._telegram_forward_callback = boom
         with patch.object(conn, "_schedule_save"):
-            conn._on_mesh_receive({
-                "from": 0x1234,
-                "to": 0xFFFFFFFF,
-                "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "still captured"},
-            })
+            conn._on_mesh_receive(
+                {
+                    "from": 0x1234,
+                    "to": 0xFFFFFFFF,
+                    "decoded": {
+                        "portnum": "TEXT_MESSAGE_APP",
+                        "text": "still captured",
+                    },
+                }
+            )
         # The receive thread must survive a failing callback.
         assert len(conn._messages) == 1
 
@@ -1810,14 +1934,19 @@ class TestOnMeshReceive:
             "!00001234": {"user": {"longName": "Node"}, "lastHeard": 1000},
         }
         import time
+
         before = int(time.time())
-        with patch.object(conn, "_schedule_save"), \
-             patch("app.remote_cache.load_remote_cache", return_value={}):
-            conn._on_mesh_receive({
-                "from": 0x1234,
-                "to": 0xFFFFFFFF,
-                "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "hello"},
-            })
+        with (
+            patch.object(conn, "_schedule_save"),
+            patch("app.remote_cache.load_remote_cache", return_value={}),
+        ):
+            conn._on_mesh_receive(
+                {
+                    "from": 0x1234,
+                    "to": 0xFFFFFFFF,
+                    "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "hello"},
+                }
+            )
         # Now call _get_nodes_sync which simulates /api/nodes
         nodes = conn._get_nodes_sync()
         node = next((n for n in nodes if n["id"] == "!00001234"), None)
@@ -1830,6 +1959,7 @@ class TestOnMeshReceive:
 class TestCapturePosition:
     def _position_payload(self, lat_i=400000000, lng_i=-100000000, alt=123):
         from meshtastic.protobuf.mesh_pb2 import Position
+
         pos = Position()
         pos.latitude_i = lat_i
         pos.longitude_i = lng_i
@@ -1841,12 +1971,14 @@ class TestCapturePosition:
         conn._nodes = [{"id": "!00001234"}]
         conn._pending_position_dests.add("!00001234")
         with patch.object(conn, "_save_position_history"):
-            conn._capture_position({
-                "from": 0x1234,
-                "rxSnr": -7.0,
-                "rxRssi": -90,
-                "decoded": {"payload": self._position_payload()},
-            })
+            conn._capture_position(
+                {
+                    "from": 0x1234,
+                    "rxSnr": -7.0,
+                    "rxRssi": -90,
+                    "decoded": {"payload": self._position_payload()},
+                }
+            )
         assert "!00001234" not in conn._pending_position_dests
         node = conn._nodes[0]
         assert node["latitude"] == pytest.approx(40.0)
@@ -1859,10 +1991,12 @@ class TestCapturePosition:
         conn = create_conn()
         conn._nodes = [{"id": "!00001234"}]
         with patch.object(conn, "_save_position_history"):
-            conn._capture_position({
-                "from": 0x1234,
-                "decoded": {"payload": self._position_payload()},
-            })
+            conn._capture_position(
+                {
+                    "from": 0x1234,
+                    "decoded": {"payload": self._position_payload()},
+                }
+            )
         # History is still recorded for trails
         assert "!00001234" in conn._pos_history
         # Cache is now updated for periodic broadcasts too (for position fix count)
@@ -1876,6 +2010,7 @@ class TestCapturePosition:
         conn._capture_position({"from": 0x1234, "decoded": {}})
         assert "!00001234" in conn._pending_position_dests
         assert conn._pos_history == {}
+
 
 class TestRemoteAdminConnection:
     def _conn(self):
@@ -1927,18 +2062,25 @@ class TestRemoteAdminConnection:
 
         def blocking_sync(node_id, force=False):
             import time
+
             time.sleep(2)
 
         async def fast_run_remote_admin(func, *, timeout, what):
-            return await conn.__class__._run_remote_admin(conn, func, timeout=0.05, what=what)
+            return await conn.__class__._run_remote_admin(
+                conn, func, timeout=0.05, what=what
+            )
 
         with tempfile.TemporaryDirectory() as tmp:
             cache_file = os.path.join(tmp, "remote_configs.json")
             with (
                 patch.object(remote_cache_mod, "_DATA_DIR", tmp),
                 patch.object(remote_cache_mod, "_CACHE_FILE", cache_file),
-                patch.object(conn, "_get_remote_config_sync", side_effect=blocking_sync),
-                patch.object(conn, "_run_remote_admin", side_effect=fast_run_remote_admin),
+                patch.object(
+                    conn, "_get_remote_config_sync", side_effect=blocking_sync
+                ),
+                patch.object(
+                    conn, "_run_remote_admin", side_effect=fast_run_remote_admin
+                ),
                 pytest.raises(ConnectionError, match="timed out"),
             ):
                 await conn.get_remote_config("!1234abcd")
@@ -2007,25 +2149,26 @@ class TestConnection28Features:
         """Test that environmental metrics captured via packets are preserved when the library node DB doesn't have them."""
         conn = self._conn()
         nid = "!00abc123"
-        
+
         # Add a node to the cache first
         conn._nodes = [{"id": nid}]
-        
+
         # Then capture environmental metrics via a TELEMETRY_APP packet
         from meshtastic.protobuf.telemetry_pb2 import Telemetry
+
         tel = Telemetry()
         env = tel.environment_metrics
         env.temperature = 25.0
         env.relative_humidity = 70.0
         env.barometric_pressure = 1020.0
         env.gas_resistance = 13000.0
-        
+
         packet = {
             "from": int("abc123", 16),
             "decoded": {"portnum": "TELEMETRY_APP", "payload": tel.SerializeToString()},
         }
         conn._capture_environment_telemetry(packet)
-        
+
         # Verify metrics are in the cache
         assert conn._nodes[0].get("temperature") == 25.0
         assert conn._nodes[0].get("relative_humidity") == 70.0
@@ -2084,6 +2227,7 @@ class TestConnection28Features:
         conn._nodes = [{"id": "!00abc123"}]  # Use padded 8-digit hex ID
         # Build a valid TELEMETRY_APP protobuf with environmental metrics.
         from meshtastic.protobuf.telemetry_pb2 import Telemetry
+
         tel = Telemetry()
         env = tel.environment_metrics
         env.temperature = 22.5
@@ -2106,6 +2250,7 @@ class TestConnection28Features:
         conn = self._conn()
         conn._nodes = [{"id": "!00abc123"}]  # Use padded 8-digit hex ID
         from meshtastic.protobuf.telemetry_pb2 import Telemetry
+
         tel = Telemetry()
         env = tel.environment_metrics
         env.temperature = 20.0
@@ -2280,11 +2425,17 @@ class TestStabilityRemediations:
 
         conn = self._conn()
         conn._messages = [{"id": "m1", "text": "atomicity test"}]
-        with tempfile.TemporaryDirectory() as tmp, \
-                patch.object(connection, "_DATA_DIR", tmp), \
-                patch.object(connection, "_MESSAGES_ARCHIVE_DIR", os.path.join(tmp, "archive")), \
-                patch.object(connection, "_MESSAGES_FILE", os.path.join(tmp, "messages.json")), \
-                patch.object(conn, "_write_json_no_lock") as mock_write:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.object(connection, "_DATA_DIR", tmp),
+            patch.object(
+                connection, "_MESSAGES_ARCHIVE_DIR", os.path.join(tmp, "archive")
+            ),
+            patch.object(
+                connection, "_MESSAGES_FILE", os.path.join(tmp, "messages.json")
+            ),
+            patch.object(conn, "_write_json_no_lock") as mock_write,
+        ):
             conn._save_messages()
             assert mock_write.call_count == 1
 
@@ -2311,10 +2462,11 @@ class TestStabilityRemediations:
 
     def test_normalize_node_id(self):
         from app.connection import normalize_node_id
+
         assert normalize_node_id(None) is None
         assert normalize_node_id("") is None
         assert normalize_node_id("   ") is None
-        assert normalize_node_id(0x1122aabb) == "!1122aabb"
+        assert normalize_node_id(0x1122AABB) == "!1122aabb"
         assert normalize_node_id("!1122aabb") == "!1122aabb"
         assert normalize_node_id("!1122AABB") == "!1122aabb"
         assert normalize_node_id("1122aabb") == "!1122aabb"
@@ -2327,8 +2479,14 @@ class TestStabilityRemediations:
         conn._interface.myInfo.my_node_num = 12345
         # interface.nodes contains both hex string and int num for the same node
         conn._interface.nodes = {
-            "!11111111": {"user": {"longName": "Node1"}, "position": {"latitude": 10, "longitude": 20}},
-            286331153: {"user": {"longName": "Node1"}, "position": {"latitude": 10, "longitude": 20}},
+            "!11111111": {
+                "user": {"longName": "Node1"},
+                "position": {"latitude": 10, "longitude": 20},
+            },
+            286331153: {
+                "user": {"longName": "Node1"},
+                "position": {"latitude": 10, "longitude": 20},
+            },
         }
         with patch("app.remote_cache.load_remote_cache", return_value={}):
             nodes = conn._get_nodes_sync()
@@ -2340,9 +2498,24 @@ class TestStabilityRemediations:
         conn._interface.myInfo.my_node_num = 12345
         conn._interface.nodes = {}
         conn._nodes = [
-            {"id": "!22222222", "long_name": "Stale Node", "latitude": 15, "longitude": 25},
-            {"id": "!22222222", "long_name": "Stale Node", "latitude": 15, "longitude": 25},
-            {"id": "22222222", "long_name": "Stale Node", "latitude": 15, "longitude": 25},
+            {
+                "id": "!22222222",
+                "long_name": "Stale Node",
+                "latitude": 15,
+                "longitude": 25,
+            },
+            {
+                "id": "!22222222",
+                "long_name": "Stale Node",
+                "latitude": 15,
+                "longitude": 25,
+            },
+            {
+                "id": "22222222",
+                "long_name": "Stale Node",
+                "latitude": 15,
+                "longitude": 25,
+            },
         ]
         with patch("app.remote_cache.load_remote_cache", return_value={}):
             nodes = conn._get_nodes_sync()
@@ -2354,8 +2527,18 @@ class TestStabilityRemediations:
         conn._interface = None
         conn._connected = False
         conn._nodes = [
-            {"id": "!33333333", "long_name": "Offline Node", "latitude": 15, "longitude": 25},
-            {"id": "33333333", "long_name": "Offline Node", "latitude": 15, "longitude": 25},
+            {
+                "id": "!33333333",
+                "long_name": "Offline Node",
+                "latitude": 15,
+                "longitude": 25,
+            },
+            {
+                "id": "33333333",
+                "long_name": "Offline Node",
+                "latitude": 15,
+                "longitude": 25,
+            },
         ]
         nodes = conn._get_nodes_sync()
         assert len(nodes) == 1
@@ -2364,6 +2547,7 @@ class TestStabilityRemediations:
     def test_load_nodes_deduplicates_and_normalizes(self):
         import json
         import tempfile
+
         conn = self._conn()
         raw_data = [
             {"id": "!44444444", "long_name": "Node 4"},
@@ -2397,8 +2581,21 @@ class TestStabilityRemediations:
         }
         # conn._nodes has stale node with an old ID !99999999 but same name and location
         conn._nodes = [
-            {"id": "!11111111", "long_name": "Home Radio", "short_name": "HR", "latitude": 10.0, "longitude": 20.0},
-            {"id": "!99999999", "long_name": "Home Radio", "short_name": "HR", "latitude": 10.0, "longitude": 20.0, "stale": True},
+            {
+                "id": "!11111111",
+                "long_name": "Home Radio",
+                "short_name": "HR",
+                "latitude": 10.0,
+                "longitude": 20.0,
+            },
+            {
+                "id": "!99999999",
+                "long_name": "Home Radio",
+                "short_name": "HR",
+                "latitude": 10.0,
+                "longitude": 20.0,
+                "stale": True,
+            },
         ]
         with patch("app.remote_cache.load_remote_cache", return_value={}):
             nodes = conn._get_nodes_sync()
@@ -2413,8 +2610,20 @@ class TestStabilityRemediations:
         conn._interface.nodes = {}
         # Two nodes with same name and location
         conn._nodes = [
-            {"id": "!11111111", "long_name": "Repeater", "latitude": 30.0, "longitude": 40.0, "last_heard": 100},
-            {"id": "!22222222", "long_name": "Repeater", "latitude": 30.0, "longitude": 40.0, "last_heard": 200},
+            {
+                "id": "!11111111",
+                "long_name": "Repeater",
+                "latitude": 30.0,
+                "longitude": 40.0,
+                "last_heard": 100,
+            },
+            {
+                "id": "!22222222",
+                "long_name": "Repeater",
+                "latitude": 30.0,
+                "longitude": 40.0,
+                "last_heard": 200,
+            },
         ]
         with patch("app.remote_cache.load_remote_cache", return_value={}):
             nodes = conn._get_nodes_sync()
@@ -2435,10 +2644,18 @@ class TestCoordinateValidation:
         assert connection._are_coordinates_suspicious(0, 0) is True
 
     def test_are_coordinates_suspicious_out_of_bounds(self):
-        assert connection._are_coordinates_suspicious(91.0, 40.0) is True  # Latitude > 90
-        assert connection._are_coordinates_suspicious(-91.0, 40.0) is True  # Latitude < -90
-        assert connection._are_coordinates_suspicious(30.0, 181.0) is True  # Longitude > 180
-        assert connection._are_coordinates_suspicious(30.0, -181.0) is True  # Longitude < -180
+        assert (
+            connection._are_coordinates_suspicious(91.0, 40.0) is True
+        )  # Latitude > 90
+        assert (
+            connection._are_coordinates_suspicious(-91.0, 40.0) is True
+        )  # Latitude < -90
+        assert (
+            connection._are_coordinates_suspicious(30.0, 181.0) is True
+        )  # Longitude > 180
+        assert (
+            connection._are_coordinates_suspicious(30.0, -181.0) is True
+        )  # Longitude < -180
 
     def test_are_coordinates_suspicious_rounded_placeholder(self):
         # The rounded-coordinate heuristic was intentionally removed: real nodes
@@ -2452,7 +2669,9 @@ class TestCoordinateValidation:
     def test_are_coordinates_suspicious_valid_coordinates(self):
         assert connection._are_coordinates_suspicious(-29.7564436, 30.8181389) is False
         assert connection._are_coordinates_suspicious(40.7128, -74.0060) is False  # NYC
-        assert connection._are_coordinates_suspicious(51.5074, -0.1278) is False  # London
+        assert (
+            connection._are_coordinates_suspicious(51.5074, -0.1278) is False
+        )  # London
 
     def test_are_coordinates_suspicious_invalid_types(self):
         assert connection._are_coordinates_suspicious("invalid", 40.0) is True
@@ -2497,7 +2716,9 @@ class TestCoordinateValidation:
             access_key="test_key",
             config=mock_config,
         )
-        lat, lng = conn._validate_and_correct_coordinates("!12345678", -29.7564436, 30.8181389)
+        lat, lng = conn._validate_and_correct_coordinates(
+            "!12345678", -29.7564436, 30.8181389
+        )
         assert lat == -29.7564436
         assert lng == 30.8181389
 
@@ -2583,25 +2804,44 @@ class TestCoordinateValidation:
             access_key="test_key",
             config=mock_config,
         )
-        
+
         # Create a mix of nodes with and without GPS
         nodes = [
-            {"id": "!12345678", "latitude": 40.7128, "longitude": -74.0060, "last_heard": 100},
+            {
+                "id": "!12345678",
+                "latitude": 40.7128,
+                "longitude": -74.0060,
+                "last_heard": 100,
+            },
             {"id": "!87654321", "latitude": None, "longitude": None, "last_heard": 200},
-            {"id": "!11111111", "latitude": 51.5074, "longitude": -0.1278, "last_heard": 300},
-            {"id": "!22222222", "latitude": None, "longitude": 40.0, "last_heard": 400},  # Partial GPS
+            {
+                "id": "!11111111",
+                "latitude": 51.5074,
+                "longitude": -0.1278,
+                "last_heard": 300,
+            },
+            {
+                "id": "!22222222",
+                "latitude": None,
+                "longitude": 40.0,
+                "last_heard": 400,
+            },  # Partial GPS
         ]
-        
+
         # Filter nodes as the save method does
         nodes_with_coords = [
-            n for n in nodes 
+            n
+            for n in nodes
             if n.get("latitude") is not None and n.get("longitude") is not None
         ]
-        
+
         # Check that only nodes with complete GPS were kept
         assert len(nodes_with_coords) == 2  # Only 2 nodes have complete GPS
-        assert all(n["latitude"] is not None and n["longitude"] is not None for n in nodes_with_coords)
-        
+        assert all(
+            n["latitude"] is not None and n["longitude"] is not None
+            for n in nodes_with_coords
+        )
+
         # Verify the specific nodes that were kept
         node_ids = [n["id"] for n in nodes_with_coords]
         assert "!12345678" in node_ids
@@ -2620,26 +2860,48 @@ class TestCoordinateValidation:
             access_key="test_key",
             config=mock_config,
         )
-        
+
         # Create a mix of nodes with and without valid GPS
         conn._nodes = [
-            {"id": "!12345678", "latitude": 40.7128, "longitude": -74.0060, "last_heard": 100},
+            {
+                "id": "!12345678",
+                "latitude": 40.7128,
+                "longitude": -74.0060,
+                "last_heard": 100,
+            },
             {"id": "!87654321", "latitude": None, "longitude": None, "last_heard": 200},
-            {"id": "!11111111", "latitude": 51.5074, "longitude": -0.1278, "last_heard": 300},
-            {"id": "!22222222", "latitude": 0.0, "longitude": 0.0, "last_heard": 400},  # Suspicious (0,0)
-            {"id": "!33333333", "latitude": None, "longitude": 40.0, "last_heard": 500},  # Partial GPS
+            {
+                "id": "!11111111",
+                "latitude": 51.5074,
+                "longitude": -0.1278,
+                "last_heard": 300,
+            },
+            {
+                "id": "!22222222",
+                "latitude": 0.0,
+                "longitude": 0.0,
+                "last_heard": 400,
+            },  # Suspicious (0,0)
+            {
+                "id": "!33333333",
+                "latitude": None,
+                "longitude": 40.0,
+                "last_heard": 500,
+            },  # Partial GPS
         ]
-        
+
         # Mock _delete_node_sync to track what gets deleted
         deleted_nodes = []
+
         def mock_delete_node(node_id):
             deleted_nodes.append(node_id)
             return True
+
         conn._delete_node_sync = mock_delete_node
-        
+
         # Call the method
         removed = conn._clean_invalid_gps_nodes_sync()
-        
+
         # Check that nodes with invalid GPS were removed
         assert removed == 3  # 3 nodes have invalid GPS
         assert "!87654321" in deleted_nodes  # No GPS
@@ -2661,13 +2923,13 @@ class TestPersistenceWorker:
         )
         written = []
         conn._write_json = lambda snapshot, path: written.append((snapshot, path))
-        
+
         # Enqueue two snapshots for the same path in rapid succession
         conn._enqueue_save([{"val": 1}], "/tmp/test.json")
         conn._enqueue_save([{"val": 2}], "/tmp/test.json")
-        
+
         conn._stop_persist_worker()
-        
+
         # Should have written the latest snapshot
         assert len(written) == 1
         assert written[0] == ([{"val": 2}], "/tmp/test.json")
@@ -2822,7 +3084,6 @@ class TestGetNodesSyncSafety:
         assert nodes[0]["id"] == "!12345678"
 
 
-
 class TestStaleFlagClearing:
     """Regression tests for the stale-flag-not-cleared bug.
 
@@ -2843,10 +3104,16 @@ class TestStaleFlagClearing:
         # Suppress device-sync side-effects that require network or /data access.
         with patch.object(MeshtasticConnection, "_sync_favorites_from_device"):
             return MeshtasticConnection(
-                host="localhost", port=4403, mode="tcp", access_key="", config=mock_config
+                host="localhost",
+                port=4403,
+                mode="tcp",
+                access_key="",
+                config=mock_config,
             )
 
-    def _make_interface(self, node_id: str, lat: float | None = None, lng: float | None = None):
+    def _make_interface(
+        self, node_id: str, lat: float | None = None, lng: float | None = None
+    ):
         """Return a minimal mock interface with a single node in its DB."""
         mock_iface = Mock()
         position: dict = {}
@@ -2878,25 +3145,31 @@ class TestStaleFlagClearing:
         # Seed the persistent cache with a node flagged stale (simulates a
         # previous eviction cycle where the node was absent from the radio DB).
         with conn._nodes_lock:
-            conn._nodes = [{
-                "id": node_id,
-                "long_name": "G54_Mobile",
-                "short_name": "G54M",
-                "stale": True,  # Previously evicted from radio DB.
-                "latitude": -29.753337,
-                "longitude": 30.801920,
-                "altitude": 413,
-                "last_heard": 1791738000,
-            }]
+            conn._nodes = [
+                {
+                    "id": node_id,
+                    "long_name": "G54_Mobile",
+                    "short_name": "G54M",
+                    "stale": True,  # Previously evicted from radio DB.
+                    "latitude": -29.753337,
+                    "longitude": 30.801920,
+                    "altitude": 413,
+                    "last_heard": 1791738000,
+                }
+            ]
 
         # Now the node is back in the live radio DB.
         conn._interface = self._make_interface(node_id, lat=-29.753337, lng=30.801920)
         conn._connected = True
 
         # Redirect /data access so the test works in a sandboxed CI environment.
-        with tempfile.TemporaryDirectory() as tmp, \
-                patch.object(remote_cache, "_DATA_DIR", tmp), \
-                patch.object(remote_cache, "_CACHE_FILE", os.path.join(tmp, "remote_configs.json")):
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.object(remote_cache, "_DATA_DIR", tmp),
+            patch.object(
+                remote_cache, "_CACHE_FILE", os.path.join(tmp, "remote_configs.json")
+            ),
+        ):
             nodes = conn._get_nodes_sync()
 
         # The node must appear exactly once.
@@ -2921,9 +3194,13 @@ class TestStaleFlagClearing:
         conn._interface = self._make_interface(node_id, lat=-29.0, lng=30.0)
         conn._connected = True
 
-        with tempfile.TemporaryDirectory() as tmp, \
-                patch.object(remote_cache, "_DATA_DIR", tmp), \
-                patch.object(remote_cache, "_CACHE_FILE", os.path.join(tmp, "remote_configs.json")):
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.object(remote_cache, "_DATA_DIR", tmp),
+            patch.object(
+                remote_cache, "_CACHE_FILE", os.path.join(tmp, "remote_configs.json")
+            ),
+        ):
             nodes = conn._get_nodes_sync()
 
         matching = [n for n in nodes if n["id"] == node_id]
@@ -2963,9 +3240,13 @@ class TestStaleFlagClearing:
         conn._interface = self._make_interface(live_id, lat=-29.0, lng=30.0)
         conn._connected = True
 
-        with tempfile.TemporaryDirectory() as tmp, \
-                patch.object(remote_cache, "_DATA_DIR", tmp), \
-                patch.object(remote_cache, "_CACHE_FILE", os.path.join(tmp, "remote_configs.json")):
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.object(remote_cache, "_DATA_DIR", tmp),
+            patch.object(
+                remote_cache, "_CACHE_FILE", os.path.join(tmp, "remote_configs.json")
+            ),
+        ):
             nodes = conn._get_nodes_sync()
 
         live_nodes = [n for n in nodes if n["id"] == live_id]
@@ -2978,4 +3259,3 @@ class TestStaleFlagClearing:
         assert evicted_nodes[0].get("stale") is True, (
             "Node absent from live radio DB must be flagged stale"
         )
-

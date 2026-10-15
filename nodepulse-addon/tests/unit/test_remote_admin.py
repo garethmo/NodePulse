@@ -188,7 +188,9 @@ class TestApplyRemoteConfig:
     def test_apply_remote_config_valid(self):
         node = FakeRemoteNode()
         iface = FakeInterface([FakeChannel("admin", 0)])
-        result = apply_remote_config(node, iface, "device", {"node_info_broadcast_secs": 123})
+        result = apply_remote_config(
+            node, iface, "device", {"node_info_broadcast_secs": 123}
+        )
         assert result["applied"] is True
         assert result["section"] == "device"
         assert ("writeConfig", "device") in node.calls
@@ -197,7 +199,9 @@ class TestApplyRemoteConfig:
     def test_apply_remote_config_unknown_section(self):
         node = FakeRemoteNode()
         with pytest.raises(ValueError, match="Unknown section"):
-            apply_remote_config(node, FakeInterface([FakeChannel("admin", 0)]), "nope", {})
+            apply_remote_config(
+                node, FakeInterface([FakeChannel("admin", 0)]), "nope", {}
+            )
 
 
 # ----------------------------------------------------------------------
@@ -231,7 +235,9 @@ class TestAdminActions:
 
     def test_set_fixed_position(self):
         node = FakeRemoteNode()
-        execute_admin_action(node, "set_fixed_position", {"lat": 37.5, "lng": -122.1, "alt": 25})
+        execute_admin_action(
+            node, "set_fixed_position", {"lat": 37.5, "lng": -122.1, "alt": 25}
+        )
         assert ("setFixedPosition", 37.5, -122.1, 25) in node.calls
 
     def test_clear_fixed_position(self):
@@ -258,6 +264,7 @@ class TestAdminActions:
         assert result["ok"] is True
         assert result["action"] == "nodedb_reset"
         assert "elapsed_s" in result
+
 
 # ----------------------------------------------------------------------
 # _make_remote_node fast-fail + session-key handshake
@@ -296,13 +303,17 @@ class TestAdminSendChannel:
     def test_admin_keys_use_primary_channel(self):
         security = config_pb2.Config.SecurityConfig()
         security.admin_key.append(b"\x01\x02\x03")
-        iface = FakeInterface([FakeChannel("Default", 0), FakeChannel("admin", 1)], security=security)
+        iface = FakeInterface(
+            [FakeChannel("Default", 0), FakeChannel("admin", 1)], security=security
+        )
         assert ra._admin_send_channel_index(iface) == 0
 
     def test_legacy_admin_channel_enabled_uses_named_channel(self):
         security = config_pb2.Config.SecurityConfig()
         security.admin_channel_enabled = True
-        iface = FakeInterface([FakeChannel("Default", 0), FakeChannel("admin", 1)], security=security)
+        iface = FakeInterface(
+            [FakeChannel("Default", 0), FakeChannel("admin", 1)], security=security
+        )
         assert ra._admin_send_channel_index(iface) == 1
 
     def test_legacy_admin_channel_enabled_no_named_channel_uses_primary(self):
@@ -338,7 +349,9 @@ class TestAdminSendChannel:
 
         security = config_pb2.Config.SecurityConfig()
         security.admin_key.append(b"\x01\x02\x03")
-        iface = FakeInterface([FakeChannel("Default", 0), FakeChannel("admin", 1)], security=security)
+        iface = FakeInterface(
+            [FakeChannel("Default", 0), FakeChannel("admin", 1)], security=security
+        )
         node = FakeRemoteNode()
         node._sendAdmin = lambda *a, **k: iface.localNode._getAdminChannelIndex()
 

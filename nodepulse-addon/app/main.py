@@ -14,6 +14,7 @@ Shutdown sequence (on SIGTERM from HA Supervisor):
   1. aiohttp calls the on_shutdown signal handlers.
   2. We cancel the monitor Task and cleanly close the Meshtastic interface.
 """
+
 import asyncio
 import logging
 import time
@@ -110,6 +111,7 @@ async def _on_startup(app: web.Application) -> None:
     # Use get_running_loop() (not get_event_loop()) — we are inside an async
     # function so the loop is guaranteed to be running already.
     from .connection import set_event_loop as _set_loop
+
     _set_loop(asyncio.get_running_loop())
 
     # Launch the background health monitor. We store the Task reference on
@@ -135,19 +137,23 @@ async def _on_startup(app: web.Application) -> None:
                 logger.debug("ACK expiry sweep error (ignored): %s", exc)
 
     app["ack_expiry_task"] = asyncio.create_task(_run_ack_expiry_loop())
-    
+
     # Launch the GPS coordinate retrieval task. Periodically attempts to get GPS coordinates
     # for nodes that don't have them, preventing them from being filtered out of persistence.
     async def _run_gps_coord_retrieval_loop() -> None:
         while True:
             await asyncio.sleep(300)  # Run every 5 minutes
             try:
-                await asyncio.to_thread(conn._attempt_coordinate_retrieval_for_nodes_without_gps)
+                await asyncio.to_thread(
+                    conn._attempt_coordinate_retrieval_for_nodes_without_gps
+                )
             except Exception as exc:  # defensive: never crash the task  # noqa: BLE001
                 logger.debug("GPS coordinate retrieval error (ignored): %s", exc)
-    
-    app["gps_coord_retrieval_task"] = asyncio.create_task(_run_gps_coord_retrieval_loop())
-    
+
+    app["gps_coord_retrieval_task"] = asyncio.create_task(
+        _run_gps_coord_retrieval_loop()
+    )
+
     # Launch the scheduled messages processor. Checks every second for messages
     # whose execute_time has arrived and sends them to the mesh.
     async def _run_scheduled_messages_loop() -> None:
@@ -194,8 +200,9 @@ async def _on_startup(app: web.Application) -> None:
                     await asyncio.sleep(0.1)
             except Exception as exc:  # defensive: never crash the task  # noqa: BLE001
                 logger.debug("Scheduled messages processor error (ignored): %s", exc)
+
     app["scheduled_messages_task"] = asyncio.create_task(_run_scheduled_messages_loop())
-    
+
     # Launch MQTT Bridge
     await app["mqtt_bridge"].start()
 
@@ -277,7 +284,9 @@ async def _no_cache_middleware(request: web.Request, handler):
     """
     response = await handler(request)
     try:
-        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Cache-Control"] = (
+            "no-store, no-cache, must-revalidate, max-age=0"
+        )
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
     except (TypeError, RuntimeError):
@@ -301,7 +310,9 @@ def build_app(config) -> web.Application:
     target_host, target_port, mode = resolve_target(config)
     logger.debug(
         "NodePulse connection mode=%s, target=%s:%s",
-        mode, target_host, target_port,
+        mode,
+        target_host,
+        target_port,
     )
     app["connection"] = MeshtasticConnection(
         host=target_host,
@@ -328,7 +339,7 @@ def build_app(config) -> web.Application:
         packet_callback=app["connection"]._on_mesh_receive,
         forward_callback=app["connection"].send_mqtt_proxy_message,
     )
-    
+
     # Initialize the Telegram Bot Integration.
     app["telegram_bot"] = TelegramBot(
         config=config,
@@ -340,7 +351,9 @@ def build_app(config) -> web.Application:
         terrain=app["terrain"],
     )
     # Register the forward_mesh_message callback with the connection
-    app["connection"]._telegram_forward_callback = app["telegram_bot"].forward_mesh_message
+    app["connection"]._telegram_forward_callback = app[
+        "telegram_bot"
+    ].forward_mesh_message
 
     # Register lifecycle hooks
     app.on_startup.append(_on_startup)
@@ -389,8 +402,12 @@ def build_app(config) -> web.Application:
     # Remote node administration (requires admin capability on the gateway)
     app.router.add_get("/api/admin/available", handle_admin_available)
     app.router.add_get("/api/admin/{node_id}/config", handle_get_remote_config)
-    app.router.add_get("/api/admin/{node_id}/config/{section}", handle_get_remote_config_section)
-    app.router.add_put("/api/admin/{node_id}/config/{section}", handle_put_remote_config_section)
+    app.router.add_get(
+        "/api/admin/{node_id}/config/{section}", handle_get_remote_config_section
+    )
+    app.router.add_put(
+        "/api/admin/{node_id}/config/{section}", handle_put_remote_config_section
+    )
     app.router.add_post("/api/admin/{node_id}/action/{action}", handle_admin_action)
     # Security scanner
     app.router.add_get("/api/security/scan", handle_get_security_scan)
@@ -411,20 +428,25 @@ def build_app(config) -> web.Application:
         app.router.add_get("/", _serve_index)
         app.router.add_static("/", path=str(_STATIC_DIR), name="ui")
     else:
-        logger.warning("Web UI directory not found — UI disabled (path=%s)", _STATIC_DIR)
+        logger.warning(
+            "Web UI directory not found — UI disabled (path=%s)", _STATIC_DIR
+        )
 
     # --- CORS ---
     # Allow the HA frontend (running on a different port/origin during dev)
     # to call the API. In production, Ingress handles this, but permissive
     # CORS simplifies local development.
-    cors = aiohttp_cors.setup(app, defaults={
-        "*": aiohttp_cors.ResourceOptions(
-            allow_credentials=False,
-            expose_headers="*",
-            allow_headers="*",
-            allow_methods=["GET", "POST", "PUT", "OPTIONS"],
-        )
-    })
+    cors = aiohttp_cors.setup(
+        app,
+        defaults={
+            "*": aiohttp_cors.ResourceOptions(
+                allow_credentials=False,
+                expose_headers="*",
+                allow_headers="*",
+                allow_methods=["GET", "POST", "PUT", "OPTIONS"],
+            )
+        },
+    )
     for route in list(app.router.routes()):
         # Only apply CORS to the API routes (not static file serving).
         if route.resource and route.resource.canonical.startswith("/api"):
@@ -448,11 +470,11 @@ async def _close_terrain(app: web.Application) -> None:
 def main() -> None:
     """CLI entry point — loads config and runs the server."""
     config = load_config()
-    
+
     # Update log level based on config
     numeric_level = getattr(logging, config.log_level, logging.INFO)
     logging.getLogger().setLevel(numeric_level)
-    
+
     app = build_app(config)
 
     # HA Supervisor expects the addon to listen on port 8099 (matching ingress_port
