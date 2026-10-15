@@ -138,6 +138,10 @@ class NodeTracker(CoordinatorEntity, TrackerEntity):
                 self._attr_latitude = new_lat
                 self._attr_longitude = new_lon
                 self._attr_altitude = new_alt
+                logger.debug(
+                    "NodeTracker %s: Updated coordinates to lat=%s lng=%s alt=%s",
+                    self._node_id, new_lat, new_lon, new_alt
+                )
             # else: no new fix in this snapshot — retain the last known position
             # so the state stays at the previous coordinates rather than going unknown.
         # else: node vanished from coordinator — also retain last known position.

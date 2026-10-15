@@ -354,6 +354,13 @@ class NodePulseCoordinator(DataUpdateCoordinator):
             "NodePulse data refreshed (host=%s, node_count=%s, message_count=%s)",
             self._host, len(nodes), len(messages) if messages else 0,
         )
+        # Log GPS coordinates for tracked nodes to help debug map updates
+        for node in nodes[:5]:  # Log first 5 nodes to avoid spam
+            if node.get("latitude") is not None and node.get("longitude") is not None:
+                logger.debug(
+                    "Node %s GPS: lat=%s lng=%s alt=%s",
+                    node.get("id"), node.get("latitude"), node.get("longitude"), node.get("altitude")
+                )
         if messages:
             logger.debug(
                 "NodePulse messages sample: %s",

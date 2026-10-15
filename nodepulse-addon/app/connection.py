@@ -3909,6 +3909,10 @@ class MeshtasticConnection:
                         if not is_requested_reply:
                             node["position_fix_count"] = node.get("position_fix_count", 0) + 1
                     node["last_heard"] = int(time.time())
+                    logger.info(
+                        "Updated node %s GPS position: lat=%s lng=%s alt=%s (requested=%s)",
+                        from_id, lat, lng, alt, is_requested_reply
+                    )
 
             if is_requested_reply:
                 logger.debug(
