@@ -350,6 +350,14 @@ _CONNECT_TIMEOUT = 15
 # it is actually responsive, and reconnect if it is not.
 _HEALTH_CHECK_INTERVAL = 60
 
+# Max time (seconds) to tolerate no inbound packets while the socket still
+# looks healthy. A half-open TCP session (node rebooted, Wi-Fi dropped, proxy
+# died) keeps the OS socket and `isConnected` flag valid but silently stops
+# delivering data, so sends time out and the UI stops updating. Meshtastic
+# nodes emit NodeInfo/position/telemetry periodically, so prolonged silence is
+# a reliable signal that the session is dead and must be re-established.
+_RX_STALE_TIMEOUT_S = 600
+
 # Substrings that strongly suggest the node already has a TCP client and is
 # rejecting the second connection, rather than a generic network failure.
 _SLOT_CONFLICT_HINTS = (
@@ -419,6 +427,11 @@ class MeshtasticConnection:
 
         # Used by the health monitor background task to signal reconnect attempts.
         self._connected = False
+
+        # Monotonic timestamp of the last inbound packet. Used by the health
+        # probe to detect a silently dead (half-open) TCP session where the
+        # socket still looks healthy but no data is arriving.
+        self._last_rx_monotonic = time.monotonic()
 
         # Bounded ring buffer of recently received text messages, so the Web UI
         # and API can present a live message feed (a MeshSense-style inbox).
@@ -1889,22 +1902,36 @@ class MeshtasticConnection:
                         _CONNECT_TIMEOUT,
                         delay,
                     )
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     delay = min(delay * 2, _RECONNECT_MAX_DELAY)
                     logger.error(
                         "Reconnect failed — will retry in %ss (host=%s): %s",
                         delay,
                         self._host,
                         exc,
+                        exc_info=True,
                     )
             else:
                 # Healthy: report connected and poll again at the probe cadence.
                 if not self._connected:
                     # Just transitioned from disconnected -> connected: refresh
                     # channels immediately so the UI reflects the radio's current
-                    # channel config without waiting for a config push.
-                    self._refresh_channels_sync()
-                    logger.debug("Refreshed channels after (re)connection")
+                    # channel config without waiting for a config push. A failure
+                    # here must not kill the monitor task (which would stop all
+                    # reconnection attempts).
+                    try:
+                        self._refresh_channels_sync()
+                        logger.debug("Refreshed channels after (re)connection")
+                    except (
+                        AttributeError,
+                        KeyError,
+                        TypeError,
+                        ValueError,
+                        OSError,
+                    ) as exc:
+                        logger.warning(
+                            "Post-connect channel refresh failed (ignored): %s", exc
+                        )
                 self._connected = True
                 delay = _HEALTH_CHECK_INTERVAL
 
@@ -2026,6 +2053,9 @@ class MeshtasticConnection:
             self._interface = new_interface
             self._connected = True
             self._connecting = False
+            # Reset the staleness clock so a fresh session is not immediately
+            # treated as stale before the first packet arrives.
+            self._last_rx_monotonic = time.monotonic()
             # Subscribe to inbound packets. We only subscribe once — subscribing
             # the same listener twice causes duplicate packet delivery.
             if not self._subscribed:
@@ -2147,6 +2177,12 @@ class MeshtasticConnection:
         Runs on the meshtastic library's background thread, so shared state
         access is locked.
         """
+        # Record link activity before any processing so a malformed packet
+        # still proves the transport is alive (prevents false stale reconnects).
+        # MQTT-sourced packets are ignored here: they prove the broker is alive,
+        # not that the radio link is, and must not mask a dead TCP session.
+        if not packet.get("_via_mqtt"):
+            self._last_rx_monotonic = time.monotonic()
         try:
             decoded = packet.get("decoded", {}) or {}
             portnum = decoded.get("portnum")
@@ -2754,7 +2790,11 @@ class MeshtasticConnection:
             # entries automatically when full, so this never stalls the receive
             # thread or overwhelms slow clients.
             _broadcast_sse_event("packet", entry)
-        except (KeyError, TypeError, AttributeError) as exc:  # defensive — never crash the receive thread
+        except (
+            KeyError,
+            TypeError,
+            AttributeError,
+        ) as exc:  # defensive — never crash the receive thread
             logger.debug("Error capturing packet to log (ignored): %s", exc)
 
     def _capture_outbound_packet_log(
@@ -2965,7 +3005,8 @@ class MeshtasticConnection:
         cutoff = now - 300  # 5 minutes
         with self._lock:
             stale = [
-                dest for dest, ts in list(self._pending_position_dests.items())
+                dest
+                for dest, ts in list(self._pending_position_dests.items())
                 if ts < cutoff
             ]
             for dest in stale:
@@ -4558,13 +4599,16 @@ class MeshtasticConnection:
 
         # 2. Check underlying socket state (for TCPInterface)
         sock = getattr(iface, "_socket", None) or getattr(iface, "socket", None)
-        if sock is not None and (
-            getattr(sock, "_closed", False) or sock.fileno() == -1
-        ):
-            logger.debug(
-                "Health probe failed: underlying socket is closed or fileno == -1"
-            )
-            return False
+        if sock is not None:
+            try:
+                socket_dead = getattr(sock, "_closed", False) or sock.fileno() == -1
+            except (OSError, ValueError):
+                socket_dead = True
+            if socket_dead:
+                logger.debug(
+                    "Health probe failed: underlying socket is closed or fileno == -1"
+                )
+                return False
 
         # 3. Check reader background thread if present (StreamInterface / TCPInterface)
         read_thread = getattr(iface, "_readThread", None)
@@ -4583,6 +4627,20 @@ class MeshtasticConnection:
             _ = iface.nodes
         except Exception as exc:  # noqa: BLE001
             logger.debug("Health probe failed (node DB unreadable): %s", exc)
+            return False
+
+        # 6. Detect a half-open session: the socket and flags look fine but no
+        # packets have arrived for too long. Without this, a silently dead
+        # radio link leaves the addon "connected" forever — receive stops and
+        # every send times out instead of triggering a reconnect.
+        silent_for = time.monotonic() - self._last_rx_monotonic
+        if silent_for > _RX_STALE_TIMEOUT_S:
+            logger.warning(
+                "Health probe failed: no packets received for %.0fs (limit %ss) — "
+                "forcing reconnect in case the TCP session is half-open",
+                silent_for,
+                _RX_STALE_TIMEOUT_S,
+            )
             return False
         return True
 
@@ -5867,9 +5925,12 @@ class MeshtasticConnection:
                 "packet_id": packet_id,
                 "ack_status": entry.get("ack_status"),
             }
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.error(
-                "Failed to send message (destination=%s): %s", destination, exc
+                "Failed to send message (destination=%s): %s",
+                destination,
+                exc,
+                exc_info=True,
             )
             return False
 

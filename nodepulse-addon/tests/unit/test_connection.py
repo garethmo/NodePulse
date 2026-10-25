@@ -2969,6 +2969,30 @@ class TestInterfaceHealth:
         conn._interface = mock_iface
         assert conn._is_interface_healthy() is True
 
+    def test_is_interface_healthy_stale_session(self):
+        """A socket that looks open but has not delivered data must be recycled."""
+        mock_config = Mock()
+        mock_config.mqtt_enabled = False
+        conn = MeshtasticConnection(
+            host="localhost",
+            port=4403,
+            mode="tcp",
+            config=mock_config,
+        )
+        mock_iface = Mock()
+        mock_iface.isConnected = True
+        mock_sock = Mock()
+        mock_sock.fileno.return_value = 10
+        mock_sock._closed = False
+        mock_iface._socket = mock_sock
+        mock_thread = Mock()
+        mock_thread.is_alive.return_value = True
+        mock_iface._readThread = mock_thread
+        mock_iface.nodes = {"!12345678": {}}
+        conn._interface = mock_iface
+        conn._last_rx_monotonic = time.monotonic() - 601
+        assert conn._is_interface_healthy() is False
+
 
 class TestBroadcastFiltering:
     def test_on_mesh_receive_skips_broadcast_destination(self):
