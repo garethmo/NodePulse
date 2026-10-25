@@ -10,6 +10,7 @@ Entry points called by HA Core:
     all platforms and cancels the coordinator's polling task.
 """
 
+import asyncio
 import logging
 
 import voluptuous as vol
@@ -150,7 +151,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     try:
         await coordinator.async_config_entry_first_refresh()
-    except Exception as exc:
+    except (asyncio.TimeoutError, asyncio.CancelledError):
         # Don't let a transient addon connectivity failure take down the whole
         # entry. The coordinator keeps retrying on its refresh schedule, and
         # the relay views (registered once in async_setup) return 503 until
@@ -158,7 +159,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         logger.warning(
             "NodePulse initial coordinator refresh failed (entry=%s): %s",
             entry.entry_id,
-            exc,
         )
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator

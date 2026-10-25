@@ -26,6 +26,7 @@ HA serves these routes on port 8123 by default.
 """
 
 import inspect
+import json
 import logging
 import os
 import secrets
@@ -62,18 +63,10 @@ async def _call_auth_check(callable_, *args):
     failure even for a valid long-lived access token. This wrapper calls the
     helper and awaits only when it actually returns an awaitable.
     """
-    try:
-        result = callable_(*args)
-        if inspect.isawaitable(result):
-            result = await result
-        return result
-    except Exception as exc:
-        logger.debug(
-            "Relay auth check %s raised: %s",
-            getattr(callable_, "__name__", repr(callable_)),
-            exc,
-        )
-        return None
+    result = callable_(*args)
+    if inspect.isawaitable(result):
+        result = await result
+    return result
 
 
 async def _validate_token(hass: HomeAssistant, request: web.Request) -> str | None:
@@ -179,7 +172,7 @@ class NodePulseTrackView(HomeAssistantView):
 
         try:
             body = await request.json()
-        except Exception:
+        except json.JSONDecodeError:
             logger.warning("Track request received invalid JSON body")
             return web.json_response({"error": "Invalid JSON body"}, status=400)
 

@@ -508,7 +508,7 @@ async def _fetch_all(
             )
             working_host = host
             return status, nodes, messages, channels, working_host
-        except Exception as exc:
+        except (asyncio.TimeoutError, aiohttp.ClientError) as exc:
             logger.debug("Addon host unreachable (host=%s): %s", host, exc)
             continue
 

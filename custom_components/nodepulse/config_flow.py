@@ -13,6 +13,7 @@ We also implement OptionsFlowHandler so the user can change the scan interval
 after initial setup without removing and re-adding the integration.
 """
 
+import json
 import logging
 from typing import Any, Dict, Optional
 
@@ -105,7 +106,7 @@ async def _validate_connection(
                 # Meshtastic node may be offline without the addon being broken.
                 status_data = await resp.json()
                 return candidate, status_data
-        except Exception as exc:
+        except json.JSONDecodeError as exc:
             logger.debug("Addon connection validation failed (url=%s): %s", url, exc)
     return None, None
 
