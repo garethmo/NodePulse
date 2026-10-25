@@ -833,14 +833,23 @@ class TelegramBot:
                     if n.get("id")
                 }
                 record = None
-                for _ in range(15):
-                    await asyncio.sleep(2)
-                    refreshed = await self.get_nodes_callback()
-                    current = self._resolve_node(refreshed, dest)
-                    rec = current.get("traceroute") if current else None
-                    if rec and (rec.get("route") or rec.get("route_back")):
-                        record = rec
-                        break
+                # Use a non-blocking poll with timeout instead of a blocking loop
+                # to keep the Telegram bot responsive
+                try:
+                    async def _wait_for_traceroute():
+                        for _ in range(15):
+                            await asyncio.sleep(2)
+                            refreshed = await self.get_nodes_callback()
+                            current = self._resolve_node(refreshed, dest)
+                            rec = current.get("traceroute") if current else None
+                            if rec and (rec.get("route") or rec.get("route_back")):
+                                return rec
+                        return None
+
+                    record = await asyncio.wait_for(_wait_for_traceroute(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    record = None
+
                 if record:
                     await self._send_text(
                         self._format_traceroute(record, num_to_name),

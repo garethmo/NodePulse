@@ -138,6 +138,19 @@ async def _on_startup(app: web.Application) -> None:
 
     app["ack_expiry_task"] = asyncio.create_task(_run_ack_expiry_loop())
 
+    # Launch the position request expiry sweep. Runs every 60 s and removes stale
+    # position request entries that never received replies, preventing unbounded
+    # memory growth.
+    async def _run_position_expiry_loop() -> None:
+        while True:
+            await asyncio.sleep(60)
+            try:
+                await asyncio.to_thread(conn.expire_pending_positions)
+            except Exception as exc:  # defensive: never crash the task  # noqa: BLE001
+                logger.debug("Position expiry sweep error (ignored): %s", exc)
+
+    app["position_expiry_task"] = asyncio.create_task(_run_position_expiry_loop())
+
     # Launch the GPS coordinate retrieval task. Periodically attempts to get GPS coordinates
     # for nodes that don't have them, preventing them from being filtered out of persistence.
     async def _run_gps_coord_retrieval_loop() -> None:
@@ -242,6 +255,12 @@ async def _on_shutdown(app: web.Application) -> None:
         ack_expiry_task.cancel()
         with suppress(asyncio.CancelledError):  # expected on cancel
             await ack_expiry_task
+
+    position_expiry_task: asyncio.Task = app.get("position_expiry_task")
+    if position_expiry_task and not position_expiry_task.done():
+        position_expiry_task.cancel()
+        with suppress(asyncio.CancelledError):  # expected on cancel
+            await position_expiry_task
 
     gps_coord_retrieval_task: asyncio.Task = app.get("gps_coord_retrieval_task")
     if gps_coord_retrieval_task and not gps_coord_retrieval_task.done():

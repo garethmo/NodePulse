@@ -523,7 +523,8 @@ class MeshtasticConnection:
         # Destination node IDs of in-flight position requests. Used to attribute
         # inbound POSITION_APP replies to the node we actually asked, so we don't
         # treat every broadcast position as a response to our request.
-        self._pending_position_dests: set = set()
+        # Changed from set to dict with timestamps to enable expiry of stale entries.
+        self._pending_position_dests: dict[str, float] = {}
 
         # Last (lat, lng) the meshtastic library's node DB reported per node,
         # tracked across _get_nodes_sync polls. Used to decide whether the
@@ -2962,6 +2963,24 @@ class MeshtasticConnection:
             )
         logger.debug("Expired %s timed-out pending ACKs", len(timed_out))
 
+    def expire_pending_positions(self) -> None:
+        """Remove position request entries older than 5 minutes.
+
+        This prevents unbounded memory growth when position requests fail
+        to receive replies (e.g., offline nodes, network issues, packet loss).
+        """
+        now = time.time()
+        cutoff = now - 300  # 5 minutes
+        with self._lock:
+            stale = [
+                dest for dest, ts in list(self._pending_position_dests.items())
+                if ts < cutoff
+            ]
+            for dest in stale:
+                self._pending_position_dests.pop(dest, None)
+            if stale:
+                logger.debug("Expired %d stale position requests", len(stale))
+
     # ----------------------------------------------------------------
     # Signal quality helpers
     # ----------------------------------------------------------------
@@ -4239,7 +4258,7 @@ class MeshtasticConnection:
                 with self._lock:
                     if from_id in self._pending_position_dests:
                         is_requested_reply = True
-                        self._pending_position_dests.discard(from_id)
+                        self._pending_position_dests.pop(from_id, None)
 
             # Update the node cache with the position data
             with self._nodes_lock:
@@ -6114,7 +6133,7 @@ class MeshtasticConnection:
                 decoded={"request": "position"},
             )
             with self._lock:
-                self._pending_position_dests.add(destination)
+                self._pending_position_dests[destination] = time.time()
             return True
         except Exception as exc:  # noqa: BLE001
             logger.error(
