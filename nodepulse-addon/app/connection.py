@@ -1903,13 +1903,8 @@ class MeshtasticConnection:
                     # Just transitioned from disconnected -> connected: refresh
                     # channels immediately so the UI reflects the radio's current
                     # channel config without waiting for a config push.
-                    try:
-                        self._refresh_channels_sync()
-                        logger.debug("Refreshed channels after (re)connection")
-                    except Exception as exc:  # pragma: no cover - defensive
-                        logger.debug(
-                            "Post-connect channel refresh failed (ignored): %s", exc
-                        )
+                    self._refresh_channels_sync()
+                    logger.debug("Refreshed channels after (re)connection")
                 self._connected = True
                 delay = _HEALTH_CHECK_INTERVAL
 
@@ -2609,10 +2604,7 @@ class MeshtasticConnection:
             # internally), so we don't need to await it on this thread.
             callback = getattr(self, "_telegram_forward_callback", None)
             if callback is not None:
-                try:
-                    callback(entry)
-                except Exception as exc:  # defensive: never crash the receive thread
-                    logger.debug("Telegram forward callback error (ignored): %s", exc)
+                callback(entry)
         except Exception as exc:  # pragma: no cover - defensive  # noqa: BLE001
             logger.debug("Error handling received packet (ignored): %s", exc)
 
@@ -2762,7 +2754,7 @@ class MeshtasticConnection:
             # entries automatically when full, so this never stalls the receive
             # thread or overwhelms slow clients.
             _broadcast_sse_event("packet", entry)
-        except Exception as exc:  # defensive — never crash the receive thread
+        except (KeyError, TypeError, AttributeError) as exc:  # defensive — never crash the receive thread
             logger.debug("Error capturing packet to log (ignored): %s", exc)
 
     def _capture_outbound_packet_log(
