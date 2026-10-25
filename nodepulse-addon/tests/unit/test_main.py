@@ -34,7 +34,7 @@ class TestOnStartup:
         with patch("app.main.asyncio.create_task") as mock_create_task:
             await main._on_startup(mock_app)
             assert (
-                mock_create_task.call_count == 6
+                mock_create_task.call_count == 7
             )  # Updated to include GPS coord retrieval task
 
     @pytest.mark.asyncio

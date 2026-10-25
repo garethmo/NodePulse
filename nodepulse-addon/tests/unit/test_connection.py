@@ -1969,7 +1969,7 @@ class TestCapturePosition:
     def test_captures_position_into_node_cache(self):
         conn = create_conn()
         conn._nodes = [{"id": "!00001234"}]
-        conn._pending_position_dests.add("!00001234")
+        conn._pending_position_dests["!00001234"] = time.time()
         with patch.object(conn, "_save_position_history"):
             conn._capture_position(
                 {
@@ -2006,7 +2006,7 @@ class TestCapturePosition:
 
     def test_missing_payload_ignored(self):
         conn = create_conn()
-        conn._pending_position_dests.add("!00001234")
+        conn._pending_position_dests["!00001234"] = time.time()
         conn._capture_position({"from": 0x1234, "decoded": {}})
         assert "!00001234" in conn._pending_position_dests
         assert conn._pos_history == {}
@@ -2735,63 +2735,6 @@ class TestCoordinateValidation:
         lat, lng = conn._validate_and_correct_coordinates("!12345678", 91.0, 40.0)
         assert lat is None
         assert lng is None
-
-    def test_apply_coordinate_offset_no_duplicates(self):
-        mock_config = Mock()
-        mock_config.mqtt_enabled = False
-        conn = MeshtasticConnection(
-            host="localhost",
-            port=4403,
-            mode="tcp",
-            access_key="test_key",
-            config=mock_config,
-        )
-        node = {"id": "!12345678", "latitude": 40.7128, "longitude": -74.0060}
-        # seen_coords is a mutable set of (lat, lng) tuples, as used in production
-        seen_coords: set[tuple[float, float]] = {(51.5074, -0.1278)}
-
-        result = conn._apply_coordinate_offset(node, seen_coords)
-        assert result["latitude"] == 40.7128
-        assert result["longitude"] == -74.0060
-
-    def test_apply_coordinate_offset_with_duplicates(self):
-        mock_config = Mock()
-        mock_config.mqtt_enabled = False
-        conn = MeshtasticConnection(
-            host="localhost",
-            port=4403,
-            mode="tcp",
-            access_key="test_key",
-            config=mock_config,
-        )
-        node = {"id": "!12345678", "latitude": 40.7128, "longitude": -74.0060}
-        # Duplicate coordinates already in the set should trigger an offset
-        seen_coords: set[tuple[float, float]] = {(40.7128, -74.0060)}
-
-        result = conn._apply_coordinate_offset(node, seen_coords)
-        # Coordinates should be slightly offset
-        assert result["latitude"] != 40.7128
-        assert result["longitude"] != -74.0060
-        # But should be very close (within ~0.00001 degrees)
-        assert abs(result["latitude"] - 40.7128) < 0.00002
-        assert abs(result["longitude"] - (-74.0060)) < 0.00002
-
-    def test_apply_coordinate_offset_no_coordinates(self):
-        mock_config = Mock()
-        mock_config.mqtt_enabled = False
-        conn = MeshtasticConnection(
-            host="localhost",
-            port=4403,
-            mode="tcp",
-            access_key="test_key",
-            config=mock_config,
-        )
-        node = {"id": "!12345678", "latitude": None, "longitude": None}
-        seen_coords: set[tuple[float, float]] = {(40.7128, -74.0060)}
-
-        result = conn._apply_coordinate_offset(node, seen_coords)
-        assert result["latitude"] is None
-        assert result["longitude"] is None
 
     def test_save_nodes_filters_without_gps(self):
         """Test that _save_nodes filters out nodes without GPS coordinates."""
