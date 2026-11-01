@@ -62,47 +62,16 @@ async def async_setup_entry(
     async_add_entities([NodeCountSensor(coordinator, entry)])
 
     def _make_sensors(node: Dict[str, Any]) -> List:
-        """Build the full set of per-node sensors, keeping only those with data.
+        """Build the set of per-node sensors, creating only those with data.
 
         Only nodes the user has chosen to track (coordinator.tracked_nodes) get
         per-node sensor entities. This lets the Web UI's "Track in HA" toggle
         selectively create entities for individual nodes instead of importing
         the whole mesh at once.
-        """
-        node_id = node["id"]
-        sensor_set = [
-            NodeSnrSensor(coordinator, entry, node_id),
-            NodeRssiSensor(coordinator, entry, node_id),
-            NodeHopsSensor(coordinator, entry, node_id),
-            NodeLastHeardSensor(coordinator, entry, node_id),
-            NodeBatterySensor(coordinator, entry, node_id),
-            NodeTemperatureSensor(coordinator, entry, node_id),
-            NodeHumiditySensor(coordinator, entry, node_id),
-            NodePressureSensor(coordinator, entry, node_id),
-            NodeVoltageSensor(coordinator, entry, node_id),
-            NodeChannelUtilSensor(coordinator, entry, node_id),
-            NodeAirUtilTxSensor(coordinator, entry, node_id),
-            NodeUptimeSensor(coordinator, entry, node_id),
-            NodeRoleSensor(coordinator, entry, node_id),
-            NodeGasResistanceSensor(coordinator, entry, node_id),
-            NodeGpsSensor(coordinator, entry, node_id),
-            NodeLatitudeSensor(coordinator, entry, node_id),
-            NodeLongitudeSensor(coordinator, entry, node_id),
-            NodeAltitudeSensor(coordinator, entry, node_id),
-            NodeMessageReceivedSensor(coordinator, entry, node_id),
-            NodeMessageSentSensor(coordinator, entry, node_id),
-            NodeDistanceSensor(coordinator, entry, node_id),
-            NodeNeighborCountSensor(coordinator, entry, node_id),
-            NodePositionFixCountSensor(coordinator, entry, node_id),
-            NodeTagsSensor(coordinator, entry, node_id),
-            NodeSignalQualitySensor(coordinator, entry, node_id),
-        ]
 
-        # Create sensors conditionally based on node capabilities:
-        # - Basic metrics (SNR, RSSI, hops, battery, etc.): always create
-        # - Environmental sensors (temp, humidity, pressure, gas): only if node has data
-        # - GPS sensors (lat, lon, alt, distance): only if node has GPS coordinates
-        # - Message sensors: always create (show "Unknown" until messages arrive)
+        Sensors are instantiated conditionally based on node capabilities to
+        avoid creating objects that would be immediately discarded.
+        """
         node_id = node["id"]
         has_gps = node.get("latitude") is not None and node.get("longitude") is not None
         has_env = (
@@ -112,39 +81,45 @@ async def async_setup_entry(
             or node.get("gas_resistance") is not None
         )
 
-        out = []
-        for sensor in sensor_set:
-            # Always create message sensors and basic metrics
-            if isinstance(sensor, (NodeMessageReceivedSensor, NodeMessageSentSensor)):
-                out.append(sensor)
-            # GPS sensors only if node has coordinates
-            elif isinstance(
-                sensor,
-                (
-                    NodeGpsSensor,
-                    NodeLatitudeSensor,
-                    NodeLongitudeSensor,
-                    NodeAltitudeSensor,
-                    NodeDistanceSensor,
-                ),
-            ):
-                if has_gps:
-                    out.append(sensor)
-            # Environmental sensors only if node has environmental data
-            elif isinstance(
-                sensor,
-                (
-                    NodeTemperatureSensor,
-                    NodeHumiditySensor,
-                    NodePressureSensor,
-                    NodeGasResistanceSensor,
-                ),
-            ):
-                if has_env:
-                    out.append(sensor)
-            # All other sensors (SNR, RSSI, hops, battery, etc.) always create
-            else:
-                out.append(sensor)
+        # Always-present sensors: basic metrics and message counters.
+        out = [
+            NodeSnrSensor(coordinator, entry, node_id),
+            NodeRssiSensor(coordinator, entry, node_id),
+            NodeHopsSensor(coordinator, entry, node_id),
+            NodeLastHeardSensor(coordinator, entry, node_id),
+            NodeBatterySensor(coordinator, entry, node_id),
+            NodeVoltageSensor(coordinator, entry, node_id),
+            NodeChannelUtilSensor(coordinator, entry, node_id),
+            NodeAirUtilTxSensor(coordinator, entry, node_id),
+            NodeUptimeSensor(coordinator, entry, node_id),
+            NodeRoleSensor(coordinator, entry, node_id),
+            NodeNeighborCountSensor(coordinator, entry, node_id),
+            NodePositionFixCountSensor(coordinator, entry, node_id),
+            NodeTagsSensor(coordinator, entry, node_id),
+            NodeSignalQualitySensor(coordinator, entry, node_id),
+            NodeMessageReceivedSensor(coordinator, entry, node_id),
+            NodeMessageSentSensor(coordinator, entry, node_id),
+        ]
+
+        # GPS sensors — only if the node has reported coordinates.
+        if has_gps:
+            out.extend([
+                NodeGpsSensor(coordinator, entry, node_id),
+                NodeLatitudeSensor(coordinator, entry, node_id),
+                NodeLongitudeSensor(coordinator, entry, node_id),
+                NodeAltitudeSensor(coordinator, entry, node_id),
+                NodeDistanceSensor(coordinator, entry, node_id),
+            ])
+
+        # Environmental sensors — only if the node has telemetry data.
+        if has_env:
+            out.extend([
+                NodeTemperatureSensor(coordinator, entry, node_id),
+                NodeHumiditySensor(coordinator, entry, node_id),
+                NodePressureSensor(coordinator, entry, node_id),
+                NodeGasResistanceSensor(coordinator, entry, node_id),
+            ])
+
         return out
 
     discovery = NodeDiscovery(coordinator, entry)
@@ -445,14 +420,6 @@ class NodeGpsSensor(_NodeSensorBase):
         if battery is not None:
             attrs["battery_level"] = battery
 
-        # Distance from home (Euclidean distance from lat/lon = (0,0))
-        lat_is = lat is not None
-        lon_is = lon is not None
-        if lat_is and lon_is:
-            # Approximate distance in km: sqrt(lat² + lon²) * ~111 km/degree at equator
-            # Simplified: just return raw coords; HA map handles distance calc
-            attrs["distance_from_home"] = round((lat**2 + lon**2) ** 0.5, 2)
-
         return attrs
 
 
@@ -634,25 +601,14 @@ class NodeMessageSensor(_NodeSensorBase):
         """
         node_id = self._norm_node_id(self._node_id)
         if not node_id:
-            logger.debug(
-                "Message sensor: node_id normalization failed for %s", self._node_id
-            )
             return []
         data = self.coordinator.data or {}
         index = data.get("messages_by_node")
         if index is None:
+            # Fallback: index not yet built by coordinator (first cycle).
             messages: List[Dict[str, Any]] = data.get("messages", [])
-            logger.debug(
-                "Message sensor: messages_by_node index not available, using full message list (%d messages)",
-                len(messages),
-            )
         else:
             messages = index.get(node_id, [])
-            logger.debug(
-                "Message sensor: found %d messages for node %s in index",
-                len(messages),
-                node_id,
-            )
 
         out = []
         for m in messages:
@@ -666,13 +622,6 @@ class NodeMessageSensor(_NodeSensorBase):
             if is_outgoing == self._outgoing:
                 out.append(m)
 
-        logger.debug(
-            "Message sensor: node=%s direction=%s matched %d messages (outgoing=%s)",
-            node_id,
-            "sent" if self._outgoing else "received",
-            len(out),
-            self._outgoing,
-        )
         return out
 
     @property

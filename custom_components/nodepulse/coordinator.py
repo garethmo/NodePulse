@@ -368,30 +368,6 @@ class NodePulseCoordinator(DataUpdateCoordinator):
             len(nodes),
             len(messages) if messages else 0,
         )
-        # Log GPS coordinates for tracked nodes to help debug map updates
-        for node in nodes[:5]:  # Log first 5 nodes to avoid spam
-            if node.get("latitude") is not None and node.get("longitude") is not None:
-                logger.debug(
-                    "Node %s GPS: lat=%s lng=%s alt=%s",
-                    node.get("id"),
-                    node.get("latitude"),
-                    node.get("longitude"),
-                    node.get("altitude"),
-                )
-        if messages:
-            logger.debug("NodePulse messages sample: %s", messages[:2])
-            # Log node IDs in messages to help debug
-            message_node_ids = set()
-            for m in messages[:5]:
-                if m.get("from_id"):
-                    message_node_ids.add(normalize_node_id(m.get("from_id")))
-                if m.get("to_id"):
-                    message_node_ids.add(normalize_node_id(m.get("to_id")))
-            logger.debug(
-                "NodePulse message node IDs (first 5 messages): %s",
-                sorted(message_node_ids),
-            )
-
         # Track which message IDs we've already surfaced so we can hand only the
         # newly-arrived ones to the logbook and device-trigger subsystems.
         if self._messages_initialized:

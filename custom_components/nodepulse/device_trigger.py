@@ -26,11 +26,10 @@ from homeassistant.components.device_automation.exceptions import (
 )
 from homeassistant.const import CONF_DEVICE_ID, CONF_DOMAIN, CONF_PLATFORM, CONF_TYPE
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.typing import ConfigType
 
 from .const import DOMAIN
-from .helpers import coordinator_for
+from .helpers import coordinator_for, get_node_id_for_device
 
 logger = logging.getLogger(__name__)
 
@@ -99,23 +98,10 @@ async def async_get_triggers(
     ]
 
 
-@callback
-def _async_get_node_id(hass: HomeAssistant, device_id: str) -> str | None:
-    """Resolve the Meshtastic node id that backs the given HA device."""
-    reg = dr.async_get(hass)
-    device = reg.async_get(device_id)
-    if device is None:
-        return None
-    for ident in device.identifiers:
-        if ident[0] == DOMAIN:
-            return ident[1]
-    return None
-
-
 def _is_mesh_node_device(hass: HomeAssistant, device_id: str) -> bool:
     """Return True if the device maps to an actual mesh node (not the
     integration-level gateway device, whose identifier is a config entry id)."""
-    node_id = _async_get_node_id(hass, device_id)
+    node_id = get_node_id_for_device(hass, device_id)
     if not node_id or not node_id.startswith("!"):
         return False
     coordinator = coordinator_for(hass)
@@ -134,7 +120,7 @@ def async_attach_trigger(
 ) -> Any:
     """Attach a device trigger and return its detach callback."""
     device_id = config[CONF_DEVICE_ID]
-    node_id = _async_get_node_id(hass, device_id)
+    node_id = get_node_id_for_device(hass, device_id)
     if node_id is None:
         raise InvalidDeviceAutomationConfig(f"Unknown NodePulse device {device_id}")
 

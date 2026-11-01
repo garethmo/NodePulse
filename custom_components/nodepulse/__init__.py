@@ -157,7 +157,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # the relay views (registered once in async_setup) return 503 until
         # data becomes available.
         logger.warning(
-            "NodePulse initial coordinator refresh failed (entry=%s): %s",
+            "NodePulse initial coordinator refresh failed (entry=%s)",
             entry.entry_id,
         )
 

@@ -23,13 +23,12 @@ from homeassistant.components.device_automation.exceptions import (
 )
 from homeassistant.const import CONF_DEVICE_ID, CONF_DOMAIN, CONF_PLATFORM, CONF_TYPE
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.helpers.template import TemplateVarsType
 
 from .const import ATTR_CHANNEL, ATTR_TEXT, DOMAIN
 from .coordinator import NodePulseCoordinator
-from .helpers import coordinator_for
+from .helpers import coordinator_for, get_node_id_for_device
 
 logger = logging.getLogger(__name__)
 
@@ -44,23 +43,11 @@ ACTION_SCHEMA = DEVICE_ACTION_BASE_SCHEMA.extend(
 )
 
 
-@callback
-def _async_get_node_id(hass: HomeAssistant, device_id: str) -> str | None:
-    reg = dr.async_get(hass)
-    device = reg.async_get(device_id)
-    if device is None:
-        return None
-    for ident in device.identifiers:
-        if ident[0] == DOMAIN:
-            return ident[1]
-    return None
-
-
 async def async_get_actions(
     hass: HomeAssistant, device_id: str
 ) -> List[Dict[str, Any]]:
     """Return the list of actions supported for the given device."""
-    node_id = _async_get_node_id(hass, device_id)
+    node_id = get_node_id_for_device(hass, device_id)
     if not node_id or not node_id.startswith("!"):
         return []
     return [
@@ -82,7 +69,7 @@ async def async_call_action_from_config(
 ) -> None:
     """Execute the requested device action."""
     device_id = config[CONF_DEVICE_ID]
-    node_id = _async_get_node_id(hass, device_id)
+    node_id = get_node_id_for_device(hass, device_id)
     if node_id is None:
         raise InvalidDeviceAutomationConfig(f"Unknown NodePulse device {device_id}")
 

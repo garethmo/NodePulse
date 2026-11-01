@@ -10,8 +10,9 @@ centralised the coordinator lookup that used to be copy-pasted into
 import logging
 from typing import Optional
 
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import device_registry as dr
 
 from .const import DOMAIN
 from .coordinator import NodePulseCoordinator
@@ -32,6 +33,23 @@ def coordinator_for(hass: HomeAssistant) -> Optional[NodePulseCoordinator]:
         return None
     for coordinator in data.values():
         return coordinator
+    return None
+
+
+@callback
+def get_node_id_for_device(hass: HomeAssistant, device_id: str) -> str | None:
+    """Resolve the Meshtastic node id (``!hex``) backing an HA device.
+
+    Shared by device_action and device_trigger so the lookup logic lives in
+    one place (DRY).
+    """
+    reg = dr.async_get(hass)
+    device = reg.async_get(device_id)
+    if device is None:
+        return None
+    for ident in device.identifiers:
+        if ident[0] == DOMAIN:
+            return ident[1]
     return None
 
 
