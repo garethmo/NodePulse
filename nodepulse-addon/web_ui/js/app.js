@@ -4075,25 +4075,52 @@ function initEventSource() {
       }
     });
 
-    // Position update: fetch fresh node data (new lat/lon) and update map
-    // markers so the pin actually moves, then update trails.
+    // Position update: immediately apply the SSE-provided coordinates to the
+    // matching node so the map marker moves instantly, then do a background
+    // fetchNodes() for full reconciliation of any other fields.
+    let _positionFetchTimer = null;
     es.addEventListener('position', (e) => {
       try {
-        // Fetch the updated node list so the new coordinates are reflected
-        // in the map markers and node cards, not just the trail polylines.
-        fetchNodes().then(raw => {
-          if (!Array.isArray(raw)) return;
-          state.nodes = raw;
-          dashMap.updateNodes(raw);
-          fullMap.updateNodes(raw);
-        }).catch(() => {});
-        // Fetch position history to extend the trail polyline.
-        fetchPositionHistory().then(data => {
-          state.posHistory = data;
-          dashMap.updateTrails(data, state.nodes);
-          fullMap.updateTrails(data, state.nodes);
-          fullMap.setPosHistory(data);
-        }).catch(() => {});
+        const data = JSON.parse(e.data);
+        const { node_id, lat, lng, altitude } = data;
+
+        // Immediately patch the node in state.nodes so the marker moves
+        // without waiting for the fetchNodes() API roundtrip.
+        if (node_id && (lat != null || lng != null)) {
+          const node = state.nodes.find(n => n.id === node_id);
+          if (node) {
+            if (lat != null) node.latitude = lat;
+            if (lng != null) node.longitude = lng;
+            if (altitude != null) node.altitude = altitude;
+            node.last_heard = Math.floor(Date.now() / 1000);
+
+            // Trigger reactive re-render and move map markers immediately.
+            state.nodes = [...state.nodes];
+            dashMap.updateNodes(state.nodes);
+            fullMap.updateNodes(state.nodes);
+          }
+        }
+
+        // Debounced background reconciliation: fetch the full node list and
+        // position history so any other fields (battery, SNR, etc.) stay
+        // current. The 2 s debounce coalesces rapid-fire position broadcasts
+        // (e.g. multiple nodes reporting at once) into a single API call.
+        if (_positionFetchTimer) clearTimeout(_positionFetchTimer);
+        _positionFetchTimer = setTimeout(() => {
+          _positionFetchTimer = null;
+          fetchNodes().then(raw => {
+            if (!Array.isArray(raw)) return;
+            state.nodes = raw;
+            dashMap.updateNodes(raw);
+            fullMap.updateNodes(raw);
+          }).catch(() => {});
+          fetchPositionHistory().then(posData => {
+            state.posHistory = posData;
+            dashMap.updateTrails(posData, state.nodes);
+            fullMap.updateTrails(posData, state.nodes);
+            fullMap.setPosHistory(posData);
+          }).catch(() => {});
+        }, 2000);
       } catch (err) {
         console.warn('[SSE] position parse error:', err);
       }

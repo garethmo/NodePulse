@@ -2329,19 +2329,21 @@ class MeshtasticConnection:
 
             # --- Position replies -----------------------------------------
             if portnum == "POSITION_APP":
-                self._capture_position(packet)
-                pos = decoded.get("position") or {}
+                parsed_pos = self._capture_position(packet)
+                # Use the authoritatively parsed lat/lng from _capture_position
+                # (which handles both raw protobuf and library-decoded paths)
+                # rather than guessing from decoded["position"] which may be
+                # absent for raw protobuf packets.
+                sse_lat = parsed_pos.get("lat") if parsed_pos else None
+                sse_lng = parsed_pos.get("lng") if parsed_pos else None
+                sse_alt = parsed_pos.get("altitude") if parsed_pos else None
                 _broadcast_sse_event(
                     "position",
                     {
                         "node_id": from_id_snr,
-                        "lat": pos.get("latitudeI", 0) / 1e7
-                        if pos.get("latitudeI")
-                        else None,
-                        "lng": pos.get("longitudeI", 0) / 1e7
-                        if pos.get("longitudeI")
-                        else None,
-                        "altitude": pos.get("altitude"),
+                        "lat": sse_lat,
+                        "lng": sse_lng,
+                        "altitude": sse_alt,
                         "timestamp": int(time.time()),
                     },
                 )
@@ -4208,7 +4210,9 @@ class MeshtasticConnection:
         except Exception as exc:  # pragma: no cover - defensive  # noqa: BLE001
             logger.debug("Error capturing traceroute (ignored): %s", exc)
 
-    def _capture_position(self, packet: dict[str, Any]) -> None:
+    def _capture_position(
+        self, packet: dict[str, Any]
+    ) -> dict[str, Any] | None:
         """
         Capture a POSITION_APP reply and merge the GPS fix into our node cache.
 
@@ -4222,6 +4226,11 @@ class MeshtasticConnection:
 
         Also captures periodic position broadcasts from nodes, updating the
         node cache incrementing the position fix count.
+
+        Returns a dict with the parsed ``lat``, ``lng``, and ``altitude``
+        (any may be None) so the caller can include accurate coordinates in
+        the SSE event — even when the raw protobuf path was used and the
+        library-decoded ``position`` sub-dict is absent.
         """
         try:
             from meshtastic.protobuf.mesh_pb2 import Position
@@ -4232,7 +4241,7 @@ class MeshtasticConnection:
             from_num = packet.get("from")
             from_id = _node_id_from_num(from_num)
             if not from_id:
-                return
+                return None
 
             if payload:
                 # Raw protobuf path (typical for on-air packets).
@@ -4343,8 +4352,10 @@ class MeshtasticConnection:
                     lng,
                     alt,
                 )
+            return {"lat": lat, "lng": lng, "altitude": alt}
         except Exception as exc:  # pragma: no cover - defensive  # noqa: BLE001
             logger.debug("Error capturing position (ignored): %s", exc)
+            return None
 
     def _capture_telemetry(self, packet: dict[str, Any]) -> None:
         """Capture DEVICE_METRICS_APP telemetry, notably the 2.8 noise floor.
